@@ -1,0 +1,218 @@
+"""Motor kaydı: hangi motor hangi modda çalışır, VLM sunucusu nasıl açılıp kapanır, ham metin nasıl alınır.
+
+Yollar `paths.X` ile çağrı anında okunur. Sunucu komutlarındaki $TOOLS ve $MODELS yer tutucuları
+`paths.TOOLS` / `paths.MODELS` ile, $VLLM ortak vLLM bayraklarıyla değişir.
+"""
+import base64
+import json
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+import urllib.request
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+from ocrnow import paths
+
+TESS_LANG = os.environ.get("TESS_LANG", "tur")
+MAX_TOKENS = 4096
+VLLM_FLAGS = "--max-model-len 8192 --gpu-memory-utilization 0.85 --mm-processor-cache-gb 0 --no-enable-prefix-caching"  # 8 GB GPU için
+
+# dots.mocr'un yerleşim (bbox + kategori + metin) istemi; ekler/layout_try.py'deki PROMPT, kelimesi kelimesine
+LAYOUT_PROMPT = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
+
+1. Bbox format: [x1, y1, x2, y2]
+
+2. Layout Categories: The possible categories are ['Caption', 'Footnote', 'Formula', 'List-item', 'Page-footer', 'Page-header', 'Picture', 'Section-header', 'Table', 'Text', 'Title'].
+
+3. Text Extraction & Formatting Rules:
+    - Picture: For the 'Picture' category, the text field should be omitted.
+    - Formula: Format its text as LaTeX.
+    - Table: Format its text as HTML.
+    - All Others (Text, Title, etc.): Format their text as Markdown.
+
+4. Constraints:
+    - The output text must be the original text from the image, with no translation.
+    - All layout elements must be sorted according to human reading order.
+
+5. Final Output: The entire output must be a single JSON object.
+"""
+
+
+@dataclass(frozen=True)
+class Mode:
+    prompt: str | None
+    layout: bool  # True → model blok JSON'u döner
+
+
+@dataclass(frozen=True)
+class Engine:
+    name: str
+    kind: str  # "local" | "vlm"
+    modes: dict[str, Mode]  # anahtar: "duz" | "duzen"
+    port: int | None = None
+    serve: str | None = None  # $TOOLS, $MODELS ve $VLLM yer tutucuları kullanılabilir
+    recommended: bool = False
+    vram_gb: float | None = None  # Görev 12'de ölçülerek doldurulur
+    disk_gb: float | None = None
+
+
+def _duz(prompt: str | None) -> dict[str, Mode]:
+    return {"duz": Mode(prompt, False)}
+
+
+# VLM'ler OpenAI uyumlu sunucu üzerinden çağrılır. Sunucuyu kendin açtıysan (docker, ollama vs.)
+# sadece portu eşle; kayıt ona bağlanır, kapatmaz.
+ENGINES: dict[str, Engine] = {e.name: e for e in [
+    Engine("tesseract", "local", _duz(None), recommended=True),
+    Engine("kraken", "local", _duz(None)),
+    Engine("paddleocr-vl", "vlm", _duz("OCR:"), port=8001,
+           serve="$TOOLS/llama.cpp/llama-server -m $MODELS/PaddleOCR-VL-1.6.gguf --mmproj $MODELS/PaddleOCR-VL-1.6-mmproj.gguf --temp 0 -ngl 99 -c 8192 --port 8001"),
+    Engine("glm-ocr", "vlm", _duz("Text Recognition:"), port=8002, recommended=True,
+           serve="vllm serve zai-org/GLM-OCR --port 8002 $VLLM"),
+    Engine("lightonocr", "vlm", _duz(None), port=8003, recommended=True,  # LightOnOCR metin istemez, sadece görsel
+           serve="""vllm serve lightonai/LightOnOCR-2-1B --port 8003 --limit-mm-per-prompt '{"image": 1}' $VLLM"""),
+    Engine("deepseek-ocr2", "vlm", _duz("Free OCR."), port=8004,  # bf16 hâli 8 GB'a sığmıyor → fp8
+           serve="vllm serve deepseek-ai/DeepSeek-OCR-2 --port 8004 --quantization fp8 --enforce-eager $VLLM"),
+    Engine("dots.mocr", "vlm",
+           {"duz": Mode("Extract the text content from this image.", False), "duzen": Mode(LAYOUT_PROMPT, True)},
+           port=8005, recommended=True,  # 6 GB → fp8
+           serve="""vllm serve dots-studio/dots.mocr --port 8005 --trust-remote-code --chat-template-content-format string --quantization fp8 --enforce-eager --mm-processor-kwargs '{"max_pixels": 4000000}' $VLLM"""),
+]}
+DEFAULT_ENGINE = "dots.mocr"
+DEFAULT_MODE = "duzen"
+
+
+def _tesseract_text(img: Path) -> str:
+    return subprocess.run(["tesseract", str(img), "stdout", "-l", TESS_LANG],
+                          capture_output=True, text=True, check=True, env=paths.subprocess_env()).stdout
+
+
+def tesseract_tsv(img: Path) -> str:
+    """Kelime kutularıyla birlikte tesseract TSV çıktısı (satır yapısı buradan gelir)."""
+    return subprocess.run(["tesseract", str(img), "stdout", "-l", TESS_LANG, "tsv"],
+                          capture_output=True, text=True, check=True, env=paths.subprocess_env()).stdout
+
+
+def _kraken_model() -> Path:
+    return Path(os.environ.get("KRAKEN_MODEL") or paths.MODELS / "catmus-print-large.mlmodel")
+
+
+def _kraken_text(img: Path) -> str:
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "o.txt"
+        subprocess.run(["kraken", "-i", str(img), str(out), "segment", "-bl", "ocr", "-m", str(_kraken_model())],
+                       capture_output=True, text=True, check=True, env=paths.subprocess_env())
+        return out.read_text()
+
+
+def _local_text(name: str, img: Path) -> str:
+    return _tesseract_text(img) if name == "tesseract" else _kraken_text(img)
+
+
+def _which(cmd: str) -> str | None:
+    """Komutu önce vllm/kraken ortamlarında, sonra PATH'te arar (alt süreçlerin PATH'iyle aynı sıra)."""
+    for venv in (paths.VENV_VLLM, paths.VENV_KRAKEN):
+        found = shutil.which(str(venv / "bin" / cmd))
+        if found:
+            return found
+    return shutil.which(cmd)
+
+
+def _serve_cmd(eng: Engine) -> list[str]:
+    cmd = eng.serve.replace("$TOOLS", str(paths.TOOLS)).replace("$MODELS", str(paths.MODELS)).replace("$VLLM", VLLM_FLAGS)
+    return shlex.split(cmd)
+
+
+def _base(eng: Engine) -> str:
+    return f"http://127.0.0.1:{eng.port}/v1"
+
+
+def missing(name: str) -> str | None:
+    """Motor çalışamayacaksa nedenini döndürür, hazırsa None."""
+    if name == "tesseract":
+        return None if _which("tesseract") else "tesseract kurulu değil"
+    if name == "kraken":
+        if not _which("kraken"):
+            return "kraken kurulu değil"
+        return None if _kraken_model().exists() else f"model yok: {_kraken_model()}"
+    eng = ENGINES[name]
+    if served_model(_base(eng)):
+        return None
+    cmd = _serve_cmd(eng)
+    if not _which(cmd[0]):
+        return f"{Path(cmd[0]).name} kurulu değil"
+    lost = [a for a in cmd if a.endswith(".gguf") and not Path(a).exists()]
+    return f"dosya yok: {', '.join(lost)}" if lost else None
+
+
+def served_model(base: str) -> str | None:
+    try:
+        with urllib.request.urlopen(base + "/models", timeout=3) as r:
+            return json.load(r)["data"][0]["id"]
+    except Exception:
+        return None
+
+
+def _start_server(eng: Engine):
+    """(base, model, proc) döndürür; sunucu zaten açıksa proc None olur ve kapatılmaz."""
+    base = _base(eng)
+    proc = None
+    if not served_model(base):
+        paths.LOGS.mkdir(parents=True, exist_ok=True)
+        log = open(paths.LOGS / f"{eng.name}.server.log", "w")
+        print(f"[{eng.name}] sunucu başlatılıyor (log: {log.name})")
+        proc = subprocess.Popen(_serve_cmd(eng), stdout=log, stderr=subprocess.STDOUT,
+                                start_new_session=True, env=paths.subprocess_env())
+        deadline = time.time() + 1200
+        while not served_model(base):
+            if proc.poll() is not None or time.time() > deadline:
+                _stop_server(proc)
+                raise RuntimeError(f"sunucu ayağa kalkmadı, bkz. {log.name}")
+            time.sleep(3)
+    return base, served_model(base), proc
+
+
+def _stop_server(proc) -> None:
+    if proc and proc.poll() is None:
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(60)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+def _vlm(img: Path, base: str, model: str, prompt: str | None) -> str:
+    content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(img.read_bytes()).decode()}}]
+    if prompt:
+        content.append({"type": "text", "text": prompt})
+    body = {"model": model, "messages": [{"role": "user", "content": content}], "temperature": 0, "max_tokens": MAX_TOKENS}
+    req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=900) as r:
+        return json.load(r)["choices"][0]["message"]["content"]
+
+
+def _mode(eng: Engine, mode: str) -> Mode:
+    if mode not in eng.modes:
+        raise ValueError(f"{eng.name} motorunda '{mode}' modu yok (olanlar: {', '.join(eng.modes)})")
+    return eng.modes[mode]
+
+
+@contextmanager
+def server(name: str) -> Iterator[Callable[[Path, str], str]]:
+    """Motoru hazırlar ve run(img, mode) -> ham metin verir. VLM sunucusu çıkışta her durumda kapatılır."""
+    eng = ENGINES[name]
+    if eng.kind == "local":
+        yield lambda img, mode: (_mode(eng, mode), _local_text(name, img))[1]
+        return
+    base, model, proc = _start_server(eng)
+    try:
+        yield lambda img, mode: _vlm(img, base, model, _mode(eng, mode).prompt)
+    finally:
+        _stop_server(proc)
