@@ -81,12 +81,18 @@ def rebreak(text: str, tlines: list[TessLine]) -> tuple[list[Line], float]:
 
 def apply_line_structure(block: Block, tlines: list[TessLine]) -> str | None:
     """block.lines ve block.indent'i doldurur. Satır yapısı kurulamazsa akan paragraf yapar ve uyarı döner."""
-    block.indent = bool(tlines and block.bbox is not None and tlines[0].box[0] - block.bbox[0] > INDENT_PX)
-    ratio = 1.0
-    if tlines:
+    if not tlines:
+        reason = "tesseract satırı yok"
+    else:
         lines, ratio = rebreak(block.text, tlines)
-        if ratio <= MAX_RATIO:
+        if ratio > MAX_RATIO:
+            reason = f"oran {ratio:.2f}"
+        elif any(l.start >= l.end for l in lines):    # bloğa yabancı satır düşmüş (başlık, sayfa no, komşu blok)
+            reason = "satır sayısı tutmuyor"
+        else:
             block.lines = lines
+            block.indent = block.bbox is not None and tlines[0].box[0] - block.bbox[0] > INDENT_PX
             return None
     block.lines = [Line(0, len(block.text), False)]
-    return f"satır yapısı kurulamadı: {block.category} bloğu, oran {ratio:.2f}"
+    block.indent = False
+    return f"satır yapısı kurulamadı: {block.category} bloğu, {reason}"

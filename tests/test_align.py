@@ -13,9 +13,9 @@ def lines_text(text, lines):
 def assert_covers(text, lines):
     """Metne sadakat: satırlar metni tam kaplar; aradan yalnız tek bir boşluk düşebilir, hiçbir harf yitmez/yinelenmez."""
     assert lines and lines[0].start == 0 and lines[-1].end == len(text)
+    assert all(l.start < l.end for l in lines) or lines == [Line(0, 0, False)]   # boş satır yok
     joined = ""
     for prev, cur in zip(lines, lines[1:]):
-        assert prev.start <= prev.end
         gap = text[prev.end:cur.start]
         assert gap in ("", " ") and not (prev.hyphen and gap)
         joined += text[prev.start:prev.end] + gap
@@ -61,14 +61,30 @@ def test_ratio_is_distance_over_tess_length():
 def test_no_tess_lines_fallback():
     b = Block("Text", (0, 0, 10, 10), "akan metin")
     assert "kurulamadı" in apply_line_structure(b, []) and b.lines == [Line(0, 10, False)]
+    assert apply_line_structure(b, []) == "satır yapısı kurulamadı: Text bloğu, tesseract satırı yok"
+
+
+def test_stray_leading_line_fallback():
+    b = Block("Text", (100, 0, 600, 100), "birinci satır ikinci satır")
+    warn = apply_line_structure(b, [L("BAŞLIK", x=300), L("birinci satır", x=100), L("ikinci satır", x=100)])
+    assert warn == "satır yapısı kurulamadı: Text bloğu, satır sayısı tutmuyor"
+    assert b.lines == [Line(0, len(b.text), False)] and b.indent is False   # girintili görünen ilk satır yok sayılır
+
+
+def test_stray_trailing_line_fallback():
+    b = Block("Text", (100, 0, 600, 100), "birinci satır ikinci satır")
+    warn = apply_line_structure(b, [L("birinci satır"), L("ikinci satır"), L("412")])
+    assert warn == "satır yapısı kurulamadı: Text bloğu, satır sayısı tutmuyor"
+    assert b.lines == [Line(0, len(b.text), False)]
 
 
 def test_high_cost_fallback():
     b = Block("Footnote", (0, 0, 100, 100), "bambaşka bir metin burada duruyor")
-    warn = apply_line_structure(b, [L("xyz qwv"), L("kkk")])
+    warn = apply_line_structure(b, [L("xyz qwv", x=200), L("kkk")])
     assert warn.startswith("satır yapısı kurulamadı: Footnote bloğu, oran ")
     assert float(warn.rsplit(" ", 1)[1]) > 0.30
     assert b.lines == [Line(0, len(b.text), False)]
+    assert b.indent is False
 
 
 def test_indent():
