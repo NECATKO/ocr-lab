@@ -14,7 +14,7 @@ command -v tesseract >/dev/null || { echo "sudo gerekli: sudo apt install -y tes
 
 step "ana ortam (.venv)"
 [ -x .venv/bin/python ] || uv venv .venv --python 3.12 -q
-VIRTUAL_ENV=.venv uv pip install -q pypdfium2 pillow python-docx
+VIRTUAL_ENV=.venv uv pip install -q -e ".[dev,lab]"
 
 step "llama.cpp $LLAMA (CUDA 12.8)"
 if [ ! -x tools/llama.cpp/llama-server ]; then
