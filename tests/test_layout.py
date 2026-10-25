@@ -71,12 +71,14 @@ def test_picture_text_replaced_even_if_model_gave_text():
 def test_truncated_inside_fence():
     raw = '```json\n[{"bbox": [1,1,2,2], "category": "Title", "text": "bir"}, {"bbox": [1,3,'
     blocks, warns = parse_output(raw, True, (100, 100))
-    assert blocks[0].category == "Title" and "1 blok kurtarıldı" in warns[0]
+    assert [b.category for b in blocks] == ["Title"]       # {"bbox": [1,3, parçası belgeye girmez
+    assert blocks[0].text == "bir" and "1 blok kurtarıldı" in warns[0]
 
 
 def test_empty_and_degenerate_outputs_do_not_crash():
     assert parse_output("[]", True, (100, 100)) == ([], [])
-    assert parse_output("", True, (100, 100)) == ([], [])
+    assert parse_output("", True, (100, 100)) == ([], ["model boş yanıt verdi"])
+    assert parse_output("  \n ", True, (100, 100)) == ([], ["model boş yanıt verdi"])
     assert parse_output("```json\n[]\n```", True, (100, 100)) == ([], [])
     # JSON nesnesi: tek blok sayılır
     (b,), w = parse_output('{"bbox": [0,0,5,5], "category": "Title", "text": "T"}', True, (100, 100))
@@ -96,3 +98,43 @@ def test_malformed_items():
     assert blocks[0].bbox is None and blocks[2].bbox is None
     assert blocks[1].category == "Text"
     assert warns                                          # atlananlar ve düzeltilenler için uyarı var
+
+
+def test_non_json_reply_kept_as_text():
+    blocks, warns = parse_output("Dipnot [1] metin burada", True, (100, 100))
+    assert [(b.category, b.text) for b in blocks] == [("Text", "Dipnot [1] metin burada")]
+    assert "0 blok kurtarıldı" in warns[0]
+
+
+def test_prefix_and_trailing_text_kept():
+    raw = 'İşte sonuç: [{"bbox": [1,1,2,2], "category": "Text", "text": "bir"}] ve son söz [2]'
+    blocks, warns = parse_output(raw, True, (100, 100))
+    assert [b.text for b in blocks] == ["İşte sonuç:", "bir", "ve son söz [2]"]
+    assert "1 blok kurtarıldı" in warns[0]
+
+
+def test_truncated_text_keeps_brackets_and_decodes_escapes():
+    raw = '[{"bbox": [1,1,2,2], "category": "Text", "text": "bkz. [1]'
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert blocks[-1].text == "bkz. [1]"
+    raw = r'[{"bbox": [1,1,2,2], "category": "Text", "text": "o \"dedi\" ki\n\u00e7a\u00'
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert blocks[-1].text == 'o "dedi" ki ça'
+    raw = '[{"bbox": [1,1,2,2], "category": "Text", "text": "tamam"'      # değer tam, nesne kapanmamış
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert blocks[-1].text == "tamam"
+
+
+def test_fragment_without_text_value_emits_no_block():
+    for raw in ('[{"bbox": [1,3,', '[{"bbox": [1,3,2,4], "category": "Text", "te',
+                '[{"bbox": [1,3,2,4], "category": "Text", "text": '):
+        blocks, warns = parse_output(raw, True, (100, 100))
+        assert blocks == [] and "bozuk JSON" in warns[0]
+
+
+def test_non_finite_bbox_and_non_string_text():
+    raw = ('[{"bbox": [NaN, 0, 1, 1], "category": "Text", "text": "a"},'
+           ' {"bbox": [0, 0, Infinity, 1], "category": "Text", "text": ["b", 3, "c"]},'
+           ' {"bbox": [0, 0, 1, 1], "category": "Text", "text": 42}]')
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert [(b.bbox, b.text) for b in blocks] == [(None, "a"), (None, "b c"), ((0, 0, 1, 1), "")]

@@ -77,7 +77,12 @@ def smart_resize(h: int, w: int, factor: int = 28, min_pixels: int = 3136,
 
 
 def _norm(text: object) -> str:
-    return " ".join(("" if text is None else str(text)).split())
+    """Boşlukları sadeleştirir; metin listesi boşlukla birleştirilir, başka türler boş sayılır."""
+    if isinstance(text, list):
+        text = " ".join(t for t in text if isinstance(t, str))
+    if not isinstance(text, str):
+        return ""
+    return " ".join(text.split())
 
 
 def _strip_fences(raw: str) -> str:
@@ -89,7 +94,8 @@ def _strip_fences(raw: str) -> str:
 def _scale_bbox(bbox: object, size: tuple[int, int]) -> tuple[int, int, int, int] | None:
     """Model bbox'ını (smart_resize görüntüsünde) orijinal piksellere ölçekler; geçersizse None."""
     if (not isinstance(bbox, (list, tuple)) or len(bbox) != 4
-            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in bbox)):
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                       for v in bbox)):
         return None
     w, h = size
     if w <= 0 or h <= 0:
@@ -113,35 +119,57 @@ def _block_from_item(item: object, size: tuple[int, int]) -> tuple[Block | None,
     return Block(category, bbox, text), bad
 
 
-def _tail_text(rest: str) -> str:
-    """Kesik kalan JSON parçasından okunabilir metni çıkarır ("text" değeri varsa onu, yoksa parçanın kendisini)."""
-    m = re.search(r'"text"\s*:\s*"', rest)
-    if not m:
-        return _norm(rest)
-    tail = rest[m.end():]
+_TEXT_KEY = re.compile(r'"text"\s*:\s*"')
+_START = re.compile(r'\[\s*(?=\{)|\{\s*(?="(?:bbox|category|text)")')
+
+
+def _partial_string(s: str, quote: int) -> str:
+    """s[quote] açılış tırnağıdır; (kesik de olsa) JSON dizesinin içeriğini kaçışlarıyla çözer, hiçbir karakteri atmaz."""
     try:
-        return _norm(json.loads('"' + tail.rstrip().rstrip('"}]').rstrip() + '"'))
+        return json.JSONDecoder(strict=False).raw_decode(s, quote)[0]
     except ValueError:
-        return _norm(tail.rstrip().rstrip('"}]'))
+        pass
+    body = s[quote + 1:]
+    body = re.sub(r"\\u[0-9a-fA-F]{0,3}$", "", body)           # yarım \uXXXX
+    if (len(body) - len(body.rstrip("\\"))) % 2:                # yarım kalmış kaçış
+        body = body[:-1]
+    try:
+        return json.loads('"' + body + '"', strict=False)
+    except ValueError:
+        return body
 
 
-def _recover(s: str) -> tuple[list[object], str]:
-    """Geçersiz/kesik JSON'dan tamamlanmış nesneleri tek tek kurtarır; (nesneler, çözülemeyen kalan metin)."""
+def _fragment_text(frag: str) -> str:
+    """Kesik kalan nesne parçasından yalnız "text" değerini alır; değer yoksa boş (JSON kalıntısı belgeye girmez)."""
+    m = _TEXT_KEY.search(frag)
+    return _norm(_partial_string(frag, m.end() - 1)) if m else ""
+
+
+def _recover(s: str) -> tuple[str, list[object], str]:
+    """Geçersiz/kesik/önekli JSON'dan (ön metin, tamamlanmış nesneler, sondaki metin) çıkarır.
+
+    Dizinin dışında kalan metin (önek, kapanıştan sonraki söz) ve kesik son nesnenin "text" değeri
+    sondaki metne gider; JSON bulunamazsa bütün cevap ön metin olur.
+    """
+    m = _START.search(s)
+    if not m:
+        return s, [], ""
+    prefix, pos = s[:m.start()], m.end() if s[m.start()] == "[" else m.start()
     dec = json.JSONDecoder()
-    start = min((i for i in (s.find("["), s.find("{")) if i >= 0), default=-1)
-    if start < 0:
-        return [], s
-    pos = start + 1 if s[start] == "[" else start
     items: list[object] = []
     while True:
         while pos < len(s) and (s[pos].isspace() or s[pos] == ","):
             pos += 1
-        if pos >= len(s) or s[pos] == "]":
-            return items, ""
+        if pos >= len(s):
+            return prefix, items, ""
+        if s[pos] == "]":
+            return prefix, items, s[pos + 1:]
         try:
             obj, pos = dec.raw_decode(s, pos)
         except ValueError:
-            return items, s[pos:]
+            if s[pos] == "{":
+                return prefix, items, _fragment_text(s[pos:])
+            return prefix, items, _partial_string(s, pos) if s[pos] == '"' else s[pos:]
         items.append(obj)
 
 
@@ -151,9 +179,9 @@ def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Bl
         return [Block("Text", None, _norm(raw))], [PLAIN_WARNING]
     s = _strip_fences(raw)
     if not s:
-        return [], []
+        return [], ["model boş yanıt verdi"]
     warnings: list[str] = []
-    rest = ""
+    head = tail = ""
     try:
         data = json.loads(s)
         if isinstance(data, dict):
@@ -162,20 +190,20 @@ def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Bl
             raise ValueError("liste değil")
         items = data
     except ValueError:
-        items, rest = _recover(s)
+        head, items, tail = _recover(s)
         recovered = sum(isinstance(i, dict) for i in items)
         warnings.append(f"model çıktısı eksik/bozuk JSON: {recovered} blok kurtarıldı")
     blocks: list[Block] = []
+    if _norm(head):
+        blocks.append(Block("Text", None, _norm(head)))
     bad_count = 0
     for item in items:
         block, bad = _block_from_item(item, size)
         bad_count += bad
         if block is not None:
             blocks.append(block)
-    if rest.strip():
-        text = _tail_text(rest)
-        if text:
-            blocks.append(Block("Text", None, text))
+    if _norm(tail):
+        blocks.append(Block("Text", None, _norm(tail)))
     if bad_count:
         warnings.append(f"model çıktısında {bad_count} bozuk öğe: eksik alanlar varsayılanla dolduruldu, nesne olmayanlar atlandı")
     return blocks, warnings
