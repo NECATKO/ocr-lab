@@ -43,16 +43,45 @@ def test_extra_and_missing_words():
     assert flagged("ve ol", "ve bir ol") == []
 
 
-def test_no_overlapping_or_duplicate_marks():
-    marks = flag_uncertain("a1 b2 cc dd", "x y zz")
-    spans = [(m.start, m.end) for m in marks]
-    assert spans == sorted(set(spans))
-    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
+def test_marks_exact_spans_no_overlap():
+    text = "a1 b2 cc dd"
+    marks = flag_uncertain(text, "a1 b2 xx dd")
+    assert [(m.start, m.end) for m in marks] == [(6, 8)]
+    assert flagged("a1 b2 cc dd", "a7 b2 cc dd") == ["a1"]
+    assert flagged("taştında724 ol", "taştında 727 x") == ["taştında724", "ol"]
+
+
+def test_sentence_end_line_break_not_joined():
+    assert flagged("ol kitap. Bir ol", "ol kitap.\nBir ol") == []
+
+
+def test_period_join_when_joined_key_in_main_text():
+    assert flagged("göstermediler ol", "gösterme.\ndiler ol") == []
+    assert flagged("göstermediler ol", "gösterme,\ndiler ol") == []
+
+
+def test_period_not_joined_when_key_absent_from_main_text():
+    assert flagged("kitap bir", "kitap.\nBir") == []
+    assert flagged("kitap bar", "kitap.\nBir") == ["bar"]
+
+
+def test_hyphen_and_not_sign_join_unconditional():
+    assert flagged("senâkâr ol", "senâ-\nkâr ol") == []
+    assert flagged("senâkâr ol", "senâ¬\nkâr ol") == []
+    assert flagged("senâkâx ol", "senâ-\nkâr ol") == ["senâkâx"]
+
+
+def test_main_side_line_end_hyphen_joined():
+    assert flagged("ve gösterme- diler ol", "ve gösterme-\ndiler ol") == []
+    assert flagged("ve gösterme- dilex ol", "ve gösterme-\ndiler ol") == ["gösterme-", "dilex"]
+    # büyük harfle başlayan sonraki kelime birleşmez
+    assert flagged("ol Ali- Veli", "ol Ali Veli") == []
 
 
 def test_empty_inputs():
     assert flag_uncertain("", "ve ol") == []
-    assert flagged("ve ol", "") == ["ve", "ol"]
+    assert flagged("ve ol", "") == []  # tesseract satırı yok: kanıt yok, uyuşmazlık değil
+    assert flagged("ve ol", " \n ,\n") == []  # yalnız noktalama: anahtar yok
 
 
 def test_spike_page_rate(spike_layout):
