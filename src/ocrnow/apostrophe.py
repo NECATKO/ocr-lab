@@ -22,11 +22,21 @@ def _key(word: str) -> str:
     return "".join("'" if c in APOS else c for c in word.lower())
 
 
+def _core(text: str, start: int, end: int) -> tuple[int, int]:
+    """Baştaki ve sondaki kesme işaretleri (tırnak olabilir) çıkarılmış aralık; onlara kurallar karar verir."""
+    while start < end and text[start] in APOS:
+        start += 1
+    while end > start and text[end - 1] in APOS:
+        end -= 1
+    return start, end
+
+
 def _add_words(text: str, words: dict[str, str], *, override: bool) -> None:
     for m in _WORD.finditer(text):
-        w = m.group()
+        s, e = _core(text, m.start(), m.end())
+        w = text[s:e]
         marks = [c for c in w if c in APOS]
-        # yalnız bütün işaretleri ‘ ya da ’ olan kelimeler bir karar taşır
+        # yalnız iç işaretleri ‘ ya da ’ olan kelimeler bir karar taşır
         if not marks or any(c not in (AIN, HAMZA) for c in marks):
             continue
         k = _key(w)
@@ -68,10 +78,33 @@ def _decide(text: str, i: int) -> str | None:
     return None
 
 
+def _listed(text: str, start: int, end: int, words: dict[str, str]) -> dict[int, str]:
+    """Aralığın (kenar işaretleri hariç) listedeki yazımından iç işaretlerin konum → karakter karşılığı."""
+    start, end = _core(text, start, end)
+    pos = [i for i in range(start, end) if text[i] in APOS]
+    if not pos:
+        return {}
+    listed = [c for c in words.get(_key(text[start:end]), "") if c in APOS]
+    return dict(zip(pos, listed)) if len(listed) == len(pos) else {}
+
+
+def _decide_listed(text: str, m: re.Match, words: dict[str, str]) -> dict[int, str]:
+    """Önce bütün dizi, bulunamazsa tireyle ayrılmış her parça listede aranır."""
+    decided = _listed(text, m.start(), m.end(), words)
+    if decided or "-" not in m.group():
+        return decided
+    s = m.start()
+    for part in m.group().split("-"):
+        decided.update(_listed(text, s, s + len(part), words))
+        s += len(part) + 1
+    return decided
+
+
 def restore(text: str, words: dict[str, str]) -> tuple[str, list[Mark]]:
     """Her kesme işaretini tek karakterle (‘/’) değiştirir; uzunluk ve diğer karakterler değişmez.
 
-    Sıra: kelime listesi, sonra kurallar 1-3; hiçbiri tutmazsa ‘ konur ve Mark(kind="kesme") eklenir.
+    Sıra: kelime listesi, sonra kurallar 1-3; hiçbiri tutmazsa gelen tür korunur (‘ ʿ → ‘, ’ ʾ → ’;
+    düz ' ` ´ → ‘) ve Mark(kind="kesme") eklenir.
     """
     out = list(text)
     marks: list[Mark] = []
@@ -79,15 +112,11 @@ def restore(text: str, words: dict[str, str]) -> tuple[str, list[Mark]]:
         positions = [i for i in range(m.start(), m.end()) if text[i] in APOS]
         if not positions:
             continue
-        listed = [c for c in words.get(_key(m.group()), "") if c in APOS]
-        if len(listed) == len(positions):
-            for i, c in zip(positions, listed):
-                out[i] = c
-            continue
+        decided = _decide_listed(text, m, words)
         for i in positions:
-            c = _decide(text, i)
+            c = decided.get(i) or _decide(text, i)
             if c is None:
-                c = AIN
+                c = HAMZA if text[i] in (HAMZA, "ʾ") else AIN
                 marks.append(Mark(i, i + 1, "kesme"))
             out[i] = c
     return "".join(out), marks

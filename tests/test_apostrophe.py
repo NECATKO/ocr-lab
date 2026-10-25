@@ -71,3 +71,33 @@ def test_gt_page_with_list(gt_syf1, tmp_path):
     (tmp_path / "g.txt").write_text(gt_syf1, encoding="utf-8")
     words = build_word_list(tmp_path, tmp_path / "yok.txt")
     assert restore(re.sub("[’‘]", "'", gt_syf1), words)[0] == gt_syf1
+
+
+def test_list_lookup_ignores_edge_marks_and_hyphen_suffix():
+    words = {"mes'ele": "mes’ele"}
+    out, marks = restore("'mes'ele' mes'ele-i mes'ele", words)
+    # kenar işaretleri kurallara kalır: ikisi de belirsiz (ünlüden önce değil)
+    assert out == "‘mes’ele‘ mes’ele-i mes’ele"
+    assert [m.start for m in marks] == [0, 8]
+
+
+def test_list_hyphen_parts_when_whole_missing():
+    words = {"mes'ele": "mes’ele", "bâ'is": "bâ‘is"}
+    assert restore("mes'ele-bâ'is-ve", words)[0] == "mes’ele-bâ‘is-ve"
+
+
+def test_build_word_list_strips_quotes(tmp_path):
+    (tmp_path / "g.txt").write_text("dedi ‘mes’ele’ ve “bâ‘is”.", encoding="utf-8")
+    words = build_word_list(tmp_path, tmp_path / "yok.txt")
+    assert words == {"mes'ele": "mes’ele", "bâ'is": "bâ‘is"}
+
+
+def test_undecided_keeps_explicit_incoming_type():
+    out, marks = restore("bâ’is maʾnâ bâ‘is bâ'is", {})
+    assert out == "bâ’is ma’nâ bâ‘is bâ‘is"
+    assert [m.start for m in marks] == [2, 8, 14, 20]
+    assert all(m.kind == "kesme" for m in marks)
+
+
+def test_rules_override_explicit_incoming_type():
+    assert restore("Haleb‘de ’illet", {})[0] == "Haleb’de ‘illet"
