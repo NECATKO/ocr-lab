@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageOps
 from pypdfium2 import PdfiumError
 
 from ocrnow import paths
@@ -61,7 +61,8 @@ def parse_pages(spec: str | None, n: int) -> tuple[list[int], list[str]]:
 
 
 def _natural_key(path: Path) -> list:
-    return [int(t) if t.isdigit() else t for t in re.split(r"([0-9]+)", path.name.lower())]
+    # split tek sayıda ASCII rakam öbeği ayırır: çift sıra metin, tek sıra sayı (Unicode rakamlar sayı sayılmaz)
+    return [int(t) if i % 2 else t for i, t in enumerate(re.split(r"([0-9]+)", path.name.lower()))]
 
 
 def _pdf_page_count(path: Path) -> int:
@@ -70,9 +71,12 @@ def _pdf_page_count(path: Path) -> int:
     except (PdfiumError, OSError) as e:
         raise InputError(f"PDF açılamadı: {path} ({e})") from e
     try:
-        return len(pdf)
+        n = len(pdf)
     finally:
         pdf.close()
+    if n == 0:
+        raise InputError(f"PDF'te hiç sayfa yok: {path}")
+    return n
 
 
 def _pdf_job(path: Path, spec: str | None, warnings: list[str]) -> DocJob:
@@ -96,14 +100,18 @@ def collect_jobs(inputs: list[Path], spec: str | None, merge: bool = False) -> t
     warnings: list[str] = []
     jobs: list[DocJob] = []
     loose: list[Path] = []  # komut satırındaki tek tek görüntüler
+    images_seen = False
     loose_slot: int | None = None  # birleşik görüntü işinin jobs içindeki yeri (ilk görüntünün sırası)
 
     for path in inputs:
         if not path.exists():
             raise InputError(f"Dosya ya da klasör bulunamadı: {path}")
         if path.is_dir():
-            files = sorted((f for f in path.iterdir() if f.is_file() and not f.name.startswith(".")),
-                           key=_natural_key)
+            try:
+                files = sorted((f for f in path.iterdir() if f.is_file() and not f.name.startswith(".")),
+                               key=_natural_key)
+            except OSError as e:
+                raise InputError(f"Klasör okunamadı: {path} ({e})") from e
             pdfs = [f for f in files if f.suffix.lower() == ".pdf"]
             images = [f for f in files if _is_image(f)]
             if not pdfs and not images:
@@ -111,6 +119,7 @@ def collect_jobs(inputs: list[Path], spec: str | None, merge: bool = False) -> t
                                  "(PDF, PNG, JPG, TIF desteklenir)")
             jobs += [_pdf_job(f, spec, warnings) for f in pdfs]
             if images:
+                images_seen = True
                 jobs.append(DocJob(path.name or path.resolve().name, [SourcePage(f, 1) for f in images]))
         elif path.suffix.lower() == ".pdf":
             jobs.append(_pdf_job(path, spec, warnings))
@@ -119,13 +128,37 @@ def collect_jobs(inputs: list[Path], spec: str | None, merge: bool = False) -> t
                 loose_slot = len(jobs)
                 jobs.append(DocJob("", []))  # yer tutucu; döngü sonunda doldurulur
             loose.append(path)
+            images_seen = True
         else:
             raise InputError(f"Desteklenmeyen dosya türü: {path} (PDF, PNG, JPG, TIF desteklenir)")
     if loose_slot is not None:
         jobs[loose_slot] = DocJob(loose[0].stem, [SourcePage(f, 1) for f in loose])
-    if merge and len(jobs) > 1:
+    if images_seen and spec is not None and spec.strip().lower() != "hepsi":
+        warnings.append(f"Sayfa seçimi '{spec}' görüntülere uygulanmaz (her görüntü tek sayfadır).")
+    if merge and len(jobs) > 1:  # tek iş varsa birleştirilecek bir şey yok, ad değişmez
         jobs = [DocJob(jobs[0].name + "_birlesik", [p for j in jobs for p in j.pages])]
+    _make_names_unique(jobs)
     return jobs, warnings
+
+
+def _make_names_unique(jobs: list[DocJob]) -> None:
+    """Aynı adlı işler çıktıyı ezmesin: ikincisi _2, üçüncüsü _3 ... (büyük/küçük harf ayırt edilmez)."""
+    seen: set[str] = set()
+    for job in jobs:
+        name, k = job.name, 2
+        while name.lower() in seen:
+            name = f"{job.name}_{k}"
+            k += 1
+        seen.add(name.lower())
+        job.name = name
+
+
+def _to_8bit(im: Image.Image) -> Image.Image:
+    """EXIF yönünü uygular; 16/32 bit gri görüntüyü 8 bite indirir, gerisini RGB (ya da L) yapar."""
+    im = ImageOps.exif_transpose(im)
+    if im.mode in ("I", "I;16", "I;16L", "I;16B"):
+        im = im.point(lambda v: v / 256).convert("L")
+    return im.convert("L" if im.mode == "L" else "RGB")
 
 
 def render(page: SourcePage, dpi: int = DEFAULT_DPI) -> Path:
@@ -137,7 +170,11 @@ def render(page: SourcePage, dpi: int = DEFAULT_DPI) -> Path:
     src = page.source
     is_pdf = src.suffix.lower() == ".pdf"
     suffix = f"_{dpi}dpi" if is_pdf and dpi != DEFAULT_DPI else ""
-    out = paths.PAGES / f"{src.stem}-{src.stat().st_size}" / f"syf{page.index}{suffix}.png"
+    try:
+        size = src.stat().st_size
+    except OSError as e:
+        raise InputError(f"Dosya okunamadı: {src} ({e})") from e
+    out = paths.PAGES / f"{src.stem}-{size}" / f"syf{page.index}{suffix}.png"
     if out.exists():
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +193,7 @@ def render(page: SourcePage, dpi: int = DEFAULT_DPI) -> Path:
     else:
         try:
             with Image.open(src) as im:
-                img = im.convert("L" if im.mode == "L" else "RGB")
+                img = _to_8bit(im)
         except OSError as e:
             raise InputError(f"Görüntü açılamadı: {src} ({e})") from e
     img.save(tmp)

@@ -182,3 +182,81 @@ def test_render_page_out_of_range_and_broken_pdf(tmp_path, monkeypatch):
 def test_docjob_is_plain_dataclass(tmp_path):
     job = DocJob("a", [SourcePage(tmp_path / "a.pdf", 1)])
     assert job.name == "a" and job.pages[0].index == 1
+
+
+def test_render_applies_exif_orientation(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "PAGES", tmp_path / "pages")
+    src = tmp_path / "telefon.jpg"
+    exif = Image.Exif()
+    exif[0x0112] = 6  # 90 derece saat yönünde döndürülerek gösterilmeli
+    Image.new("RGB", (30, 20), "white").save(src, exif=exif)
+    assert Image.open(render(SourcePage(src, 1))).size == (20, 30)
+
+
+@pytest.mark.parametrize("mode", ["I;16", "I"])
+def test_render_16bit_gray_not_all_white(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(paths, "PAGES", tmp_path / "pages")
+    src = tmp_path / "gri.tif"
+    im = Image.new(mode, (4, 4), 0)
+    im.putpixel((0, 0), 65535)
+    im.putpixel((1, 0), 32768)
+    im.save(src)
+    out = Image.open(render(SourcePage(src, 1)))
+    assert out.getpixel((0, 0)) == 255 and out.getpixel((1, 0)) == 128 and out.getpixel((3, 3)) == 0
+
+
+def test_natural_sort_tolerates_unicode_digits(tmp_path):
+    for n in ["1²2.jpg", "10.jpg", "2.jpg"]:
+        (tmp_path / n).write_bytes(b"")
+    jobs, _ = collect_jobs([tmp_path], None)
+    assert [p.source.name for p in jobs[0].pages][-2:] == ["2.jpg", "10.jpg"]
+
+
+def test_duplicate_job_names_made_unique(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    pa = make_pdf(tmp_path / "a" / "book.pdf", 1)
+    pb = make_pdf(tmp_path / "b" / "book.pdf", 1)
+    pc = make_pdf(tmp_path / "Book.pdf", 1)
+    jobs, _ = collect_jobs([pa, pb, pc], None)
+    assert [j.name for j in jobs] == ["book", "book_2", "Book_3"]
+
+
+def test_folder_next_to_same_named_pdf(tmp_path):
+    make_pdf(tmp_path / "x.pdf", 1)
+    (tmp_path / "x").mkdir()
+    (tmp_path / "x" / "1.png").write_bytes(b"")
+    jobs, _ = collect_jobs([tmp_path / "x.pdf", tmp_path / "x"], None)
+    assert [j.name for j in jobs] == ["x", "x_2"]
+
+
+def test_spec_with_images_warns(tmp_path):
+    img = tmp_path / "a.png"
+    img.write_bytes(b"")
+    _, warns = collect_jobs([img], "3")
+    assert len(warns) == 1 and "görüntülere uygulanmaz" in warns[0]
+    assert collect_jobs([img], None)[1] == [] and collect_jobs([img], "hepsi")[1] == []
+    pdf = make_pdf(tmp_path / "k.pdf", 3)
+    assert collect_jobs([pdf], "2")[1] == []  # yalnız PDF: uyarı yok
+
+
+def test_zero_page_pdf_is_error(tmp_path):
+    pdf = make_pdf(tmp_path / "bos.pdf", 0)
+    with pytest.raises(InputError):  # pdfium sayfasız PDF'i açmaz; açılırsa da "hiç sayfa yok" denir
+        collect_jobs([pdf], None)
+
+
+def test_unreadable_folder_and_vanished_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "PAGES", tmp_path / "pages")
+    def boom(self):
+        raise PermissionError("izin yok")
+    monkeypatch.setattr(type(tmp_path), "iterdir", boom)
+    with pytest.raises(InputError, match="okunamadı"):
+        collect_jobs([tmp_path], None)
+    with pytest.raises(InputError, match="yok.png"):
+        render(SourcePage(tmp_path / "yok.png", 1))
+
+
+def test_merge_single_job_keeps_name(tmp_path):
+    jobs, _ = collect_jobs([make_pdf(tmp_path / "a.pdf", 1)], None, merge=True)
+    assert jobs[0].name == "a"
