@@ -32,16 +32,21 @@ def _core(text: str, start: int, end: int) -> tuple[int, int]:
 
 
 def _add_words(text: str, words: dict[str, str], *, override: bool) -> None:
+    """Her kelime dizisi için iki anahtar: bütün dizi (kenar işaretleriyle, ör. mâni‘) ve iç işareti varsa
+    kenarsız çekirdek (ör. mes’ele, tırnak içinde geçse de bulunsun)."""
     for m in _WORD.finditer(text):
-        s, e = _core(text, m.start(), m.end())
-        w = text[s:e]
-        marks = [c for c in w if c in APOS]
-        # yalnız iç işaretleri ‘ ya da ’ olan kelimeler bir karar taşır
-        if not marks or any(c not in (AIN, HAMZA) for c in marks):
-            continue
-        k = _key(w)
-        if override or k not in words:  # gt'de çelişen yazımda ilki kalır
-            words[k] = w
+        cs, ce = _core(text, m.start(), m.end())
+        for s, e, inner_only in ((m.start(), m.end(), False), (cs, ce, True)):
+            w = text[s:e]
+            marks = [c for c in w if c in APOS]
+            # yalnız bütün işaretleri ‘ ya da ’ olan kelimeler bir karar taşır
+            if not marks or any(c not in (AIN, HAMZA) for c in marks):
+                continue
+            if inner_only and (s, e) == (m.start(), m.end()):
+                continue  # kenar işareti yok: çekirdek zaten bütün dizi
+            k = _key(w)
+            if override or k not in words:  # gt'de çelişen yazımda ilki kalır
+                words[k] = w
 
 
 def build_word_list(gt_dir: Path, user_file: Path) -> dict[str, str]:
@@ -78,9 +83,8 @@ def _decide(text: str, i: int) -> str | None:
     return None
 
 
-def _listed(text: str, start: int, end: int, words: dict[str, str]) -> dict[int, str]:
-    """Aralığın (kenar işaretleri hariç) listedeki yazımından iç işaretlerin konum → karakter karşılığı."""
-    start, end = _core(text, start, end)
+def _lookup(text: str, start: int, end: int, words: dict[str, str]) -> dict[int, str]:
+    """Aralıktaki bütün işaretlerin konum → listedeki karakter karşılığı; yoksa boş."""
     pos = [i for i in range(start, end) if text[i] in APOS]
     if not pos:
         return {}
@@ -88,14 +92,19 @@ def _listed(text: str, start: int, end: int, words: dict[str, str]) -> dict[int,
     return dict(zip(pos, listed)) if len(listed) == len(pos) else {}
 
 
+def _segment(text: str, start: int, end: int, words: dict[str, str]) -> dict[int, str]:
+    """Önce kenar işaretleriyle bütün kelime, olmazsa kenarsız çekirdek (kenar işaretlerini kurallar belirler)."""
+    return _lookup(text, start, end, words) or _lookup(text, *_core(text, start, end), words)
+
+
 def _decide_listed(text: str, m: re.Match, words: dict[str, str]) -> dict[int, str]:
     """Önce bütün dizi, bulunamazsa tireyle ayrılmış her parça listede aranır."""
-    decided = _listed(text, m.start(), m.end(), words)
+    decided = _segment(text, m.start(), m.end(), words)
     if decided or "-" not in m.group():
         return decided
     s = m.start()
     for part in m.group().split("-"):
-        decided.update(_listed(text, s, s + len(part), words))
+        decided.update(_segment(text, s, s + len(part), words))
         s += len(part) + 1
     return decided
 

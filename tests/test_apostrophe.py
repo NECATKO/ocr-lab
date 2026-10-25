@@ -89,7 +89,7 @@ def test_list_hyphen_parts_when_whole_missing():
 def test_build_word_list_strips_quotes(tmp_path):
     (tmp_path / "g.txt").write_text("dedi ‘mes’ele’ ve “bâ‘is”.", encoding="utf-8")
     words = build_word_list(tmp_path, tmp_path / "yok.txt")
-    assert words == {"mes'ele": "mes’ele", "bâ'is": "bâ‘is"}
+    assert words["mes'ele"] == "mes’ele" and words["bâ'is"] == "bâ‘is"
 
 
 def test_undecided_keeps_explicit_incoming_type():
@@ -101,3 +101,24 @@ def test_undecided_keeps_explicit_incoming_type():
 
 def test_rules_override_explicit_incoming_type():
     assert restore("Haleb‘de ’illet", {})[0] == "Haleb’de ‘illet"
+
+
+def test_edge_only_user_entries_decide_without_mark(tmp_path):
+    user = tmp_path / "kesme.txt"
+    user.write_text("mâni‘\nmerci‘\n", encoding="utf-8")
+    words = build_word_list(tmp_path, user)
+    for src in ("bu mâni' var", "bu mâni’ var", "mâni‘."):
+        out, marks = restore(src, words)
+        assert "mâni‘" in out and marks == []
+    assert restore("merci'", words) == ("merci‘", [])
+    assert restore("(merci’)", words) == ("(merci‘)", [])
+
+
+def test_gt_built_list_decides_word_final_marks(tmp_path):
+    (tmp_path / "g.txt").write_text("dedi ki evzâ‘ ve ‘mes’ele’ gibi.", encoding="utf-8")
+    words = build_word_list(tmp_path, tmp_path / "yok.txt")
+    assert restore("evzâ' ve evzâ’, evzâ'.", words) == ("evzâ‘ ve evzâ‘, evzâ‘.", [])
+    out, marks = restore("'mes'ele'", words)   # tam anahtar tutar: tırnaklı yazım da listeden
+    assert out == "‘mes’ele’" and marks == []
+    out, marks = restore("mes'ele'", words)      # tam anahtar yok: çekirdek, sondaki belirsiz
+    assert out == "mes’ele‘" and [m.start for m in marks] == [7]
