@@ -98,3 +98,73 @@ def test_tesseract_tsv_command(monkeypatch, tmp_path):
     assert engines.tesseract_tsv(tmp_path / "a.png") == "level\ttext\n"
     assert seen["cmd"] == ["tesseract", str(tmp_path / "a.png"), "stdout", "-l", "tur", "tsv"]
     assert seen["kw"]["env"]["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
+
+
+def test_serve_cmd_keeps_paths_with_spaces_in_one_token(monkeypatch, tmp_path):
+    root = tmp_path / "kök klasör"
+    monkeypatch.setattr(paths, "TOOLS", root / "tools")
+    monkeypatch.setattr(paths, "MODELS", root / "models")
+    cmd = engines._serve_cmd(ENGINES["paddleocr-vl"])
+    assert cmd[0] == f"{root}/tools/llama.cpp/llama-server"
+    assert cmd[cmd.index("-m") + 1] == f"{root}/models/PaddleOCR-VL-1.6.gguf"
+    assert cmd[cmd.index("--mmproj") + 1] == f"{root}/models/PaddleOCR-VL-1.6-mmproj.gguf"
+    dots = engines._serve_cmd(ENGINES["dots.mocr"])
+    assert dots[:3] == ["vllm", "serve", "dots-studio/dots.mocr"]
+    assert dots[dots.index("--mm-processor-kwargs") + 1] == '{"max_pixels": 4000000}'
+    assert dots[dots.index("--max-model-len") + 1] == "8192"  # $VLLM bayrakları ayrı parçalar
+
+
+def test_missing_message_shows_full_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr(engines, "served_model", lambda base: None)
+    monkeypatch.setattr(paths, "TOOLS", tmp_path / "tools")
+    assert missing("paddleocr-vl") == f"{tmp_path}/tools/llama.cpp/llama-server kurulu değil"
+
+
+def test_relative_kraken_model_resolves_against_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setenv("KRAKEN_MODEL", "models/x.mlmodel")
+    assert engines._kraken_model() == tmp_path / "models/x.mlmodel"
+    monkeypatch.setenv("KRAKEN_MODEL", str(tmp_path / "abs.mlmodel"))
+    assert engines._kraken_model() == tmp_path / "abs.mlmodel"
+
+
+class _FakeProc:
+    pid = 4242
+
+    def poll(self):
+        return None
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, RuntimeError])
+def test_start_server_stops_process_on_interrupt_during_wait(monkeypatch, tmp_path, exc):
+    proc, stopped = _FakeProc(), []
+    monkeypatch.setattr(paths, "LOGS", tmp_path)
+    monkeypatch.setattr(engines, "served_model", lambda base: None)
+    monkeypatch.setattr(engines.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(engines, "_stop_server", stopped.append)
+
+    def interrupted(_):
+        raise exc
+
+    monkeypatch.setattr(engines.time, "sleep", interrupted)
+    with pytest.raises(exc):
+        engines._start_server(ENGINES["glm-ocr"])
+    assert stopped == [proc]
+
+
+def test_start_server_closes_log_and_stops_on_timeout(monkeypatch, tmp_path):
+    proc, stopped, logs = _FakeProc(), [], []
+    monkeypatch.setattr(paths, "LOGS", tmp_path)
+    monkeypatch.setattr(engines, "served_model", lambda base: None)
+
+    def popen(cmd, stdout, **k):
+        logs.append(stdout)
+        return proc
+
+    monkeypatch.setattr(engines.subprocess, "Popen", popen)
+    monkeypatch.setattr(engines, "_stop_server", stopped.append)
+    monkeypatch.setattr(engines.time, "time", iter([0, 10**6]).__next__)
+    with pytest.raises(RuntimeError, match="ayağa kalkmadı"):
+        engines._start_server(ENGINES["glm-ocr"])
+    assert stopped == [proc] and logs[0].closed

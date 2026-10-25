@@ -101,7 +101,8 @@ def tesseract_tsv(img: Path) -> str:
 
 
 def _kraken_model() -> Path:
-    return Path(os.environ.get("KRAKEN_MODEL") or paths.MODELS / "catmus-print-large.mlmodel")
+    env = os.environ.get("KRAKEN_MODEL")
+    return paths.ROOT / env if env else paths.MODELS / "catmus-print-large.mlmodel"  # göreli yol köke göre
 
 
 def _kraken_text(img: Path) -> str:
@@ -126,8 +127,9 @@ def _which(cmd: str) -> str | None:
 
 
 def _serve_cmd(eng: Engine) -> list[str]:
-    cmd = eng.serve.replace("$TOOLS", str(paths.TOOLS)).replace("$MODELS", str(paths.MODELS)).replace("$VLLM", VLLM_FLAGS)
-    return shlex.split(cmd)
+    # önce bölünür, yollar sonra parça parça konur: kök klasör adında boşluk olsa da komut bozulmaz
+    return [t.replace("$TOOLS", str(paths.TOOLS)).replace("$MODELS", str(paths.MODELS))
+            for t in shlex.split(eng.serve.replace("$VLLM", VLLM_FLAGS))]
 
 
 def _base(eng: Engine) -> str:
@@ -147,7 +149,7 @@ def missing(name: str) -> str | None:
         return None
     cmd = _serve_cmd(eng)
     if not _which(cmd[0]):
-        return f"{Path(cmd[0]).name} kurulu değil"
+        return f"{cmd[0]} kurulu değil"
     lost = [a for a in cmd if a.endswith(".gguf") and not Path(a).exists()]
     return f"dosya yok: {', '.join(lost)}" if lost else None
 
@@ -161,21 +163,28 @@ def served_model(base: str) -> str | None:
 
 
 def _start_server(eng: Engine):
-    """(base, model, proc) döndürür; sunucu zaten açıksa proc None olur ve kapatılmaz."""
+    """(base, model, proc) döndürür; sunucu zaten açıksa proc None olur ve kapatılmaz.
+
+    Beklerken hata ya da Ctrl-C gelirse açılan süreç kapatılıp istisna yeniden fırlatılır
+    (sunucu ayrı oturumda çalıştığı için Ctrl-C ona ulaşmaz).
+    """
     base = _base(eng)
     proc = None
     if not served_model(base):
         paths.LOGS.mkdir(parents=True, exist_ok=True)
-        log = open(paths.LOGS / f"{eng.name}.server.log", "w")
-        print(f"[{eng.name}] sunucu başlatılıyor (log: {log.name})")
-        proc = subprocess.Popen(_serve_cmd(eng), stdout=log, stderr=subprocess.STDOUT,
-                                start_new_session=True, env=paths.subprocess_env())
-        deadline = time.time() + 1200
-        while not served_model(base):
-            if proc.poll() is not None or time.time() > deadline:
-                _stop_server(proc)
-                raise RuntimeError(f"sunucu ayağa kalkmadı, bkz. {log.name}")
-            time.sleep(3)
+        with open(paths.LOGS / f"{eng.name}.server.log", "w") as log:
+            print(f"[{eng.name}] sunucu başlatılıyor (log: {log.name})")
+            proc = subprocess.Popen(_serve_cmd(eng), stdout=log, stderr=subprocess.STDOUT,
+                                    start_new_session=True, env=paths.subprocess_env())
+        try:
+            deadline = time.time() + 1200
+            while not served_model(base):
+                if proc.poll() is not None or time.time() > deadline:
+                    raise RuntimeError(f"sunucu ayağa kalkmadı, bkz. {log.name}")
+                time.sleep(3)
+        except BaseException:
+            _stop_server(proc)
+            raise
     return base, served_model(base), proc
 
 
