@@ -115,41 +115,77 @@ def _block_from_item(item: object, size: tuple[int, int]) -> tuple[Block | None,
     if bad_category:
         category = "Text"
     bad = bbox is None or bad_category
-    text = PICTURE_TEXT if category == "Picture" else _norm(item.get("text"))
+    if category == "Picture":
+        text = PICTURE_TEXT
+    elif "text" in item:
+        text = _norm(item["text"])
+    else:  # "text" yoksa ve kategori dışında tek bir başka metin alanı varsa (ör. "content") o kullanılır
+        others = [v for k, v in item.items() if k not in ("bbox", "category") and isinstance(v, str)]
+        text = _norm(others[0]) if len(others) == 1 else ""
     return Block(category, bbox, text), bad
 
 
 _TEXT_KEY = re.compile(r'"text"\s*:\s*"')
 _START = re.compile(r'\[\s*(?=\{)|\{\s*(?="(?:bbox|category|text)")')
+_NEXT_OBJ = re.compile(r'\{\s*"(?:bbox|category)"')
+_FENCE = re.compile(r"```[A-Za-z]*")
 
 
-def _partial_string(s: str, quote: int) -> str:
-    """s[quote] açılış tırnağıdır; (kesik de olsa) JSON dizesinin içeriğini kaçışlarıyla çözer, hiçbir karakteri atmaz."""
-    try:
-        return json.JSONDecoder(strict=False).raw_decode(s, quote)[0]
-    except ValueError:
-        pass
-    body = s[quote + 1:]
+def _decode_body(body: str) -> str:
+    """JSON dizesinin (kapanış tırnağı olmayan) içeriğini çözer: kaçışlar çözülür, kaçışsız iç tırnaklar metin sayılır,
+    yarım kalmış kaçış dışında hiçbir karakter atılmaz."""
     body = re.sub(r"\\u[0-9a-fA-F]{0,3}$", "", body)           # yarım \uXXXX
     if (len(body) - len(body.rstrip("\\"))) % 2:                # yarım kalmış kaçış
         body = body[:-1]
+    escaped = re.sub(r'(?s)\\.|"', lambda m: '\\"' if m.group(0) == '"' else m.group(0), body)
     try:
-        return json.loads('"' + body + '"', strict=False)
+        return json.loads('"' + escaped + '"', strict=False)
     except ValueError:
         return body
 
 
-def _fragment_text(frag: str) -> str:
-    """Kesik kalan nesne parçasından yalnız "text" değerini alır; değer yoksa boş (JSON kalıntısı belgeye girmez)."""
-    m = _TEXT_KEY.search(frag)
-    return _norm(_partial_string(frag, m.end() - 1)) if m else ""
+def _lenient_object(seg: str, final: bool) -> tuple[dict | None, str]:
+    """Bozuk (ör. kaçışsız iç tırnaklı) ya da kesik nesneden bbox/kategori/metni gevşekçe çıkarır.
+
+    seg bir sonraki nesne başlangıcına (final=False) ya da cevabın sonuna (final=True) kadar olan parçadır.
+    (nesne ya da None, sondaki metin) döner; "text" değeri olmayan parça (Picture hariç) blok üretmez.
+    """
+    tail = ""
+    if final:
+        closes = list(re.finditer(r'"\s*\}\s*\]', seg))
+        m = closes[-1] if closes else re.search(r'"\s*\}\s*$', seg)
+        if m:
+            tail = seg[m.end():]
+            seg = seg[:m.start()]
+        else:
+            seg = re.sub(r'"\s*$', "", seg)
+    else:
+        m = re.search(r'"\s*\}[\s,\]]*$', seg)
+        seg = seg[:m.start()] if m else re.sub(r'"?[\s,]*$', "", seg)
+    tm = _TEXT_KEY.search(seg)
+    head = seg[:tm.start()] if tm else seg
+    obj: dict = {}
+    bm = re.search(r'"bbox"\s*:\s*(\[[^\]]*\])', head)
+    if bm:
+        try:
+            obj["bbox"] = json.loads(bm.group(1))
+        except ValueError:
+            pass
+    cm = re.search(r'"category"\s*:\s*"([^"]*)', head)
+    if cm:
+        obj["category"] = cm.group(1)
+    if tm:
+        obj["text"] = _decode_body(seg[tm.end():])
+    elif not (obj.get("category") == "Picture" and "bbox" in obj):
+        return None, tail
+    return obj, tail
 
 
 def _recover(s: str) -> tuple[str, list[object], str]:
     """Geçersiz/kesik/önekli JSON'dan (ön metin, tamamlanmış nesneler, sondaki metin) çıkarır.
 
-    Dizinin dışında kalan metin (önek, kapanıştan sonraki söz) ve kesik son nesnenin "text" değeri
-    sondaki metne gider; JSON bulunamazsa bütün cevap ön metin olur.
+    Dizinin dışında kalan metin (önek, kapanıştan sonraki söz) ön/sondaki metne gider. Çözülemeyen bir nesne
+    gevşekçe okunur ve bir sonraki nesne başlangıcından devam edilir; JSON bulunamazsa bütün cevap ön metin olur.
     """
     m = _START.search(s)
     if not m:
@@ -168,8 +204,15 @@ def _recover(s: str) -> tuple[str, list[object], str]:
             obj, pos = dec.raw_decode(s, pos)
         except ValueError:
             if s[pos] == "{":
-                return prefix, items, _fragment_text(s[pos:])
-            return prefix, items, _partial_string(s, pos) if s[pos] == '"' else s[pos:]
+                nxt = _NEXT_OBJ.search(s, pos + 1)
+                lenient, tail = _lenient_object(s[pos:nxt.start() if nxt else len(s)], final=nxt is None)
+                if lenient is not None:
+                    items.append(lenient)
+                if nxt:
+                    pos = nxt.start()
+                    continue
+                return prefix, items, tail
+            return prefix, items, _decode_body(s[pos + 1:]) if s[pos] == '"' else s[pos:]
         items.append(obj)
 
 
@@ -191,6 +234,7 @@ def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Bl
         items = data
     except ValueError:
         head, items, tail = _recover(s)
+        head, tail = _FENCE.sub("", head), _FENCE.sub("", tail)   # dizinin çevresindeki ```json çitleri
         recovered = sum(isinstance(i, dict) for i in items)
         warnings.append(f"model çıktısı eksik/bozuk JSON: {recovered} blok kurtarıldı")
     blocks: list[Block] = []

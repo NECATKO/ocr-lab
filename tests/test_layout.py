@@ -138,3 +138,40 @@ def test_non_finite_bbox_and_non_string_text():
            ' {"bbox": [0, 0, 1, 1], "category": "Text", "text": 42}]')
     blocks, _ = parse_output(raw, True, (100, 100))
     assert [(b.bbox, b.text) for b in blocks] == [(None, "a"), (None, "b c"), ((0, 0, 1, 1), "")]
+
+
+def test_inner_unescaped_quotes_closed_and_next_object_survives():
+    raw = ('[{"bbox": [1,1,2,2], "category": "Text", "text": "ilk"}, '
+           '{"bbox": [1,3,2,4], "category": "Text", "text": "he said "hi" and more"}, '
+           '{"bbox": [1,5,2,6], "category": "Footnote", "text": "sonraki"}]')
+    blocks, warns = parse_output(raw, True, (100, 100))
+    assert [(b.category, b.text) for b in blocks] == [
+        ("Text", "ilk"), ("Text", 'he said "hi" and more'), ("Footnote", "sonraki")]
+    assert blocks[1].bbox == (1, 3, 2, 4) and "3 blok kurtarıldı" in warns[0]
+
+
+def test_inner_unescaped_quotes_in_last_object_with_trailing_text():
+    raw = ('[{"bbox": [1,1,2,2], "category": "Text", "text": "o "dedi", "yok" ki"}] Son söz')
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert [b.text for b in blocks] == ['o "dedi", "yok" ki', "Son söz"]
+
+
+def test_inner_unescaped_quotes_truncated():
+    raw = ('[{"bbox": [1,1,2,2], "category": "Text", "text": "ilk"}, '
+           '{"bbox": [1,3,2,4], "category": "Text", "text": "he said "hi" and mo')
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert [b.text for b in blocks] == ["ilk", 'he said "hi" and mo']
+
+
+def test_fences_around_array_removed_from_prefix_and_tail():
+    raw = 'İşte:\n```json\n[{"bbox": [1,1,2,2], "category": "Text", "text": "bir"}]\n```\nSon söz'
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert [b.text for b in blocks] == ["İşte:", "bir", "Son söz"]
+
+
+def test_item_without_text_uses_single_other_string_field():
+    raw = ('[{"bbox": [1,1,2,2], "category": "Text", "content": "içerik"},'
+           ' {"bbox": [1,1,2,2], "category": "Text", "a": "x", "b": "y"},'
+           ' {"bbox": [1,1,2,2], "category": "Text"}]')
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert [b.text for b in blocks] == ["içerik", "", ""]
