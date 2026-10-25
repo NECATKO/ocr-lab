@@ -1,0 +1,10 @@
+input/
+output/
+gt/
+.venv*/
+tools/
+models/
+.superpowers/
+__pycache__/
+*.egg-info/
+.pytest_cache/
