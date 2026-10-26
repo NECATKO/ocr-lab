@@ -132,6 +132,14 @@ def test_bad_options_exit_2(argv, capsys):
     assert "hata" in capsys.readouterr().err.lower()
 
 
+def test_invalid_bold_pattern_rejected_before_ocr(fake_env, capsys):
+    """M1: geçersiz düzenli ifade OCR'dan sonra iz kaydıyla değil, baştan açık mesajla reddedilir."""
+    with pytest.raises(SystemExit) as e:
+        main(["k.pdf", "--kalin-kalip", "[106b"])
+    assert e.value.code == 2
+    assert "--kalin-kalip" in capsys.readouterr().err and fake_env.opts == []
+
+
 def test_mode_falls_back_for_single_mode_model(fake_env):
     assert main(["k.pdf", "-m", "glm-ocr", "-f", "txt"]) == 0
     assert (fake_env.opts[0].engine, fake_env.opts[0].mode) == ("glm-ocr", "duz")

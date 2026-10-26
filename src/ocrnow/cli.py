@@ -1,6 +1,7 @@
 """`ocr-now` komutu: taranmış sayfaları .docx/.txt'ye çevirir; argümansız açılınca soru sorar."""
 import argparse
 import importlib
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -81,6 +82,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if args.okuma_verildi:
             parser.error(f"{args.model} modelinde '{args.okuma}' okuma modu yok (olanlar: {', '.join(modes)})")
         args.okuma = "duz"
+    if args.kalin_kalip:
+        try:
+            re.compile(args.kalin_kalip)
+        except re.error as e:
+            parser.error(f"--kalin-kalip geçersiz düzenli ifade: '{args.kalin_kalip}' ({e})")
     if args.format is not None:
         bad = [f for f in args.format if f not in FORMATS]
         if bad:
