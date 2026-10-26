@@ -4,6 +4,7 @@ Yollar `paths.X` ile çağrı anında okunur. Sunucu komutlarındaki $TOOLS ve $
 `paths.TOOLS` / `paths.MODELS` ile, $VLLM ortak vLLM bayraklarıyla değişir.
 """
 import base64
+import fcntl
 import json
 import os
 import shlex
@@ -47,6 +48,10 @@ LAYOUT_PROMPT = """Please output the layout information from the PDF image, incl
 
 class ServerError(RuntimeError):
     """Motor sunucusu açılamadı: hiçbir sayfa okunamaz, koşu durmalı (sayfa düzeyinde hata değil)."""
+
+
+class GpuBusy(RuntimeError):
+    """GPU kilidi başka bir ocr-now/ocr-lab sürecinde: iki VLM sunucusu aynı GPU'yu paylaşınca ikisi de çöker."""
 
 
 class Truncated(str):
@@ -207,6 +212,26 @@ def _start_server(eng: Engine):
     return base, served_model(base), proc
 
 
+@contextmanager
+def gpu_lock() -> Iterator[None]:
+    """paths.LOGS/gpu.lock üzerinde özel kilit; alınamazsa GpuBusy. Süreç ölünce kilit kendiliğinden bırakılır."""
+    paths.LOGS.mkdir(parents=True, exist_ok=True)
+    path = paths.LOGS / "gpu.lock"
+    with open(path, "a+", encoding="utf-8") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            f.seek(0)
+            holder = f.read().strip()
+            raise GpuBusy(f"GPU başka bir ocr-now/ocr-lab koşusunda kullanılıyor"
+                          f"{f' (süreç {holder})' if holder else ''}; o bitince yeniden deneyin (kilit: {path})") from None
+        f.seek(0)
+        f.truncate()
+        f.write(str(os.getpid()))
+        f.flush()
+        yield                       # dosya kapanınca kilit bırakılır
+
+
 def _stop_server(proc) -> None:
     if proc and proc.poll() is None:
         os.killpg(proc.pid, signal.SIGTERM)
@@ -236,16 +261,20 @@ def _mode(eng: Engine, mode: str) -> Mode:
 
 @contextmanager
 def server(name: str) -> Iterator[Callable[[Path, str], str]]:
-    """Motoru hazırlar ve run(img, mode) -> ham metin verir. VLM sunucusu çıkışta her durumda kapatılır."""
+    """Motoru hazırlar ve run(img, mode) -> ham metin verir. VLM sunucusu çıkışta her durumda kapatılır.
+
+    VLM için GPU kilidi (gpu_lock) sunucu açılmadan alınır, kapanınca bırakılır; alınamazsa GpuBusy.
+    """
     eng = ENGINES[name]
     if eng.kind == "local":
         yield lambda img, mode: (_mode(eng, mode), _local_text(name, img))[1]
         return
-    base, model, proc = _start_server(eng)
-    try:
-        yield lambda img, mode: _vlm(img, base, model, _mode(eng, mode).prompt)
-    finally:
-        _stop_server(proc)
+    with gpu_lock():                # sunucu ömrü boyunca: ikinci koşu GPU'yu paylaşmaz
+        base, model, proc = _start_server(eng)
+        try:
+            yield lambda img, mode: _vlm(img, base, model, _mode(eng, mode).prompt)
+        finally:
+            _stop_server(proc)
 
 
 @contextmanager

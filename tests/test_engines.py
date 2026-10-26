@@ -9,6 +9,12 @@ from ocrnow import engines, paths
 from ocrnow.engines import DEFAULT_ENGINE, DEFAULT_MODE, ENGINES, missing, server
 
 
+@pytest.fixture(autouse=True)
+def isolated_logs(monkeypatch, tmp_path):
+    """Sunucu logu ve GPU kilidi geçici klasörde (gerçek output/_logs'a dokunulmaz)."""
+    monkeypatch.setattr(paths, "LOGS", tmp_path / "logs")
+
+
 def test_registry_defaults():
     assert ENGINES[DEFAULT_ENGINE].modes[DEFAULT_MODE].layout is True
     assert set(ENGINES["dots.mocr"].modes) == {"duz", "duzen"}
@@ -227,3 +233,37 @@ def test_vlm_marks_truncated_output(monkeypatch, tmp_path, reason, truncated):
                         lambda req, timeout: io.BytesIO(json.dumps({"choices": [choice]}).encode()))
     out = engines._vlm(img, "http://x/v1", "mdl", "istem")
     assert out == "metin" and isinstance(out, engines.Truncated) is truncated
+
+
+def test_gpu_lock_blocks_second_holder():
+    """M8: ikinci koşu GPU'yu paylaşıp ikisini birden çökertmesin: açık Türkçe hata."""
+    with engines.gpu_lock():
+        with pytest.raises(engines.GpuBusy, match="GPU başka bir ocr-now/ocr-lab koşusunda kullanılıyor") as e:
+            with engines.gpu_lock():
+                pass
+        assert str(engines.os.getpid()) in str(e.value)       # kilidi tutan süreç
+    with engines.gpu_lock():                                   # bırakıldıktan sonra yeniden alınır
+        pass
+
+
+def test_vlm_server_holds_gpu_lock_for_its_lifetime(monkeypatch, tmp_path):
+    monkeypatch.setattr(engines, "_start_server", lambda eng: ("http://x/v1", "mdl", "P"))
+    monkeypatch.setattr(engines, "_stop_server", lambda proc: None)
+    with server("dots.mocr"):
+        with pytest.raises(engines.GpuBusy):
+            with engines.gpu_lock():
+                pass
+    with engines.gpu_lock():
+        pass
+    monkeypatch.setattr(engines, "_tesseract_text", lambda img: "x")
+    with server("tesseract"):                                  # yerel motor GPU kilidi almaz
+        with engines.gpu_lock():
+            pass
+
+
+def test_lazy_server_busy_gpu_is_server_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(engines, "_start_server", lambda eng: pytest.fail("kilit alınamadan sunucu açılmamalı"))
+    with engines.gpu_lock():
+        with engines.lazy_server("dots.mocr") as run:
+            with pytest.raises(engines.ServerError, match="'dots.mocr' modeli başlatılamadı: GPU başka bir"):
+                run(tmp_path / "x.png", "duzen")
