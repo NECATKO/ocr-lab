@@ -3,7 +3,8 @@ import pytest
 from PIL import Image
 
 from ocrnow import paths
-from ocrnow.pages import DocJob, InputError, SourcePage, collect_jobs, parse_pages, render
+from ocrnow.pages import (DocJob, InputError, SourcePage, collect_jobs, make_names_unique, parse_pages,
+                          pdf_page_count, render)
 
 
 def make_pdf(path, n, size=(200, 300)):
@@ -260,3 +261,24 @@ def test_unreadable_folder_and_vanished_file(tmp_path, monkeypatch):
 def test_merge_single_job_keeps_name(tmp_path):
     jobs, _ = collect_jobs([make_pdf(tmp_path / "a.pdf", 1)], None, merge=True)
     assert jobs[0].name == "a"
+
+
+def test_pdf_page_count(tmp_path):
+    assert pdf_page_count(make_pdf(tmp_path / "k.pdf", 4)) == 4
+
+
+def test_pdf_page_count_broken_pdf_is_input_error(tmp_path):
+    bad = tmp_path / "bozuk.pdf"
+    bad.write_bytes(b"degil")
+    with pytest.raises(InputError, match="açılamadı"):
+        pdf_page_count(bad)
+
+
+def test_make_names_unique_across_separately_collected_jobs(tmp_path):
+    a = collect_jobs([make_pdf(tmp_path / "k.pdf", 1)], None)[0]
+    other = tmp_path / "alt"
+    other.mkdir()
+    b = collect_jobs([make_pdf(other / "K.pdf", 1)], None)[0]
+    jobs = a + b
+    make_names_unique(jobs)
+    assert [j.name for j in jobs] == ["k", "K_2"]

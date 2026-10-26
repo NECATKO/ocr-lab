@@ -65,7 +65,7 @@ def _natural_key(path: Path) -> list:
     return [int(t) if i % 2 else t for i, t in enumerate(re.split(r"([0-9]+)", path.name.lower()))]
 
 
-def _pdf_page_count(path: Path) -> int:
+def pdf_page_count(path: Path) -> int:
     try:
         pdf = pdfium.PdfDocument(str(path))
     except (PdfiumError, OSError) as e:
@@ -80,7 +80,7 @@ def _pdf_page_count(path: Path) -> int:
 
 
 def _pdf_job(path: Path, spec: str | None, warnings: list[str]) -> DocJob:
-    n = _pdf_page_count(path)
+    n = pdf_page_count(path)
     try:
         idx, warns = parse_pages(spec, n)
     except InputError as e:
@@ -137,11 +137,11 @@ def collect_jobs(inputs: list[Path], spec: str | None, merge: bool = False) -> t
         warnings.append(f"Sayfa seçimi '{spec}' görüntülere uygulanmaz (her görüntü tek sayfadır).")
     if merge and len(jobs) > 1:  # tek iş varsa birleştirilecek bir şey yok, ad değişmez
         jobs = [DocJob(jobs[0].name + "_birlesik", [p for j in jobs for p in j.pages])]
-    _make_names_unique(jobs)
+    make_names_unique(jobs)
     return jobs, warnings
 
 
-def _make_names_unique(jobs: list[DocJob]) -> None:
+def make_names_unique(jobs: list[DocJob]) -> None:
     """Aynı adlı işler çıktıyı ezmesin: ikincisi _2, üçüncüsü _3 ... (büyük/küçük harf ayırt edilmez)."""
     seen: set[str] = set()
     for job in jobs:

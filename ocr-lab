@@ -1,2 +1,2 @@
 #!/bin/sh
-cd "$(dirname "$0")" && exec .venv/bin/ocr-lab "$@"
+exec "$(dirname "$(readlink -f "$0")")/.venv/bin/ocr-lab" "$@"
