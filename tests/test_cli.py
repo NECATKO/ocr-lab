@@ -34,6 +34,7 @@ class Env:
         self.pages = [fake_page(1), fake_page(2)]
         self.process_error = None
         self.cached = False   # True: process_job modeli hiç çağırmaz (bütün sayfalar önbellekte)
+        self.export_warning = None   # sahte write_docx'in eklediği dışa aktarma uyarısı
 
 
 @pytest.fixture
@@ -65,6 +66,8 @@ def fake_env(tmp_path, monkeypatch):
     def write(fmt):
         def fn(pages_, out, **kwargs):
             env.written[fmt] = {"pages": pages_, "out": out, **kwargs}
+            if fmt == "docx" and env.export_warning:
+                kwargs["warnings"].append(env.export_warning)
             return out
         return fn
 
@@ -297,6 +300,14 @@ def test_summary_lists_paths_labels_and_warnings_per_document(fake_env, capsys):
     assert "tahmin edilen sayfa numaraları" in out and "[413], [PDF s. 2]" in out
     assert "[7]" not in out and "uyarı-bir" in out
     assert out.index("k:") < out.index("uyarı-bir") < out.index("m:")
+
+
+def test_export_warnings_listed_under_their_document(fake_env, capsys):
+    fake_env.jobs = [DocJob("k", [SourcePage(Path("k.pdf"), 1)])]
+    fake_env.export_warning = "docx sayfa 413, blok 2: satır 8 pt'de de sığmıyor"
+    assert main(["k.pdf", "-f", "docx"]) == 0           # uyarı, çıkış kodunu bozmaz
+    out = capsys.readouterr().out
+    assert out.index("k: uyarılar:") < out.index("docx sayfa 413, blok 2: satır 8 pt'de de sığmıyor")
 
 
 def test_one_server_for_all_jobs(fake_env):

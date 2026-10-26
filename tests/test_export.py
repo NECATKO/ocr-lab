@@ -165,11 +165,31 @@ def test_long_lines_shrink_font():
     assert font_size_for(100) * 0.42 * 100 <= 391                       # en uzun satır sığar
 
 
-def test_docx_font_from_longest_line_across_pages(tmp_path):
-    long = "b " + "a" * 120                          # girintisiz ikinci satır, eklenen tireyle 120 karakter
-    p2 = page(2, text=long, lines=[Line(0, 1, False), Line(2, 121, True), Line(121, 122, False)])
-    d = Document(write_docx([page(1), p2], tmp_path / "a.docx"))
-    assert d.styles["Normal"].font.size == Pt(font_size_for(120))
+def pts(paragraph) -> set[float]:
+    """Paragrafın run puntoları (run'da punto yoksa Normal stilinki)."""
+    normal = paragraph.part.document.styles["Normal"].font.size.pt
+    return {r.font.size.pt if r.font.size else normal for r in paragraph.runs}
+
+
+def test_docx_font_is_per_section(tmp_path):
+    """R23: punto bölüm (sayfa) başına; bir sayfadaki uzun satır öteki sayfaları küçültmez."""
+    long = "b " + "a" * 100                          # girintisiz ikinci satır, eklenen tireyle 100 karakter
+    p2 = page(2, text=long, lines=[Line(0, 1, False), Line(2, 101, True), Line(101, 102, False)])
+    d = Document(write_docx([page(1), p2, page(3)], tmp_path / "a.docx"))
+    assert [pts(p) for p in d.paragraphs] == [{10.5}, {font_size_for(100)}, {10.5}]
+    assert font_size_for(100) == 9.0
+
+
+def test_font_floor_and_warning(tmp_path):
+    """R23: punto 8'in altına inmez; inecek satır varsa sayfa/blok uyarısı verilir."""
+    long = "b " + "a" * 160
+    p2 = page(2, text=long, lines=[Line(0, 1, False), Line(2, 162, False)])
+    p2.blocks.insert(0, Block("Page-header", None, "BAŞLIK"))
+    warnings: list[str] = []
+    d = Document(write_docx([page(1), p2], tmp_path / "a.docx", warnings=warnings))
+    assert pts(d.paragraphs[0]) == {10.5} and pts(d.paragraphs[2]) == {8.0}
+    assert warnings == ["docx sayfa 402, blok 2: satır 8 pt'de de sığmıyor (160 karakter), Word kaydırabilir"]
+    assert write_docx([page(1)], tmp_path / "b.docx") == tmp_path / "b.docx"   # uyarı listesi isteğe bağlı
 
 
 def test_txt(tmp_path):
@@ -211,11 +231,13 @@ def test_spike_page_docx(spike_layout, spike_tsv, tmp_path, monkeypatch):
     assert any(r.font.highlight_color == WD_COLOR_INDEX.YELLOW for r in runs)
     assert paras[sep + 1].runs[0].font.superscript
     longest = max(len(line) for q in body for line in q.text.split("\n"))
-    assert d.styles["Normal"].font.size == Pt(font_size_for(longest))
+    assert set().union(*(pts(q) for q in body)) == {max(8.0, font_size_for(longest))}
 
 
-def normal_pt(d):
-    return d.styles["Normal"].font.size.pt
+def body_pt(d) -> float:
+    """İlk gövde paragrafının (tek) puntosu."""
+    (pt,) = pts(next(p for p in d.paragraphs if p.alignment != WD_ALIGN_PARAGRAPH.CENTER))
+    return pt
 
 
 def test_flowing_blocks_do_not_shrink_font(tmp_path):
@@ -227,7 +249,7 @@ def test_flowing_blocks_do_not_shrink_font(tmp_path):
                     Block("Caption", None, "c" * 120),
                     Block("Footnote", None, "1 " + "d " * 100))
     d = Document(write_docx([page(1), p], tmp_path / "a.docx"))
-    assert normal_pt(d) == 10.5
+    assert all(pts(q) == {10.5} for q in d.paragraphs[:3])
     assert d.paragraphs[-1].runs[-1].font.size == Pt(9)                         # dipnot puntosu da küçülmez
 
 
@@ -236,12 +258,12 @@ def test_indent_counts_in_first_line_width(tmp_path):
     lines = [Line(0, 86, False), Line(87, 88, False)]
     b = Block("Text", None, t, lines, True)
     indented = Document(write_docx([blocks_page(b)], tmp_path / "b.docx"))
-    assert normal_pt(indented) == 10.0
+    assert body_pt(indented) == 10.0
     b.indent = False
-    assert normal_pt(Document(write_docx([blocks_page(b)], tmp_path / "c.docx"))) == 10.5
+    assert body_pt(Document(write_docx([blocks_page(b)], tmp_path / "c.docx"))) == 10.5
 
 
 def test_long_header_shrinks_only_header(tmp_path):
     p = blocks_page(Block("Page-header", None, "H" * 80), Block("Text", None, "kısa"))
     d = Document(write_docx([p], tmp_path / "a.docx"))
-    assert d.paragraphs[0].runs[0].font.size == Pt(8) and normal_pt(d) == 10.5
+    assert d.paragraphs[0].runs[0].font.size == Pt(8) and body_pt(d) == 10.5

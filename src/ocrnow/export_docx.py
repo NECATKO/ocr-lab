@@ -21,6 +21,7 @@ BOLD_DEFAULT = r"\[\d+[ab] [^\]]*\]"   # yazma nüsha işaretleri: [106b sayfan�
 
 FONT = "Times New Roman"
 BODY_PT = 10.5            # en büyük gövde puntosu
+MIN_PT = 8.0              # gövde ve dipnot puntosu bundan aşağı inmez (inmesi gereken satır uyarılır)
 FOOTNOTE_PT = 9.0
 HEADER_PT = 9.5           # Page-header ve altlıktaki numara
 HEADER_MIN_PT = 6.0       # bundan uzun başlık küçülmez, Word kaydırır
@@ -56,18 +57,35 @@ def _spans(block: Block, text: str) -> list[tuple[int, int, bool]]:
     return [(0, len(text), False)]
 
 
-def _size_for(blocks: list[Block], cap: float, indented: bool) -> float:
-    """Blokların bütün satırlarının sığdığı punto (R18). Satır uzunluğuna eklenen tire, girintili ilk satıra girinti
-    payı girer. Satır yapısı olan satırlar sayılır: 2+ satırlı blokların satırları ve cap'te sığan tek satırlar.
-    cap'te sığmayan tek satırlı blok (R11 geri dönüşü, Table, lines == [] olanlar) akan paragraftır: Word kaydırır."""
+def _block_fit(block: Block, cap: float, indented: bool) -> tuple[float, int] | None:
+    """(bloğun bütün satırlarının sığdığı punto, en uzun satırın karakter sayısı) (R18); akan paragrafsa None.
+
+    Satır uzunluğuna eklenen tire, girintili ilk satıra girinti payı girer. Satır yapısı olan satırlar sayılır:
+    2+ satırlı blokların satırları ve cap'te sığan tek satırlar. cap'te sığmayan tek satırlı blok (R11 geri dönüşü,
+    Table, lines == [] olanlar) akan paragraftır: Word kaydırır."""
+    indent_pt = INDENT.pt if indented and block.indent else 0.0
+    widths = [e - s + h for s, e, h in _spans(block, plain_text(block))]
+    fits = [_fit(n, cap, indent_pt if k == 0 else 0.0) for k, n in enumerate(widths)]
+    if len(fits) == 1 and fits[0] < cap:
+        return None
+    return min(fits), max(widths)
+
+
+def _section_size(page: Page, blocks: list[Block], cap: float, indented: bool, warnings: list[str]) -> float:
+    """Sayfanın (Word bölümünün) blokları için punto, en az MIN_PT (R23). MIN_PT'de de sığmayan satırı olan blok
+    uyarılır: Word o satırı kaydırabilir."""
     size = cap
-    for b in blocks:
-        indent_pt = INDENT.pt if indented and b.indent else 0.0
-        fits = [_fit(e - s + h, cap, indent_pt if k == 0 else 0.0)
-                for k, (s, e, h) in enumerate(_spans(b, plain_text(b)))]
-        if len(fits) > 1 or fits[0] == cap:
-            size = min(size, *fits)
-    return size
+    for block in blocks:
+        if (fit := _block_fit(block, cap, indented)) is None:
+            continue
+        pt, longest = fit
+        if pt < MIN_PT:
+            where = page_label(page) or f"PDF s. {page.index}"
+            k = next(i for i, b in enumerate(page.blocks, 1) if b is block)
+            warnings.append(f"docx sayfa {where}, blok {k}: satır {MIN_PT:g} pt'de de sığmıyor ({longest} karakter), "
+                            "Word kaydırabilir")
+        size = min(size, pt)
+    return max(size, MIN_PT)
 
 
 def _header_size(block: Block) -> float:
@@ -176,19 +194,21 @@ def _close_section(doc, last_paragraph) -> None:
         sentinel.remove(ref)            # sonraki bölüm kendi altlığını alır
 
 
-def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_pattern: str | None = BOLD_DEFAULT) -> Path:
-    groups = [split_blocks(page) for page in pages]
-    body_pt = _size_for([b for _, body, _ in groups for b in body], BODY_PT, indented=True)
-    footnote_pt = min(body_pt, _size_for([b for _, _, fns in groups for b in fns], FOOTNOTE_PT, indented=False))
+def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_pattern: str | None = BOLD_DEFAULT,
+               warnings: list[str] | None = None) -> Path:
+    """Belgeyi yazar. warnings verilirse dışa aktarma uyarıları (ör. MIN_PT'ye sığmayan satır) ona eklenir."""
+    warnings = [] if warnings is None else warnings
     bold_re = re.compile(bold_pattern) if bold_pattern else None
 
     doc = Document()
     style = doc.styles["Normal"]
-    style.font.name, style.font.size = FONT, Pt(body_pt)
+    style.font.name, style.font.size = FONT, Pt(BODY_PT)
     style.paragraph_format.space_after = Pt(0)
     style.paragraph_format.line_spacing = 1.15
-    for n, (page, (headers, body, footnotes)) in enumerate(zip(pages, groups)):
-        headers, body, footnotes = ([b for b in g if plain_text(b)] for g in (headers, body, footnotes))
+    for n, page in enumerate(pages):
+        headers, body, footnotes = ([b for b in g if plain_text(b)] for g in split_blocks(page))
+        body_pt = _section_size(page, body, BODY_PT, True, warnings)
+        footnote_pt = min(body_pt, _section_size(page, footnotes, FOOTNOTE_PT, False, warnings))
         section = doc.sections[-1]
         _setup_section(section)
         _footer(section, page)
@@ -201,7 +221,7 @@ def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_patter
             last.paragraph_format.space_after = Pt(5)
             if block.indent:
                 last.paragraph_format.first_line_indent = INDENT
-            _add_runs(last, block, sup, bold_re, highlight)
+            _add_runs(last, block, sup, bold_re, highlight, body_pt)
         if footnotes:
             sep = doc.add_paragraph()
             sep.paragraph_format.space_before = Pt(8)

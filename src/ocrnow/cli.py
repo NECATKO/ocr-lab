@@ -179,8 +179,9 @@ def _ask_highlight() -> bool:
 
 # ---- çalıştırma ----
 
-def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path]) -> bool:
-    """Bitiş özetini yazar; en az bir sayfa okunamadıysa True döndürür."""
+def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path],
+             export_warnings: dict[str, list[str]]) -> bool:
+    """Bitiş özetini yazar (uyarılar: sayfalarınki, sonra dışa aktarmanınki); en az bir sayfa okunamadıysa True."""
     print("\nYazılan belgeler:" if written else "\nYazılan belge yok.")
     for path in written:
         print(f"  {path}")
@@ -193,7 +194,7 @@ def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path]) -> b
         if guessed:
             print(f"\n{job.name}: tahmin edilen sayfa numaraları:")
             print(textwrap.fill(", ".join(guessed), width=88, initial_indent="  ", subsequent_indent="  "))
-        warns = [w for p in doc_pages for w in p.warnings]
+        warns = [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, [])
         failed = failed or any(p.failed for p in doc_pages)
         if warns:
             print(f"\n{job.name}: uyarılar:")
@@ -239,13 +240,15 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     bold = args.kalin_kalip or None   # boş kalıp kalın işaretlemeyi kapatır
 
     written: list[Path] = []
+    export_warnings: dict[str, list[str]] = {}
     write_failed = False
     for job, doc_pages in writable:
         for fmt in formats:
             out = paths.DOCS_OUT / f"{job.name}.{fmt}"
             try:
                 if fmt == "docx":
-                    export_docx.write_docx(doc_pages, out, highlight=highlight, bold_pattern=bold)
+                    export_docx.write_docx(doc_pages, out, highlight=highlight, bold_pattern=bold,
+                                           warnings=export_warnings.setdefault(job.name, []))
                 else:
                     export_txt.write_txt(doc_pages, out)
             except OSError as e:
@@ -253,7 +256,7 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
                 write_failed = True
             else:
                 written.append(out)
-    read_failed = _summary(results, written)
+    read_failed = _summary(results, written, export_warnings)
     return 1 if read_failed or write_failed else 0
 
 
