@@ -31,6 +31,7 @@ TEXT_WIDTH_PT = 391       # 17 cm - 2 × 1.6 cm kenar boşluğu
 CHAR_EM = 0.42            # Times New Roman ortalama harf genişliği (punto başına)
 INDENT = Cm(0.9)          # paragrafın ilk satır girintisi
 WHOLE_BOLD = frozenset({"Title", "Section-header"})
+YELLOW_KINDS = frozenset({"belirsiz", "kesme"})   # sarı vurgu; "italik"/"kalin" işaretleri biçimdir (R26)
 Ranges = list[tuple[int, int]]
 
 
@@ -117,22 +118,29 @@ def _sup_pattern(page: Page) -> re.Pattern | None:
 
 def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern | None, highlight: bool,
               size: float | None = None, spacing: int | None = None) -> None:
-    """Bloğu satır satır run'lara yazar: run'lar kalın, üst simge ve sarı aralıklarının sınırlarından bölünür."""
+    """Bloğu satır satır run'lara yazar: run'lar kalın, italik, üst simge ve sarı aralıklarının sınırlarından bölünür.
+
+    Table'ın işaretleri kullanılmaz (konumlar HTML'li metne göredir, yazılan düz metne değil)."""
     text = plain_text(block)
+    own = [] if block.category == "Table" else block.marks
     if block.category in WHOLE_BOLD:
         bold: Ranges = [(0, len(text))]
     else:
         bold = [m.span() for m in bold_re.finditer(text)] if bold_re else []
+    bold += [(m.start, m.end) for m in own if m.kind == "kalin"]
+    italic: Ranges = [(m.start, m.end) for m in own if m.kind == "italik"]
     sup = [m.span() for m in page_sup.finditer(text)] if page_sup else []
     if block.category == "Footnote" and (m := re.match(r"\d+(?=\s)", text)):
         sup.append(m.span())
-    marks = [(m.start, m.end) for m in block.marks] if highlight and block.category != "Table" else []
+    marks = [(m.start, m.end) for m in own if m.kind in YELLOW_KINDS] if highlight else []
     spans = _spans(block, text)
     for k, (start, end, hyphen) in enumerate(spans):
-        cuts = sorted({start, end, *(x for r in bold + sup + marks for x in r if start < x < end)})
-        parts = [(text[a:b], (_covers(bold, a), _covers(sup, a), _covers(marks, a))) for a, b in zip(cuts, cuts[1:])]
+        cuts = sorted({start, end, *(x for r in bold + italic + sup + marks for x in r if start < x < end)})
+        parts = [(text[a:b], (_covers(bold, a), _covers(italic, a), _covers(sup, a), _covers(marks, a)))
+                 for a, b in zip(cuts, cuts[1:])]
         if hyphen:
-            parts.append(("-", (_spans_break(bold, end), False, _spans_break(marks, end))))
+            parts.append(("-", (_spans_break(bold, end), _spans_break(italic, end), False,
+                                _spans_break(marks, end))))
         merged: list[list] = []
         for s, props in parts:
             if merged and merged[-1][1] == props:
@@ -140,7 +148,7 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
             else:
                 merged.append([s, props])
         runs = []
-        for s, (is_bold, is_sup, is_yellow) in merged or [["", (False, False, False)]]:
+        for s, (is_bold, is_italic, is_sup, is_yellow) in merged or [["", (False, False, False, False)]]:
             r = p.add_run(s)
             if spacing:     # harf aralığı; rPr'de ilk eklenir, python-docx sonrakileri şema sırasına yerleştirir
                 sp = OxmlElement("w:spacing")
@@ -148,6 +156,8 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
                 r._r.get_or_add_rPr().append(sp)
             if is_bold:
                 r.bold = True
+            if is_italic:
+                r.italic = True
             if is_sup:
                 r.font.superscript = True
             if is_yellow:
@@ -177,7 +187,7 @@ def _footer(section, page: Page) -> None:
 
 
 def _header(doc, block: Block):
-    """Page-header: ortalı, küçük punto, harf aralığı 30; işaretleme yapılmaz."""
+    """Page-header: ortalı, küçük punto, harf aralığı 30; sarı işaretleme yapılmaz (italik/kalın yazılır)."""
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.space_after = Pt(10)

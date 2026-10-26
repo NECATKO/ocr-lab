@@ -12,7 +12,7 @@ PICTURE_TEXT = "[Görsel]"
 class Mark:
     start: int
     end: int
-    kind: str  # "belirsiz" | "kesme"; Block.text içindeki karakter aralığı
+    kind: str  # "belirsiz" | "kesme" (sarı) | "italik" | "kalin" (biçim); Block.text içindeki karakter aralığı
 
 
 @dataclass
@@ -86,6 +86,36 @@ def _norm(text: object) -> str:
     return " ".join(text.split())
 
 
+# eşli Markdown vurgusu: *italik*, **kalın**, ***ikisi***; içi boşlukla başlamaz/bitmez, işaretler bir harfe/rakama
+# yapışık değil (kelime*, 3*4 gibi tek başına yıldızlar dipnot simgesi olabilir: dokunulmaz)
+_EMPHASIS = re.compile(r"(?<![\w*])(\*{1,3})(?=[^\s*])(.+?)(?<=[^\s*])\1(?![\w*])")
+_EMPHASIS_KINDS = {1: ("italik",), 2: ("kalin",), 3: ("italik", "kalin")}
+
+
+def _emphasis(text: str) -> tuple[str, list[Mark]]:
+    """Eşli vurgu işaretlerini metinden kaldırır, aralıklarını Mark(italik/kalin) olarak verir (iç içe de olur)."""
+    out: list[str] = []
+    marks: list[Mark] = []
+    pos = length = 0
+    for m in _EMPHASIS.finditer(text):
+        before = text[pos:m.start()]
+        inner, inner_marks = _emphasis(m.group(2))
+        start = length + len(before)
+        marks += [Mark(start, start + len(inner), kind) for kind in _EMPHASIS_KINDS[len(m.group(1))]]
+        marks += [Mark(start + x.start, start + x.end, x.kind) for x in inner_marks]
+        out += [before, inner]
+        length = start + len(inner)
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out), sorted(marks, key=lambda x: (x.start, x.end, x.kind))
+
+
+def _text_block(category: str, bbox: tuple[int, int, int, int] | None, text: str) -> Block:
+    """Sadeleştirilmiş metinden blok; Markdown vurgu işaretleri biçim işaretine çevrilir (R26)."""
+    text, marks = _emphasis(text)
+    return Block(category, bbox, text, marks=marks)
+
+
 def _strip_fences(raw: str) -> str:
     s = raw.strip()
     s = re.sub(r"^```[A-Za-z]*\s*", "", s)
@@ -117,13 +147,13 @@ def _block_from_item(item: object, size: tuple[int, int]) -> tuple[Block | None,
         category = "Text"
     bad = bbox is None or bad_category
     if category == "Picture":
-        text = PICTURE_TEXT
-    elif "text" in item:
+        return Block(category, bbox, PICTURE_TEXT), bad
+    if "text" in item:
         text = _norm(item["text"])
     else:  # "text" yoksa ve kategori dışında tek bir başka metin alanı varsa (ör. "content") o kullanılır
         others = [v for k, v in item.items() if k not in ("bbox", "category") and isinstance(v, str)]
         text = _norm(others[0]) if len(others) == 1 else ""
-    return Block(category, bbox, text), bad
+    return _text_block(category, bbox, text), bad
 
 
 _TEXT_KEY = re.compile(r'"text"\s*:\s*"')
@@ -218,9 +248,12 @@ def _recover(s: str) -> tuple[str, list[object], str]:
 
 
 def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Block], list[str]]:
-    """Ham model cevabını bloklara çevirir. size=(genişlik, yükseklik) orijinal görüntünün pikselidir."""
+    """Ham model cevabını bloklara çevirir. size=(genişlik, yükseklik) orijinal görüntünün pikselidir.
+
+    Blok metnindeki eşli Markdown vurgusu (*italik*, **kalın**) kaldırılır, bloğun marks'ına italik/kalin olarak
+    yazılır; tek başına yıldız dokunulmadan kalır."""
     if not layout:
-        return [Block("Text", None, _norm(raw))], [PLAIN_WARNING]
+        return [_text_block("Text", None, _norm(raw))], [PLAIN_WARNING]
     s = _strip_fences(raw)
     if not s:
         return [], ["model boş yanıt verdi"]
@@ -240,7 +273,7 @@ def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Bl
         warnings.append(f"model çıktısı eksik/bozuk JSON: {recovered} blok kurtarıldı")
     blocks: list[Block] = []
     if _norm(head):
-        blocks.append(Block("Text", None, _norm(head)))
+        blocks.append(_text_block("Text", None, _norm(head)))
     bad_count = 0
     for item in items:
         block, bad = _block_from_item(item, size)
@@ -248,7 +281,7 @@ def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Bl
         if block is not None:
             blocks.append(block)
     if _norm(tail):
-        blocks.append(Block("Text", None, _norm(tail)))
+        blocks.append(_text_block("Text", None, _norm(tail)))
     if bad_count:
         warnings.append(f"model çıktısında {bad_count} bozuk öğe: eksik alanlar varsayılanla dolduruldu, nesne olmayanlar atlandı")
     return blocks, warnings

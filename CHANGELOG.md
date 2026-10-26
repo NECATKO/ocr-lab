@@ -13,6 +13,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 - Günümüz Türkçesi sayfalarında özel addan sonra gelen y'li ve yaygın ekler (`Kahire’ye`, `İstanbul’daki`,
   `Ankara’dır`, `Türkiye’nin`, `Osmanlı’lar`) artık hemze (’) alıyor; önceden ‘ yazılıp sarıya boyanıyordu.
   Ayınlı özel adlar (`Ka‘be`, `Sa‘d`) etkilenmez.
+- Modelin italik/kalın için kullandığı Markdown yıldızları (`*a.g.e.*`, `**Sâniyen:**`) artık belgeye sızmıyor:
+  `.docx`'te italik/kalın yazılıyor, `.txt`'de düz metin oluyor. Tek başına duran yıldıza dokunulmuyor.
 
 ## [0.1.0] - 2026-10-26
 

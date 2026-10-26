@@ -267,3 +267,38 @@ def test_long_header_shrinks_only_header(tmp_path):
     p = blocks_page(Block("Page-header", None, "H" * 80), Block("Text", None, "kısa"))
     d = Document(write_docx([p], tmp_path / "a.docx"))
     assert d.paragraphs[0].runs[0].font.size == Pt(8) and body_pt(d) == 10.5
+
+
+def test_emphasis_marks_become_italic_and_bold_not_yellow(tmp_path):
+    # R26: italik/kalin işaretleri biçime çevrilir; sarı yalnız belirsiz ve kesme için
+    t = "bkz. a.g.e. ve kalın söz"
+    p = page(1, text=t, lines=[Line(0, len(t), False)],
+             marks=[Mark(5, 11, "italik"), Mark(15, 20, "kalin"), Mark(21, 24, "belirsiz")])
+    for highlight in (True, False):
+        runs = Document(write_docx([p], tmp_path / f"{highlight}.docx", highlight=highlight)).paragraphs[0].runs
+        assert "".join(r.text for r in runs) == t
+        assert [r.text for r in runs if r.italic] == ["a.g.e."]
+        assert [r.text for r in runs if r.bold] == ["kalın"]
+        yellow = [r.text for r in runs if r.font.highlight_color == WD_COLOR_INDEX.YELLOW]
+        assert yellow == (["söz"] if highlight else [])
+
+
+def test_italic_spanning_hyphenated_break_and_header(tmp_path):
+    p = blocks_page(Block("Page-header", (0, 0, 10, 10), "KİTAP ADI", marks=[Mark(0, 5, "italik")]),
+                    Block("Text", (0, 0, 10, 10), "hazâkat var", [Line(0, 4, True), Line(4, 11, False)],
+                          marks=[Mark(0, 7, "italik")]))
+    d = Document(write_docx([p], tmp_path / "a.docx"))
+    assert [r.text for r in d.paragraphs[0].runs if r.italic] == ["KİTAP"]
+    assert "".join(r.text for r in d.paragraphs[1].runs if r.italic).replace("\n", "") == "hazâ-kat"
+
+
+def test_markdown_asterisks_do_not_reach_documents(tmp_path):
+    raw = '[{"bbox": [0, 0, 500, 500], "category": "Text", "text": "bkz. *a.g.e.* ve **Sâniyen:** dipnot*"}]'
+    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(), lambda img, m: raw, lambda img: "",
+                     (1000, 1000), words={})
+    txt = write_txt([p], tmp_path / "a.txt").read_text(encoding="utf-8")
+    assert "bkz. a.g.e. ve Sâniyen: dipnot*" in txt          # tek başına yıldız (dipnot simgesi) kalır
+    d = Document(write_docx([p], tmp_path / "a.docx"))
+    assert d.paragraphs[0].text == "bkz. a.g.e. ve Sâniyen: dipnot*"
+    assert [r.text for r in d.paragraphs[0].runs if r.italic] == ["a.g.e."]
+    assert [r.text for r in d.paragraphs[0].runs if r.bold] == ["Sâniyen:"]

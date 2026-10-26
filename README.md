@@ -90,6 +90,8 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 - Kitap başlığı üstte, ortalı ve küçük puntoyla durur.
 - Dipnotlar metnin altında, kısa bir çizginin ardından yer alır. Dipnot numarası üst simgedir.
 - Nüsha işaretleri kalın yazılır.
+- Modelin Markdown vurgusu (`*italik*`, `**kalın**`) metne yıldız olarak girmez, Word'de italik/kalın yazılır.
+  Tek başına duran yıldız (`kelime*`, dipnot simgesi olabilir) olduğu gibi kalır.
 - Kitabın sayfa numarası altlıkta, kitaptaki tarafta durur.
 - Punto her sayfa için en uzun satır sığacak şekilde seçilir: en çok 10.5, en az 8 pt.
 
@@ -107,6 +109,7 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 
 **`.txt`** süssüz ham metindir.
 - Paragraflar tek satırdır, satır sonu tireleri birleştirilmiştir.
+- İtalik/kalın vurgu yoktur: modelin `*…*` işaretleri kaldırılmıştır.
 - Sayfalar arasında `--- s. 412 ---` ayracı bulunur.
 
 **İş sonu:**

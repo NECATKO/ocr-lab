@@ -73,11 +73,12 @@ def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path,
     for k, block in enumerate(blocks, 1):
         if block.category not in RESTORE_CATEGORIES:
             continue
-        marks = []
+        marks = list(block.marks)    # parse'ın biçim işaretleri (italik/kalin); kesme metnin uzunluğunu değiştirmez
         if opts.apostrophes:
-            block.text, marks = restore(block.text, words)
+            block.text, restored = restore(block.text, words)
+            marks += restored
         if block.category not in TEXT_CATEGORIES:
-            block.marks = marks
+            block.marks = sorted(marks, key=lambda m: (m.start, m.end))
             continue
         mine = lines_in(block.bbox, tlines)
         marks += flag_uncertain(block.text, "\n".join(line.text for line in mine))

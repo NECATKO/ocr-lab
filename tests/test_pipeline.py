@@ -383,3 +383,16 @@ def test_cache_write_failure_leaves_no_tmp(tmp_path, monkeypatch):
     pages = process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=lambda m: None)
     assert "s. 1: önbelleğe yazılamadı (disk dolu)" in pages[0].warnings
     assert list(target.parent.iterdir()) == []
+
+
+def test_markdown_emphasis_kept_as_marks_and_stripped_before_rules():
+    # R26: yıldızlar parse'ta kalkar; kesme ve sarı işaret yıldızsız metinde çalışır, biçim işaretleri korunur
+    raw = blocks_json(("Text", [0, 0, 980, 980], "bu *mes'ele* ve **şu** ba'zı"),
+                      ("Page-header", [0, 0, 980, 40], "*Kitab'ın adı*"))
+    tsv = tsv_rows(((10, 10, 900, 40), "bu mes'ele ve şu ba'zı"))
+    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(), lambda img, m: raw, lambda img: tsv,
+                     (1000, 1000), words={"mes'ele": "mes’ele"})
+    body, header = p.blocks
+    assert body.text == "bu mes’ele ve şu ba‘zı"
+    assert [(m.start, m.end, m.kind) for m in body.marks] == [(3, 10, "italik"), (14, 16, "kalin"), (19, 20, "kesme")]
+    assert header.text == "Kitab’ın adı" and [m.kind for m in header.marks] == ["italik"]

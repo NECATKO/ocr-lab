@@ -183,3 +183,36 @@ def test_item_without_text_uses_single_other_string_field():
            ' {"bbox": [1,1,2,2], "category": "Text"}]')
     blocks, _ = parse_output(raw, True, (100, 100))
     assert [b.text for b in blocks] == ["içerik", "", ""]
+
+
+def emphasis(text, layout=True):
+    """Tek Text bloklu cevaptan (metin, [(başlangıç, bitiş, tür)])."""
+    raw = json.dumps([{"bbox": [0, 0, 10, 10], "category": "Text", "text": text}]) if layout else text
+    (b,), _ = parse_output(raw, layout, (100, 100))
+    return b.text, [(m.start, m.end, m.kind) for m in b.marks]
+
+
+def test_markdown_emphasis_becomes_marks():
+    # R26: model italiği *...*, kalını **...** ile işaretliyor; yıldızlar metne girmez
+    assert emphasis("bkz. *a.g.e.*, s. 5") == ("bkz. a.g.e., s. 5", [(5, 11, "italik")])
+    assert emphasis("*Sâniyen:* dedi") == ("Sâniyen: dedi", [(0, 8, "italik")])
+    assert emphasis("bir **kalın** ve *eğik*") == ("bir kalın ve eğik", [(4, 9, "kalin"), (13, 17, "italik")])
+    assert emphasis("***ikisi***") == ("ikisi", [(0, 5, "italik"), (0, 5, "kalin")])
+    assert emphasis("**dış *iç* dış**") == ("dış iç dış", [(0, 10, "kalin"), (4, 6, "italik")])
+    assert emphasis("düz *metin*", layout=False) == ("düz metin", [(4, 9, "italik")])   # düz mod da
+
+
+def test_lone_or_unpaired_asterisks_are_kept():
+    # tek başına * kitaplarda dipnot simgesi olabilir: dokunulmaz
+    for text in ("kelime* bu", "* Dipnot metni", "a * b * c", "kelime*, öteki*.", "**", "* *", "*yarım",
+                 "3*4*5", "boş ** iç", "*a *"):
+        assert emphasis(text) == (text, []), text
+    # iç boşlukla başlayamaz/bitemez
+    assert emphasis("* a* ve *b *") == ("* a* ve *b *", [])
+
+
+def test_emphasis_in_header_and_footer_blocks():
+    raw = json.dumps([{"bbox": [0, 0, 10, 10], "category": "Page-header", "text": "*KİTAP*"},
+                      {"bbox": [0, 90, 10, 99], "category": "Page-footer", "text": "*412*"}])
+    blocks, _ = parse_output(raw, True, (100, 100))
+    assert [(b.text, [m.kind for m in b.marks]) for b in blocks] == [("KİTAP", ["italik"]), ("412", ["italik"])]
