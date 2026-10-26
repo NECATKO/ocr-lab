@@ -29,6 +29,7 @@ class Env:
         self.jobs = [DocJob("k", [SourcePage(Path("k.pdf"), 1), SourcePage(Path("k.pdf"), 2)])]
         self.pages = [fake_page(1), fake_page(2)]
         self.process_error = None
+        self.cached = False   # True: process_job modeli hiç çağırmaz (bütün sayfalar önbellekte)
 
 
 @pytest.fixture
@@ -51,6 +52,8 @@ def fake_env(tmp_path, monkeypatch):
 
     def process_job(job, opts, run, *args, **kwargs):
         env.opts.append(opts)
+        if not env.cached:
+            run(Path("x.png"), opts.mode)
         if env.process_error:
             raise env.process_error
         return list(env.pages)
@@ -259,6 +262,12 @@ def test_one_server_for_all_jobs(fake_env):
     assert fake_env.servers == [("giriş", "dots.mocr"), ("çıkış", "dots.mocr")]
     assert len(fake_env.opts) == 2
     assert set(fake_env.written) == {"txt"}
+
+
+def test_all_cached_does_not_start_server(fake_env):
+    fake_env.cached = True
+    assert main(["k.pdf", "-f", "txt"]) == 0
+    assert fake_env.servers == [] and set(fake_env.written) == {"txt"}
 
 
 def test_ctrl_c_exit_130_and_server_closed(fake_env, capsys):

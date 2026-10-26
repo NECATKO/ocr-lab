@@ -128,7 +128,7 @@ def _rate(ref: str, hyp: str) -> float:
 
 
 def cer_raw(ref: str, hyp: str) -> float:
-    """Ham CER: yalnız boşluklar sadeleştirilir (bench.py'deki cer ile aynı)."""
+    """Ham CER: yalnız boşluklar sadeleştirilir (eski benchmark betiğindeki cer ile aynı)."""
     return _rate(_raw(ref), _raw(hyp))
 
 

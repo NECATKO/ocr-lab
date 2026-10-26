@@ -168,3 +168,35 @@ def test_start_server_closes_log_and_stops_on_timeout(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="ayağa kalkmadı"):
         engines._start_server(ENGINES["glm-ocr"])
     assert stopped == [proc] and logs[0].closed
+
+
+def test_lazy_server_starts_on_first_call_only(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(engines, "_start_server", lambda eng: calls.append("start") or ("http://x/v1", "mdl", "P"))
+    monkeypatch.setattr(engines, "_stop_server", lambda proc: calls.append(("stop", proc)))
+    monkeypatch.setattr(engines, "_vlm", lambda img, base, model, prompt: calls.append("vlm") or "ham")
+    with engines.lazy_server("dots.mocr") as run:
+        assert calls == []                      # önbellekten gelen sayfalar için GPU açılmaz
+        assert run(tmp_path / "x.png", "duzen") == "ham"
+        assert run(tmp_path / "x.png", "duz") == "ham"
+    assert calls == ["start", "vlm", "vlm", ("stop", "P")]
+
+
+def test_lazy_server_never_called_never_starts(monkeypatch):
+    monkeypatch.setattr(engines, "_start_server", lambda eng: pytest.fail("çağrı yokken sunucu açılmamalı"))
+    with engines.lazy_server("dots.mocr"):
+        pass
+
+
+def test_lazy_server_start_failure_not_retried(monkeypatch, tmp_path):
+    starts = []
+
+    def start(eng):
+        starts.append(eng.name)
+        raise RuntimeError("sunucu ayağa kalkmadı")
+    monkeypatch.setattr(engines, "_start_server", start)
+    with engines.lazy_server("dots.mocr") as run:
+        for _ in range(2):   # her sayfa için yeniden 20 dk beklenmez
+            with pytest.raises(RuntimeError, match="ayağa kalkmadı"):
+                run(tmp_path / "x.png", "duzen")
+    assert starts == ["dots.mocr"]

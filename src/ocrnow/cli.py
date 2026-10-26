@@ -215,7 +215,7 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     opts = pipeline.Options(engine=args.model, mode=args.okuma, apostrophes=not args.kesme_yok,
                             first_page=args.ilk_sayfa, dpi=args.dpi)
     results = []
-    with engines.server(args.model) as run:   # model bir kez açılır, bütün belgeler için kullanılır
+    with engines.lazy_server(args.model) as run:   # model ilk okunan sayfada bir kez açılır; hepsi önbellekteyse hiç
         for job in jobs:
             results.append((job, pipeline.process_job(job, opts, run, progress=print)))
 

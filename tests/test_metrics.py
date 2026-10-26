@@ -6,7 +6,7 @@ from ocrnow.lab.metrics import (apostrophe_accuracy, cer_base, cer_body, cer_nor
 
 
 def old_bench_cer(ref, hyp):
-    """bench.py'deki cer(): iki satırlı Levenshtein, boşluklar sadeleştirilir."""
+    """Eski benchmark betiğindeki cer(): iki satırlı Levenshtein, boşluklar sadeleştirilir."""
     ref, hyp = " ".join(ref.split()), " ".join(hyp.split())
     prev = list(range(len(hyp) + 1))
     for i, a in enumerate(ref, 1):

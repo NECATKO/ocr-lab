@@ -1,57 +1,169 @@
 # ocr-lab
 
-PDF'leri 7 OCR motoruyla test eder ya da seçilen motorla tam çevirir.
+Taranmış kitap sayfalarını (PDF ya da görüntü) düzenlenebilir metne çevirir. İki komut var:
+
+| Komut | Ne için |
+|---|---|
+| `./ocr-now` | Üretim: PDF girer, kitabın sayfasına benzeyen `.docx` ve/veya düz `.txt` çıkar |
+| `./ocr-lab` | Benchmark: motorları ve okuma modlarını `gt/` altındaki doğru metinlerle karşılaştırır |
+
+İkisi de aynı motor tanımlarını (`src/ocrnow/engines.py`) kullanır. Yeni bir model bir kez eklenir.
+Her şey yerelde çalışır, sayfalar hiçbir dış servise gönderilmez.
+
+Hedef makine: Linux/WSL2, NVIDIA GPU (8 GB'ta test edildi), Python 3.12, [uv](https://docs.astral.sh/uv/).
+
+## Kurulum
 
 ```bash
-./kurulum.sh        # her şeyi kurar (tekrar çalıştırmak güvenli)
-./run.sh            # mod, PDF, model ve sayfaları sorar
-./run.sh --durum    # hangi motor hazır?
+./kurulum.sh                 # ana ortam + bütün motorlar (tekrar çalıştırmak güvenli, kurulu adım atlanır)
+./ocr-now models             # hangi model hazır, ne kadar GPU belleği ve disk ister
+./ocr-now models install     # yalnız önerilen modelleri kur (ya da: install glm-ocr, install --hepsi)
 ```
 
-| Mod | Ne yapar | Çıktı |
-|---|---|---|
-| **Test** | Seçili modeller seçili sayfaları tarar (varsayılan: hepsi, sayfa 1) | `output/tarama5_karsilastirma_syf1.md` — tüm modeller tek dosyada, süre/karakter/CER tablosu + metinler |
-| **Normal** | Tek model PDF'i çevirir (varsayılan: tüm sayfalar) | `output/<model>/tarama5_<model>.md` — tek belge, sayfalar `<!-- sayfa N -->` ile ayrılır |
+tesseract bir sistem paketidir. Kurulu değilse kurulum çalıştırılacak komutu gösterir
+(`sudo apt install -y tesseract-ocr tesseract-ocr-tur`). Model ağırlıkları dağıtılmaz, her biri kendi kaynağından
+(Hugging Face) indirilir. dots.mocr'un kendi lisans sözleşmesi vardır.
 
-Sormadan çalıştırmak için: `./run.sh -e tesseract glm-ocr -p 1-3` (test), `./run.sh -m normal -e glm-ocr` (çeviri).
+### Önerilen modeller
 
-Aynı anda tek `./run.sh` çalıştır — iki koşu GPU'yu paylaşınca ikisi de çöker.
+`./ocr-now models` çıktısından (8 GB GPU):
+
+| Model | GPU belleği | Disk | Not |
+|---|---|---|---|
+| ★ **dots.mocr** | 4.3 GB | 5.7 GB | varsayılan; düzen modu başlık, paragraf, dipnot ve sayfa numarasını ayırır |
+| ★ glm-ocr | 4.0 GB | 2.5 GB | hızlı alternatif |
+| ★ lightonocr | 3.4 GB | 1.9 GB | hızlı alternatif; metni biraz modernleştirir |
+| ★ tesseract | CPU | — | satır yapısı ve sarı işaretleme için her zaman gerekli |
+| paddleocr-vl | 3.2 GB | 2.7 GB | yalnız ocr-lab'da denemek için |
+| deepseek-ocr2 | 4.7 GB | 6.3 GB | yalnız ocr-lab'da denemek için |
+| kraken | CPU | 3.7 GB | yalnız ocr-lab'da denemek için |
+
+Disk sütunu vLLM motorlarının ortak ortamını (`.venv-vllm`, ~8 GB) içermez. GPU belleği tahmini asgaridir.
+
+## ocr-now: belge üretme
+
+```bash
+./ocr-now                                        # adım adım sorar: dosya, sayfalar, model, okuma modu, format
+./ocr-now input/kitap.pdf -p 10-25 -f docx       # sormadan: 10-25. sayfalar Word'e
+./ocr-now input/kitap.pdf -p 1 -f docx txt       # ikisi birden
+./ocr-now taramalar/ -f txt                      # klasördeki PDF'ler ayrı belge, görüntüler tek belge
+./ocr-now a.pdf b.pdf --birlestir -f docx        # iki PDF tek belgede (a_birlesik.docx)
+./ocr-now input/kitap.pdf -p ilk10 --ilk-sayfa 412 -f docx --isaretle
+```
+
+Girdi verilmezse `input/` klasörü kullanılır. Format ve sarı işaretleme verilmezse iş sonunda sorulur (girdi terminal değilse sorulmaz: `docx`, işaretleme açık).
+
+**Dikkat:** `-f` birden fazla değer alır. Girdileri `-f`'den önce yazın ya da araya `--` koyun:
+`./ocr-now -f docx -- input/kitap.pdf`. Aksi hâlde dosya adı biçim sanılır.
+
+| Seçenek | Anlamı |
+|---|---|
+| `-p`, `--sayfalar` | `hepsi` (varsayılan), `5`, `1,3,7`, `10-25`, `ilk10`, karışık: `1-3,7`. Birden fazla PDF'te hepsine uygulanır. PDF'i aşan kısım kırpılır ve uyarı verilir |
+| `-m`, `--model` | motor (varsayılan `dots.mocr`) |
+| `-o`, `--okuma` | okuma modu: `duzen` (varsayılan) ya da `duz`. Düz modda başlık/dipnot/sayfa numarası ayrımı yapılamaz |
+| `-f`, `--format` | `docx`, `txt` ya da `docx txt` |
+| `--isaretle` / `--isaretleme` | şüpheli kelimeleri sarı işaretle / işaretleme (varsayılan: açık) |
+| `--kesme-yok` | ayın/hemze (‘ ’) geri getirme adımını kapat |
+| `--kalin-kalip KALIP` | kalın yazılacak nüsha işaretinin düzenli ifadesi (varsayılan `\[\d+[ab] [^\]]*\]`, ör. `[106b sayfanın sağ yanı]`); `''` kalın yapmaz |
+| `--ilk-sayfa N` | ilk seçilen sayfanın kitap sayfa numarası (okunamayan numaralar buradan sayılır) |
+| `--birlestir` | bütün girdileri tek belgede birleştir |
+| `--dpi N` | PDF görüntüleme çözünürlüğü (varsayılan 200) |
+
+### Çıktı
+
+- `output/belgeler/<kaynak adı>.docx` ve `.txt`. Her PDF kendi belgesini üretir. Bir klasördeki görüntüler dosya adı
+  sırasıyla (`2.jpg` → `10.jpg`) tek belgede birleşir.
+- **`.docx`:** Her taranmış sayfa ayrı bir Word bölümüdür. Satır kırılımları ve satır sonu tireleri kitaptaki gibidir.
+  Tekrar eden kitap başlığı üstte ortalı, dipnotlar metnin altında küçük puntoyla, dipnot numarası üst simge, nüsha
+  işaretleri kalın. Kitabın sayfa numarası altlıkta, kitaptaki tarafta durur.
+- **Köşeli parantezli sayfa numarası** (`[413]`): numara sayfadan okunamadı ya da sırayla çelişiyordu, komşu
+  sayfalardan tahmin edildi. Tahminler iş sonunda listelenir. Hiç ipucu yoksa `[PDF s. 3]` yazılır ve uyarı verilir.
+- **Sarı vurgu:** ya ana model ile tesseract'ın farklı okuduğu (bakılmaya değer) bir kelime, ya da kuralların karar
+  veremediği bir ayın/hemze işareti. Hatalar bütün sayfayı okumadan bulunabilsin diye.
+- **`.txt`:** süssüz ham metin. Paragraflar tek satır, satır sonu tireleri birleştirilmiş, sayfalar arasında
+  `--- s. 412 ---` ayracı.
+- İş sonunda uyarılar listelenir (ör. satır yapısı kurulamayan blok, okunamayan sayfa). Hata veren sayfa atlanır,
+  iş sürer, eksik sayfalar sonda söylenir.
+
+### Önbellek
+
+Sayfa yapısı `output/_cache/` altına sayfa başına bir kez yazılır. Aynı sayfa aynı model/modla tekrar istenirse
+(ör. önce `-f docx`, sonra `-f txt`) OCR yeniden çalışmaz, yalnız dışa aktarma yapılır. Bütün sayfalar
+önbellekteyse model sunucusu hiç açılmaz (GPU boş kalır). Kelime listesi
+(`ayarlar/kesme.txt`) değiştiğinde eski sayfalar tazelenmez: ilgili `output/_cache/<kaynak>-<boyut>/` klasörünü silin.
+
+### Ayın/hemze kelime listesi
+
+Hiçbir motor ayın (‘) ile hemzeyi (’) güvenilir ayıramıyor. Ayrım kurallarla geri getirilir: `’l-` elizyonu, özel
+addan sonra Türkçe ek, kelime başında ünlüden önce ‘ ve bir kelime listesi. Liste `gt/` dosyalarından otomatik
+çıkarılır. Kendi kelimelerinizi `ayarlar/kesme.txt`'ye her satıra bir kelime olacak şekilde, doğru işaretiyle
+ekleyin (ör. `mes’ele`, `bâ‘is`). Karar verilemeyen işarete ‘ yazılır ve sarı vurgulanır. Kitap başına
+`--kesme-yok` ile kapatılabilir.
+
+## ocr-lab: benchmark
+
+```bash
+./ocr-lab                                            # adım adım sorar
+./ocr-lab input/tarama5.pdf -p 1 -e dots.mocr glm-ocr # motor yazılırsa bütün modları (dots.mocr: duzen + duz)
+./ocr-lab input/tarama5.pdf -p 1-3 -e dots.mocr:duzen # yalnız bir mod
+./ocr-lab rapor                                      # önceki koşuları marimo notebook'unda açar
+./ocr-lab rapor --html                               # statik sayfa: output/lab/rapor.html
+```
+
+`-e` de birden fazla değer alır: PDF'leri `-e`'den önce yazın. Doğru metin `gt/<pdf adı>_syf<N>.txt` varsa
+ölçüler hesaplanır: ham, normalize, gövde ve harf CER, WER, satır sonu doğruluğu (`line_end`), ayın/hemze doğruluğu
+(`apostrophe`) ve sarıya düşen işaret sayısı (`apostrophe_flagged`). Benchmark'ta kazanan motor/mod
+`engines.DEFAULT_ENGINE` / `engines.DEFAULT_MODE` ile ocr-now'ın varsayılanı yapılır.
+
+Her koşu `output/lab/<YYYYmmdd-HHMM>/` altına yazılır (`results.json`, motor başına ham çıktılar,
+`<ad>_karsilastirma.md`). `output/lab/summary.csv` bütün koşuları biriktirir. `rapor` için `marimo` gerekir
+(`kurulum.sh` kurar; elle: `VIRTUAL_ENV=.venv uv pip install -e ".[lab]"`).
 
 ## Klasörler
 
 ```
-run.sh, bench.py, kurulum.sh   program
-input/                   taranacak PDF'ler
-gt/                      (isteğe bağlı) doğru metin: gt/tarama5_syf1.txt → CER hesaplanır
-output/*_karsilastirma_*.md  test modunun karşılaştırma dosyaları
-output/<motor>/          sayfa sayfa sonuçlar + normal modun tam belgesi
-output/summary.csv       motor, pdf, sayfa, süre, karakter, CER (koşular birleşir)
-output/_pages/           modele giden sayfa görselleri
-output/_logs/            VLM sunucu logları — bir motor çökerse buraya bak
-output/_eski/            önceki denemeler (gerekmiyorsa silinebilir)
-models/                  kraken modeli + PaddleOCR-VL GGUF bağlantıları
-tools/llama.cpp/         hazır CUDA llama-server
+ocr-now, ocr-lab, kurulum.sh   giriş noktaları (her klasörden çalışır; göreli yollar bulunduğunuz yere göredir)
+src/ocrnow/                    program; bütün yollar src/ocrnow/paths.py'de
+ayarlar/kesme.txt              kullanıcının ayın/hemze kelime listesi
+input/                         taranacak PDF'ler (varsayılan girdi)
+gt/                            (isteğe bağlı) doğru metin: gt/tarama5_syf1.txt → ölçüler ve kelime listesi
+output/belgeler/               ocr-now belgeleri (.docx, .txt)
+output/_cache/                 sayfa yapısı önbelleği
+output/lab/                    ocr-lab koşuları, summary.csv, rapor.html
+output/_pages/                 modele giden sayfa görselleri
+output/_logs/                  VLM sunucu logları: bir motor çökerse buraya bak (<motor>.server.log)
+models/                        kraken modeli + PaddleOCR-VL GGUF bağlantıları
+tools/llama.cpp/               hazır CUDA llama-server
 .venv  .venv-vllm  .venv-kraken   ayrı ortamlar (vLLM ile kraken bağımlılıkları çakışıyor)
+tests/                         .venv/bin/pytest
 ```
+
+**`input/`, `output/` ve `gt/` asla git'e girmez** (`.gitignore`): telifli kitap metni içerirler. Testler bu
+klasörlerdeki dosyaları yalnız okur, yoksa atlanır.
 
 ## Motorlar
 
-| Motor | Nasıl çalışır |
-|---|---|
-| `tesseract` | apt paketi (`tesseract-ocr-tur`) |
-| `kraken` | CATMuS-Print Large modeli — Türkçe'ye özgü ı/ş/ğ harfleri modelde yok |
-| `paddleocr-vl` | llama.cpp + GGUF, GPU |
-| `glm-ocr`, `lightonocr` | vLLM, bf16 |
-| `deepseek-ocr2`, `dots.mocr` | vLLM, **fp8** (bf16 hâlleri 8 GB GPU'ya sığmıyor) |
+| Motor | Nasıl çalışır | Okuma modları |
+|---|---|---|
+| `tesseract` | apt paketi (`tesseract-ocr-tur`) | duz |
+| `kraken` | CATMuS-Print Large modeli; Türkçe'ye özgü ı/ş/ğ harfleri modelde yok | duz |
+| `paddleocr-vl` | llama.cpp + GGUF, GPU | duz |
+| `glm-ocr`, `lightonocr` | vLLM, bf16 | duz |
+| `deepseek-ocr2` | vLLM, **fp8** (bf16 hâli 8 GB GPU'ya sığmıyor) | duz |
+| `dots.mocr` | vLLM, **fp8** | duzen, duz |
 
-VLM sunucuları sırayla açılıp kapatılır. Komutlar ve istemler `bench.py` başındaki `VLM` sözlüğünde, ortak vLLM
-ayarları `VLLM_FLAGS`'te.
+Aynı anda tek GPU işi çalıştırın: iki koşu GPU'yu paylaşınca ikisi de çöker. VLM sunucuları sırayla açılıp
+kapatılır. Sunucu komutları ve istemler `src/ocrnow/engines.py`'deki `ENGINES` kaydında, ortak vLLM ayarları
+`VLLM_FLAGS`'te. Sunucuyu kendiniz açtıysanız (docker, ollama vs.) yalnız portu eşleyin: kayıt ona bağlanır,
+kapatmaz.
 
 ## Ortama özel ayarlar (neden var?)
 
-- `run.sh` → `VLLM_USE_FLASHINFER_SAMPLER=0`: FlashInfer örnekleyici nvcc ister, sistemde CUDA toolkit yok.
-- `kurulum.sh` vLLM 0.32'ye tek satır yama uygular: DeepSeek-OCR-2 kodlayıcı çekirdeği Triton 3.7'de derlenmiyor.
-  vLLM'i elle güncellersen `./kurulum.sh`'ı tekrar çalıştır.
-- `dots.mocr` → `max_pixels` 4 MP: varsayılan 11 MP için bellek profili 8 GB'ı aşıyor (sayfamız 3.9 MP, kayıp yok).
+- `src/ocrnow/paths.py` (alt süreç ortamı) → `VLLM_USE_FLASHINFER_SAMPLER=0`: FlashInfer örnekleyici nvcc ister,
+  sistemde CUDA toolkit yok.
+- `kurulum.sh` (`src/ocrnow/models.py` üzerinden) vLLM 0.32'ye tek satır yama uygular: DeepSeek-OCR-2 kodlayıcı
+  çekirdeği Triton 3.7'de derlenmiyor. vLLM'i elle güncellersen `./kurulum.sh`'ı tekrar çalıştır.
+- `dots.mocr` → `max_pixels` 4 MP (`engines.py`): varsayılan 11 MP için bellek profili 8 GB'ı aşıyor (sayfamız
+  3.9 MP, kayıp yok). Daha büyük sayfa görüntüsü küçültülerek okunur, kutular orijinal piksellere ölçeklenir.
 
-Not: Bazı VLM'ler Markdown (`#`, `**`) üretir; bu CER'i biraz şişirir.
+Not: Bazı VLM'ler Markdown (`#`, `**`) üretir; bu ham CER'i biraz şişirir (normalize CER yok sayar).

@@ -14,7 +14,7 @@ import tempfile
 import time
 import urllib.request
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -234,3 +234,25 @@ def server(name: str) -> Iterator[Callable[[Path, str], str]]:
         yield lambda img, mode: _vlm(img, base, model, _mode(eng, mode).prompt)
     finally:
         _stop_server(proc)
+
+
+@contextmanager
+def lazy_server(name: str) -> Iterator[Callable[[Path, str], str]]:
+    """server() gibi, ama motor ilk run çağrısında açılır: bütün sayfalar önbellekteyse GPU hiç kullanılmaz.
+
+    Açılış hata verirse aynı hata sonraki çağrılarda yeniden fırlatılır (her sayfada yeniden beklenmez).
+    """
+    with ExitStack() as stack:
+        state: dict = {}
+
+        def run(img: Path, mode: str) -> str:
+            if "error" in state:
+                raise state["error"]
+            if "run" not in state:
+                try:
+                    state["run"] = stack.enter_context(server(name))
+                except Exception as e:
+                    state["error"] = e
+                    raise
+            return state["run"](img, mode)
+        yield run
