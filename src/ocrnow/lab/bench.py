@@ -76,7 +76,7 @@ def _raw_texts(raw: str, n: int) -> list[str | None] | None:
     return [i.get("text") if isinstance(i.get("text"), str) else None for i in items]
 
 
-def _model_text(raw: str, engine: str, mode: str, size: tuple[int, int]) -> str:
+def model_text(raw: str, engine: str, mode: str, size: tuple[int, int]) -> str:
     """Ölçülen metin: düz modda ham çıktı. Düzen modunda blok metinleri boş satırla ayrılır; Picture blokları
     ([Görsel] yer tutucusu modelin metni değil) atlanır, Table düz metne çevrilir, blok içi satır sonları
     mümkünse modelin ham JSON'undan alınır."""
@@ -233,7 +233,7 @@ def run_bench(source_pages: list[SourcePage], targets: list[tuple[str, str]], gt
                 memo_words[wkey] = _words_without(gt_dir, gt_path)
             page = pipeline.process_page(img, src, pipeline.Options(engine, mode, True, dpi=dpi), cap, tsv,
                                          words=memo_words[wkey])
-            text = _model_text(cap.raw, engine, mode, (page.width, page.height))
+            text = model_text(cap.raw, engine, mode, (page.width, page.height))
             lines = _pipeline_lines(page)
             raw_path = out_dir / engine / f"{rec['pdf']}_syf{src.index}.{mode}.txt"
             raw_path.parent.mkdir(parents=True, exist_ok=True)

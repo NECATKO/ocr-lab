@@ -226,14 +226,14 @@ SIZE = (100, 100)
 
 def test_model_text_matches_manual_join_on_spike(spike_layout):
     manual = "\n\n".join(b["text"] for b in json.loads(spike_layout))
-    assert bench._model_text(spike_layout, "dots.mocr", "duzen", (1653, 2339)) == manual
+    assert bench.model_text(spike_layout, "dots.mocr", "duzen", (1653, 2339)) == manual
 
 
 def test_model_text_skips_pictures_flattens_tables_keeps_line_breaks():
     raw = layout(("Text", "senâ-\nkâr"), ("Picture", None), ("Table", "<table><tr><td>a</td><td>b</td></tr></table>"),
                  ("Text", "son"))
-    assert bench._model_text(raw, "dots.mocr", "duzen", SIZE) == "senâ-\nkâr\n\na b\n\nson"
-    assert metrics_norm_equal("senâkâr", bench._model_text(layout(("Text", "senâ-\nkâr")), "dots.mocr", "duzen", SIZE))
+    assert bench.model_text(raw, "dots.mocr", "duzen", SIZE) == "senâ-\nkâr\n\na b\n\nson"
+    assert metrics_norm_equal("senâkâr", bench.model_text(layout(("Text", "senâ-\nkâr")), "dots.mocr", "duzen", SIZE))
 
 
 def metrics_norm_equal(a, b):
@@ -243,11 +243,11 @@ def metrics_norm_equal(a, b):
 
 def test_model_text_falls_back_to_block_text_on_broken_json():
     raw = layout(("Text", "ilk"), ("Text", "ikinci"))[:-3]   # kesik JSON: kurtarma yolu
-    assert bench._model_text(raw, "dots.mocr", "duzen", SIZE) == "ilk\n\nikinci"
+    assert bench.model_text(raw, "dots.mocr", "duzen", SIZE) == "ilk\n\nikinci"
 
 
 def test_model_text_plain_mode_is_raw():
-    assert bench._model_text("a\nb", "glm-ocr", "duz", SIZE) == "a\nb"
+    assert bench.model_text("a\nb", "glm-ocr", "duz", SIZE) == "a\nb"
 
 
 def test_apostrophe_flagged_counts_undecided_marks(tmp_path, env):
