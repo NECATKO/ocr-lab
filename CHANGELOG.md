@@ -10,6 +10,9 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 - İki-üç sayfalık bir seçimde okunan kitap sayfa numaraları birbirini tutmuyorsa (ör. 412 ve 431) artık sessiz
   kalmıyor. Numaralar okunduğu gibi korunur ama köşeli parantezle (`[412]`, `[431]`) yazılır ve her sayfaya
   "sayfa numarası komşularıyla tutmuyor" uyarısı eklenir.
+- Günümüz Türkçesi sayfalarında özel addan sonra gelen y'li ve yaygın ekler (`Kahire’ye`, `İstanbul’daki`,
+  `Ankara’dır`, `Türkiye’nin`, `Osmanlı’lar`) artık hemze (’) alıyor; önceden ‘ yazılıp sarıya boyanıyordu.
+  Ayınlı özel adlar (`Ka‘be`, `Sa‘d`) etkilenmez.
 
 ## [0.1.0] - 2026-10-26
 

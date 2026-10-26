@@ -7,8 +7,11 @@ from ocrnow.layout import Mark
 APOS = "'’‘`´ʿʾ"
 AIN, HAMZA = "‘", "’"
 
-# kural 2: hemze alan ekler (kelimenin işaretten sonraki kısmı bunlardan biri olmalı)
-SUFFIXES = frozenset("de da te ta e a ı i u ü in ın un ün nin nın den dan ten tan le la".split())
+# kural 2: hemze alan ekler (kelimenin işaretten sonraki kısmı bunlardan biri olmalı); ikinci satır günümüz
+# Türkçesi sayfaları için (R28: Kahire’ye, İstanbul’daki). Ayınlı özel adlar (Ka‘be, Sa‘d) listeye girmez.
+SUFFIXES = frozenset("de da te ta e a ı i u ü in ın un ün nin nın den dan ten tan le la".split()
+                     + "ye ya yi yı yu yü yle yla yse ysa deki daki teki taki dir dır dur dür tir tır tur tür "
+                       "na ne nı ni nu nü nda nde ndan nden ler lar".split())
 VOWELS = frozenset("aeıioöuüâîûêôAEIİOÖUÜÂÎÛÊÔ")
 WORD_OPENERS = frozenset('-([{"«“„')  # boşluk ve metin başı dışında "kelime başı" sayılan öncüller
 MIN_STEM = 3

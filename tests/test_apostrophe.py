@@ -27,8 +27,27 @@ def test_word_start_after_hyphen_and_opening_punctuation():
 
 def test_rule2_needs_capital_and_three_letter_stem():
     assert restore("haleb'de", {})[0] == "haleb‘de"   # küçük harf: kural 2 değil
-    assert restore("Ali'ye", {})[0] == "Ali‘ye"       # ek listede yok
     assert restore("Ali'de", {})[0] == "Ali’de"
+    assert restore("Ali'ce", {})[0] == "Ali‘ce"       # ek listede yok
+
+
+@pytest.mark.parametrize("word", [
+    "Kahire'ye", "Kahire'ya", "Kahire'yi", "Kahire'yı", "Kahire'yu", "Kahire'yü", "Kahire'yle", "Kahire'yla",
+    "Kahire'yse", "Kahire'ysa", "Kahire'deki", "Kahire'daki", "Kahire'teki", "Kahire'taki", "Kahire'dir",
+    "Kahire'dır", "Kahire'dur", "Kahire'dür", "Kahire'tir", "Kahire'tır", "Kahire'tur", "Kahire'tür",
+    "Kahire'na", "Kahire'ne", "Kahire'nı", "Kahire'ni", "Kahire'nu", "Kahire'nü", "Kahire'nda", "Kahire'nde",
+    "Kahire'ndan", "Kahire'nden", "Kahire'ler", "Kahire'lar"])
+def test_rule2_modern_suffixes(word):
+    # R28: günümüz Türkçesi sayfalarındaki y'li ve yaygın ekler de hemze alır
+    out, marks = restore(word, {})
+    assert out == word.replace("'", "’") and marks == []
+
+
+def test_rule2_suffix_list_leaves_ain_names():
+    # ayınlı özel adlar ek listesine girmez: ‘ ve sarı kalır ("dakı" diye bir ek yok)
+    for word in ("Ka'be", "Sa'd", "Mes'ud", "Kahire'dakı"):
+        out, marks = restore(word, {})
+        assert out == word.replace("'", "‘") and [m.kind for m in marks] == ["kesme"]
 
 
 def test_other_apostrophe_variants_are_replaced():
