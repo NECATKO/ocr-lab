@@ -10,7 +10,9 @@ app = marimo.App(width="medium")
 
 with app.setup:
     import html
+    import base64
     import json
+    import math
     import re
     import subprocess
     import sys
@@ -38,9 +40,9 @@ with app.setup:
 
     def nice_max(value: float) -> float:
         """Eksen üst sınırı: 1, 2, 5 × 10^k."""
-        if value <= 0:
+        if value <= 1e-9:   # sıfır ya da yok sayılacak kadar küçük: 1/değer taşar, ölçek 0 olur
             return 1.0
-        scale = 10 ** (len(str(int(value))) - 1) if value >= 1 else 10 ** -(len(str(int(1 / value))))
+        scale = 10 ** math.floor(math.log10(value))
         for step in (1, 2, 5, 10):
             if value <= step * scale:
                 return step * scale
@@ -155,6 +157,16 @@ def scatter_svg(rows: list[dict], field: str) -> str:
 
 
 @app.function
+def image_html(path: Path, alt: str, width: int) -> str:
+    """Sayfa görüntüsü <img> olarak, PNG veri adresiyle; alt metin (dosya adından gelir) kaçışlanır.
+
+    mo.image alt'ı olduğu gibi tırnaklı özniteliğe yazdığı için (kesme işaretli ad, öznitelik enjeksiyonu) kullanılmaz."""
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return (f'<img src="data:image/png;base64,{data}" alt="{html.escape(alt, quote=True)}" '
+            f'style="max-width:100%;width:{int(width)}px;height:auto"/>')
+
+
+@app.function
 def find_page_image(pdf: str, page: int) -> Path | None:
     """paths.PAGES/<pdf>-<bayt>/syf<N>.png (dpi 200 dışında syf<N>_<dpi>dpi.png); birden çoksa en yenisi.
 
@@ -263,10 +275,10 @@ def _(key_select, page_options, page_select, pages_of, selected):
     pdf, page = pages_of[key_select.value][page_options.index(page_select.value)]
     rec = pick_record(selected, key_select.value, pdf, page)
     image_path = find_page_image(pdf, page)
-    parts = [mo.md(f"Koşu: `{rec['run']}`")]
+    parts = [mo.Html(f"<p>Koşu: <code>{html.escape(rec['run'])}</code></p>")]
     if rec["error"]:
-        parts.append(mo.callout(f"Bu sayfa hata verdi: {rec['error']}", kind="danger"))
-    parts += [mo.callout(w, kind="warn") for w in rec["warnings"]]
+        parts.append(mo.callout(mo.Html(html.escape(f"Bu sayfa hata verdi: {rec['error']}")), kind="danger"))
+    parts += [mo.callout(mo.Html(html.escape(w)), kind="warn") for w in rec["warnings"]]
     pairs = rec["word_errors"]
     if pairs:
         parts.append(mo.ui.table([{"doğru metin (gt)": gt, "çıktı": out} for gt, out in pairs], selection=None,
@@ -283,8 +295,8 @@ def _(key_select, page_options, page_select, pages_of, selected):
         parts.append(mo.accordion({"Model çıktısı": mo.Html(
             f'<pre style="white-space:pre-wrap;font-family:inherit">{html.escape(text)}</pre>')}))
     errors_view = mo.vstack(parts)
-    image_view = (mo.image(src=image_path.read_bytes(), alt=f"{pdf} sayfa {page}", width=520) if image_path else
-                  mo.md(f"Sayfa görüntüsü bulunamadı (`{paths.PAGES}/{pdf}-*/syf{page}.png`)."))
+    image_view = (mo.Html(image_html(image_path, f"{pdf} sayfa {page}", 520)) if image_path else
+                  mo.Html(f"<p>Sayfa görüntüsü bulunamadı: <code>{html.escape(f'{paths.PAGES}/{pdf}-*/syf{page}.png')}</code></p>"))
     return errors_view, image_view
 
 

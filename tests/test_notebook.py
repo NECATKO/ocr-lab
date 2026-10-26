@@ -10,7 +10,7 @@ from PIL import Image
 
 from ocrnow import paths
 from ocrnow.lab import notebook
-from ocrnow.lab.notebook import (best_cells, find_page_image, load_runs, record_text, rapor, scatter_svg,
+from ocrnow.lab.notebook import (best_cells, find_page_image, image_html, metrics_table, nice_max, load_runs, record_text, rapor, scatter_svg,
                                  summarize)
 
 
@@ -64,6 +64,29 @@ def test_best_cells_lower_is_better_except_line_end_and_apostrophe():
     assert best["cer_norm"] == {"b/duz", "c/duz"}           # eşitlik: ikisi de vurgulu
     assert best["line_end"] == {"c/duz"} and best["apostrophe"] == {"b/duz"}
     assert best["cer_body"] == set()                         # hiç ölçü yok
+
+
+def test_metrics_table_highlights_best_escapes_and_dashes_for_none():
+    rows = summarize([rec(engine="a<b", cer_norm=0.01), rec(engine="c", cer_norm=0.2, cer_body=None)])
+    html = metrics_table(rows)
+    assert "a&lt;b/duz" in html and "a<b" not in html
+    assert html.count("font-weight:700") >= 2                       # en iyi hücreler
+    assert '<td style="font-weight:700;background:rgba(34,160,90,.28)">1.00%</td>' in html
+    assert "<td>20.00%</td>" in html                               # en iyi olmayan: işaretsiz
+    assert "<td>—</td>" in html                                    # cer_body ölçüsü yok
+
+
+@pytest.mark.parametrize("value,expected", [(0, 1.0), (1e-300, 1.0), (5e-324, 1.0), (0.004, 0.005), (7, 10), (35, 50)])
+def test_nice_max_handles_tiny_values(value, expected):
+    assert nice_max(value) == expected
+
+
+def test_image_html_escapes_alt(tmp_path):
+    png = tmp_path / "a.png"
+    Image.new("L", (2, 2)).save(png)
+    out = image_html(png, "Mes'ele\" onerror=\"x", 520)
+    assert "alt=\"Mes&#x27;ele&quot; onerror=&quot;x\"" in out and out.count("<img") == 1
+    assert out.startswith('<img src="data:image/png;base64,')
 
 
 def test_scatter_svg_skips_missing_points_and_escapes():
@@ -152,6 +175,21 @@ def test_notebook_headless_with_one_synthetic_run(tmp_path):
     for beklenen in ("glm-ocr/duz", "dots.mocr/duzen", "<svg", "gtkelime", "ciktikelime", "sentetik çıktı",
                      "data:image/png"):
         assert beklenen in html, beklenen
+
+
+def test_notebook_headless_hostile_pdf_name_cannot_inject_attributes(tmp_path):
+    name = "Mes'ele\" onerror=\"alert(1)"
+    write_run(tmp_path / "output" / "lab", "20261025-1200", [rec(pdf=name)])
+    png = tmp_path / "output" / "_pages" / f"{name}-123" / "syf1.png"
+    png.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8)).save(png)
+    out = tmp_path / "rapor.html"
+    r = export_html(tmp_path, out)
+    assert r.returncode == 0, r.stderr
+    html = export_text(out)
+    # çıktılar JSON içinde olduğundan öznitelik tırnakları \" olarak kaçışlıdır
+    assert 'alt=\\"Mes&#x27;ele&quot; onerror=&quot;alert(1) sayfa 1\\"' in html
+    assert "alt=\\\"Mes'" not in html and "alt=\\\"Mes\\\"" not in html
 
 
 def _page_png(root):
