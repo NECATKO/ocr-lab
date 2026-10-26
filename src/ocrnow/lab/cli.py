@@ -137,6 +137,9 @@ def print_table(records: list[dict]) -> None:
 
 def _run(args: argparse.Namespace, ask_start: bool) -> int:
     status = _ready()
+    if status["tesseract"]:   # hat her sayfada tesseract satırlarını kullanır (satır yapısı, sarı işaret)
+        raise InputError(f"tesseract kullanılamıyor: {status['tesseract']} (satır yapısı ölçüsü için gerekli). "
+                         "Kurulum için: ocr-now models install tesseract")
     if ask_start:
         _ask_start(args, status)
     targets = _select_targets(args, status)

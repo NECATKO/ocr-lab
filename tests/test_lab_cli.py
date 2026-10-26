@@ -92,6 +92,14 @@ def test_unready_engine_requested_explicitly_is_an_error(tmp_path, env, capsys):
     assert env.calls == []
 
 
+def test_missing_tesseract_is_an_error_up_front(tmp_path, env, capsys):
+    env.missing["tesseract"] = "tesseract kurulu değil"
+    pdf = make_pdf(tmp_path / "k.pdf", 1)
+    assert main([str(pdf), "-e", "glm-ocr"]) == 2
+    assert "tesseract kurulu değil" in capsys.readouterr().err
+    assert env.calls == []
+
+
 def test_missing_pdfs_and_bad_pages_are_clear_errors(tmp_path, env, capsys, monkeypatch):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     assert main([]) == 2 and "PDF yok" in capsys.readouterr().err

@@ -228,6 +228,17 @@ def test_missing_engine_exit_2(fake_env, capsys):
     assert fake_env.opts == [] and fake_env.servers == [] and fake_env.written == {}
 
 
+def test_missing_tesseract_exit_2_before_anything(fake_env, monkeypatch, capsys):
+    """R22: tesseract her sayfada gerekir; yoksa model hiç açılmadan, sorular sorulmadan durulur."""
+    fake_env.missing["tesseract"] = "tesseract kurulu değil"
+    assert main(["k.pdf", "-f", "txt"]) == 2
+    err = capsys.readouterr().err
+    assert "tesseract kurulu değil" in err and "ocr-now models install tesseract" in err
+    assert fake_env.opts == [] and fake_env.servers == [] and fake_env.written == {}
+    no_questions(monkeypatch)
+    assert main([]) == 2 and fake_env.collect_calls == []
+
+
 def test_input_error_exit_2(fake_env, monkeypatch, capsys):
     def boom(*a, **k):
         raise InputError("Dosya ya da klasör bulunamadı: x.pdf")

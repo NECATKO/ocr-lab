@@ -204,6 +204,10 @@ def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path]) -> b
 
 def _run(args: argparse.Namespace, ask_start: bool) -> int:
     interactive = sys.stdin.isatty()
+    if reason := engines.missing("tesseract"):   # her sayfada satır yapısı ve sarı işaret için gerekir
+        _err(f"Hata: tesseract kullanılamıyor: {reason} (satır yapısı ve sarı işaretleme için gerekli)\n"
+             "Kurulum için: ocr-now models install tesseract")
+        return 2
     if ask_start:
         jobs, warnings = _ask_start(args)
     else:

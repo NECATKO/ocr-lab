@@ -52,8 +52,8 @@ def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path,
                  tsv: Callable[[Path], str] = engines.tesseract_tsv,
                  size: tuple[int, int] | None = None, *, words: dict[str, str] | None = None) -> Page:
     """Tek sayfayı işler. size=(genişlik, yükseklik); None ise img'den okunur. words None ise liste burada kurulur."""
+    tsv_text = tsv(img)          # önce: tesseract hata verirse model (VLM) boşuna beklenmez
     raw = run(img, opts.mode)
-    tsv_text = tsv(img)
     if size is None:
         with Image.open(img) as im:
             size = im.size

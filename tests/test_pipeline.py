@@ -120,6 +120,14 @@ def test_server_error_is_not_a_page_error(tmp_path):
     assert len(calls) == 1
 
 
+def test_tesseract_runs_before_model():
+    """R22: tesseract yoksa ya da çökerse sayfa VLM'i (~25 sn) boşuna beklemeden düşer."""
+    order = []
+    process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(),
+                 lambda img, m: order.append("model") or "[]", lambda img: order.append("tesseract") or "", (100, 100))
+    assert order == ["tesseract", "model"]
+
+
 def test_blank_page():
     p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(),
                      lambda img, m: "[]", lambda img: "", (100, 100))
