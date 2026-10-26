@@ -20,7 +20,8 @@ from ocrnow.pages import DEFAULT_DPI, DocJob, InputError, SourcePage, render
 from ocrnow.tesslines import lines_in, parse_tsv
 from ocrnow.uncertain import flag_uncertain
 
-TEXT_CATEGORIES = frozenset({"Text", "Title", "Section-header", "List-item", "Footnote"})
+TEXT_CATEGORIES = frozenset({"Text", "Title", "Section-header", "List-item", "Footnote"})   # tam işlem
+RESTORE_CATEGORIES = TEXT_CATEGORIES | {"Page-header", "Caption"}   # bunlara yalnız kesme geri getirme
 READ_FAILED = "okunamadı"
 PDF_ORDER_WARNING = "kitap sayfa numarası bulunamadı, PDF sırası kullanıldı"
 IMAGE_ORDER_WARNING = "kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"
@@ -68,11 +69,14 @@ def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path,
         words = _word_list()
     tlines = parse_tsv(tsv_text)
     for k, block in enumerate(blocks, 1):
-        if block.category not in TEXT_CATEGORIES:
+        if block.category not in RESTORE_CATEGORIES:
             continue
         marks = []
         if opts.apostrophes:
             block.text, marks = restore(block.text, words)
+        if block.category not in TEXT_CATEGORIES:
+            block.marks = marks
+            continue
         mine = lines_in(block.bbox, tlines)
         marks += flag_uncertain(block.text, "\n".join(line.text for line in mine))
         block.marks = sorted(marks, key=lambda m: (m.start, m.end))

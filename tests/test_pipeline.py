@@ -173,6 +173,20 @@ def test_apostrophes_restored_and_switchable(tmp_path):
     assert off.blocks[0].text == "bu mes'ele ve şu ba'zı" and off.blocks[0].marks == []
 
 
+def test_apostrophes_restored_in_header_and_caption_only():
+    """M4: kesme geri getirme Page-header ve Caption'a da uygulanır; satır yapısı ve belirsiz işaret uygulanmaz."""
+    raw = blocks_json(("Page-header", [0, 0, 980, 40], "mes'ele"), ("Caption", [0, 100, 980, 140], "ba'zı resim"),
+                      ("Page-footer", [0, 900, 980, 940], "mes'ele 12"))
+    tsv = tsv_rows(((10, 10, 900, 40), "başka"), ((10, 110, 900, 140), "farklı okuma"))
+    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(), lambda img, m: raw, lambda img: tsv,
+                     (1000, 1000), words={"mes'ele": "mes’ele"})
+    header, caption, footer = p.blocks
+    assert header.text == "mes’ele" and caption.text == "ba‘zı resim"
+    assert footer.text == "mes'ele 12"                                  # altlık yalnız numara için okunur
+    assert [m.kind for m in caption.marks] == ["kesme"] and header.marks == []
+    assert header.lines == caption.lines == [] and p.warnings == []
+
+
 def test_words_param_skips_word_list(monkeypatch):
     monkeypatch.setattr(pipeline, "build_word_list", lambda *a: pytest.fail("liste kurulmamalı"))
     raw = blocks_json(("Text", [0, 0, 980, 980], "bu mes'ele"))
