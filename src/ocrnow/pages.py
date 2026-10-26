@@ -109,6 +109,20 @@ def _is_image(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTS
 
 
+def _tiff_warning(path: Path) -> str | None:
+    """Çok kareli TIFF'te yalnız ilk kare okunur (render); kullanıcı bunu bilmeli. Açılamayan dosya render'da hata verir."""
+    if path.suffix.lower() not in (".tif", ".tiff"):
+        return None
+    try:
+        with Image.open(path) as im:
+            frames = getattr(im, "n_frames", 1)
+    except OSError:
+        return None
+    if frames <= 1:
+        return None
+    return f"{path.name}: çok sayfalı TIFF ({frames} sayfa); yalnız ilk sayfa okunur, sayfaları ayrı dosyalara bölün"
+
+
 def collect_jobs(inputs: list[Path], spec: str | None, merge: bool = False) -> tuple[list[DocJob], list[str]]:
     """Girdileri belge işlerine ayırır. Sayfa seçimi yalnız PDF'lere uygulanır (görüntü tek sayfadır)."""
     if not inputs:
@@ -149,6 +163,7 @@ def collect_jobs(inputs: list[Path], spec: str | None, merge: bool = False) -> t
             raise InputError(f"Desteklenmeyen dosya türü: {path} (PDF, PNG, JPG, TIF desteklenir)")
     if loose_slot is not None:
         jobs[loose_slot] = DocJob(loose[0].stem, [SourcePage(f, 1) for f in loose])
+    warnings += [w for job in jobs for p in job.pages if (w := _tiff_warning(p.source))]
     if images_seen and spec is not None and spec.strip().lower() != "hepsi":
         warnings.append(f"Sayfa seçimi '{spec}' görüntülere uygulanmaz (her görüntü tek sayfadır).")
     if merge and len(jobs) > 1:  # tek iş varsa birleştirilecek bir şey yok, ad değişmez

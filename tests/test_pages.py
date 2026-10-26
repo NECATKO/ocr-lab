@@ -296,3 +296,16 @@ def test_make_names_unique_across_separately_collected_jobs(tmp_path):
     jobs = a + b
     make_names_unique(jobs)
     assert [j.name for j in jobs] == ["k", "K_2"]
+
+
+def test_multi_page_tiff_warns(tmp_path):
+    """M2: çok kareli TIFF'in yalnız ilk karesi okunur; sessiz kalmaz."""
+    multi = tmp_path / "d" / "cok.tif"
+    multi.parent.mkdir()
+    Image.new("L", (20, 20), 255).save(multi, save_all=True, append_images=[Image.new("L", (20, 20), 0)] * 2)
+    single = tmp_path / "tek.tiff"
+    Image.new("L", (20, 20), 255).save(single)
+    expected = "cok.tif: çok sayfalı TIFF (3 sayfa); yalnız ilk sayfa okunur, sayfaları ayrı dosyalara bölün"
+    assert collect_jobs([multi], None)[1] == [expected]
+    assert collect_jobs([multi.parent], None)[1] == [expected]
+    assert collect_jobs([single], None)[1] == []
