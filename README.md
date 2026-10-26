@@ -97,6 +97,8 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 - Numara ya sayfadan okunamadı ya da komşularıyla çelişiyordu.
 - Kendi içinde tutarlı okumalar korunur, ör. 412–415'ten sonra 418–425.
 - Yalnız tek başına aykırı kalan okuma düzeltilir ve uyarılır (`s. 2: okunan 431 → [413]`).
+- Hiçbiri birbirini tutmuyorsa (ör. iki sayfalık alıntıda 412 ve 431) hangisinin doğru olduğu bilinemez. Okunan
+  numaralar korunur ama köşeli parantezle yazılır ve uyarılır.
 - Hiç ipucu yoksa `[PDF s. 3]` yazılır.
 
 **Sarı vurgu** iki durumda konur. Amaç, hataların bütün sayfayı okumadan bulunabilmesidir.
@@ -207,8 +209,6 @@ gerektiren testler bu dosyaları yalnızca okur. Dosyalar yoksa bu testler atlan
 
 - **Sayfa yüksekliği:** 40'tan çok satırlı bir sayfa Word'de ikinci bir sayfaya taşabilir. Altlıktaki numara yine
   doğrudur.
-- **Kısa alıntıda numara çelişkisi:** İki-üç sayfalık bir seçimde okunan numaralar birbirini tutmuyorsa
-  (ör. 412 ve 431), ikisi de olduğu gibi kalır ve uyarı verilmez.
 - **Düz okuma modu:** Bütün sayfa tek blok olduğu için satır yapısı çoğu zaman kurulamaz ve paragraf akan metin
   olur. Uyarı verilir.
 - **Çok sayfalı TIFF:** Yalnız ilk sayfası okunur. Uyarı verilir.

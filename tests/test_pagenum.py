@@ -72,10 +72,16 @@ def test_support_window_is_two_readings():
     assert [x[0] for x in infer(["412", "700", "800", "415"])] == ["412", "700", "800", "415"]
 
 
-def test_no_supported_reading_keeps_all_readings():
-    # iki farklı okuma: hangisinin yanlış olduğu bilinemez, okunduğu gibi kalır
-    assert infer(["412", "431"]) == [("412", False), ("431", False)]
-    assert infer(["412", None, "431"]) == [("412", False), ("413", True), ("431", False)]
+def test_no_supported_reading_keeps_all_readings_but_marks_them():
+    # iki farklı okuma: hangisinin yanlış olduğu bilinemez, okunduğu gibi kalır ama tahmin işaretlenir
+    assert infer(["412", "431"]) == [("412", True), ("431", True)]
+    assert infer(["412", None, "431"]) == [("412", True), ("413", True), ("431", True)]
+    assert [x[1] for x in infer(["412", "700", "800", "415"])] == [True] * 4
+
+
+def test_single_reading_is_not_a_conflict():
+    assert infer(["412", None]) == [("412", False), ("413", True)]
+    assert infer(["412", "431"], start=412)[0] == ("412", False)   # start verilince çelişki kavramı yok
 
 
 def test_nonpositive_derived_falls_back_to_pdf_label():

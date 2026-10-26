@@ -64,6 +64,27 @@ def read_book_page(blocks: list[Block], width: int) -> tuple[str | None, str | N
     return None, None
 
 
+def _readings(read: list[str | None]) -> list[tuple[int, int]]:
+    """Arap rakamıyla okunan sayfalar: (sayfa sırası, ofset = numara - sıra)."""
+    return [(i, int(v) - i) for i, v in enumerate(read) if v is not None and v.isdigit()]
+
+
+def _supported(readings: list[tuple[int, int]]) -> dict[int, int]:
+    """Destekli okumalar: sayfa sırası → ofset, sıra düzeninde."""
+    supported: dict[int, int] = {}
+    for k, (i, off) in enumerate(readings):
+        near = readings[max(0, k - SUPPORT_WINDOW):k] + readings[k + 1:k + 1 + SUPPORT_WINDOW]
+        if any(o == off for _, o in near):
+            supported[i] = off
+    return supported
+
+
+def _conflicting(read: list[str | None]) -> bool:
+    """En az iki okuma var ve hiçbiri destekli değil: numaralar birbirini tutmuyor, hangisinin doğru olduğu bilinemez."""
+    readings = _readings(read)
+    return len(readings) >= 2 and not _supported(readings)
+
+
 def _offsets(read: list[str | None]) -> list[int | None]:
     """Her sayfa için ofset (numara - sıra), parçalı (R21).
 
@@ -71,12 +92,8 @@ def _offsets(read: list[str | None]) -> list[int | None]:
     destekli sayılır ve ofsetini korur; tek okuma (ya da hiçbir okuma destekli değilse her okuma) da korunur.
     Desteksiz okuma ve boşluk, en yakın önceki destekli ofseti (yoksa sonrakini) alır.
     """
-    readings = [(i, int(v) - i) for i, v in enumerate(read) if v is not None and v.isdigit()]
-    supported: dict[int, int] = {}   # sayfa sırası → ofset, sıra düzeninde
-    for k, (i, off) in enumerate(readings):
-        near = readings[max(0, k - SUPPORT_WINDOW):k] + readings[k + 1:k + 1 + SUPPORT_WINDOW]
-        if any(o == off for _, o in near):
-            supported[i] = off
+    readings = _readings(read)
+    supported = _supported(readings)
     if not supported:
         supported = dict(readings)   # zincir yok (tek okuma ya da hepsi farklı): hiçbir okuma aykırı sayılamaz
     out: list[int | None] = []
@@ -94,9 +111,11 @@ def infer(read: list[str | None], start: int | None = None) -> list[tuple[str, b
     Ofset parçalıdır (bkz. _offsets): kendi içinde tutarlı koşular (atlanan tarama sayfası, iki ayrı alıntı)
     okunduğu gibi kalır, tek aykırı okuma komşu koşudan düzeltilir. `start` verilirse bütün sayfaların ofseti
     budur. Roma rakamları okunduğu gibi kalır ve ofsete girmez. Türetilen değer 1'in altına düşerse ya da hiç ipucu
-    yoksa etiket "PDF s. N" olur.
+    yoksa etiket "PDF s. N" olur. En az iki okuma birbirini hiç tutmuyorsa okumalar
+    korunur ama hepsi tahmin işaretlenir.
     """
     offsets = [start] * len(read) if start is not None else _offsets(read)
+    conflicting = start is None and _conflicting(read)   # çelişen okumalar okunduğu gibi kalır ama tahmin işaretlenir
     out: list[tuple[str, bool]] = []
     for i, (value, offset) in enumerate(zip(read, offsets)):
         if value is not None and not value.isdigit():
@@ -106,5 +125,5 @@ def infer(read: list[str | None], start: int | None = None) -> list[tuple[str, b
         if derived < 1:
             out.append((f"PDF s. {i + 1}", True))
         else:
-            out.append((str(derived), value is None or int(value) != derived))
+            out.append((str(derived), value is None or int(value) != derived or conflicting))
     return out

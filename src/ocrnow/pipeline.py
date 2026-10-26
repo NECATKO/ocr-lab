@@ -26,6 +26,7 @@ READ_FAILED = "okunamadı"
 PDF_ORDER_WARNING = "kitap sayfa numarası bulunamadı, PDF sırası kullanıldı"
 IMAGE_ORDER_WARNING = "kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"
 TRUNCATED_WARNING = "model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir"
+CONFLICT_WARNING = "sayfa numarası komşularıyla tutmuyor, okunduğu gibi bırakıldı; kontrol edin"
 
 
 @dataclass
@@ -227,6 +228,8 @@ def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | No
         pid = _job_id(src, multi)
         if value is not None and value.isdigit() and label != value:   # okunan numara düzeltildi (R21)
             page.warnings.append(f"{pid}: okunan {value} → [{label}]")
+        elif value is not None and value.isdigit() and inferred:   # çelişen okumalar: hangisi doğru bilinemez
+            page.warnings.append(f"{pid}: {CONFLICT_WARNING} [{label}]")
         if label.startswith(("PDF s. ", "görsel ")):
             page.warnings.append(f"{pid}: {PDF_ORDER_WARNING if _is_pdf(src) else IMAGE_ORDER_WARNING}")
         page.book_page, page.book_page_inferred = label, inferred

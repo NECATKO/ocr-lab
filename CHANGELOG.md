@@ -6,9 +6,10 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 
 ## [Yayımlanmadı]
 
-### Bilinen sorunlar
-- İki-üç sayfalık bir seçimde okunan kitap sayfa numaraları birbirini tutmuyorsa (ör. 412 ve 431), ikisi de olduğu
-  gibi kalıyor ve uyarı verilmiyor.
+### Düzeltildi
+- İki-üç sayfalık bir seçimde okunan kitap sayfa numaraları birbirini tutmuyorsa (ör. 412 ve 431) artık sessiz
+  kalmıyor. Numaralar okunduğu gibi korunur ama köşeli parantezle (`[412]`, `[431]`) yazılır ve her sayfaya
+  "sayfa numarası komşularıyla tutmuyor" uyarısı eklenir.
 
 ## [0.1.0] - 2026-10-26
 

@@ -319,6 +319,14 @@ def test_overridden_reading_warns_and_real_break_is_kept(tmp_path):
     assert not any("okunan" in w for p in pages for w in p.warnings)
 
 
+def test_conflicting_readings_are_flagged(tmp_path):
+    # iki sayfalık alıntı, okunan numaralar birbirini tutmuyor: okunduğu gibi kalır, köşeli parantez ve uyarı alır
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (10, 11)])
+    pages = process_job(job, Options(), footer_run({10: 412, 11: 431}), lambda img: "", progress=lambda m: None)
+    assert book(pages) == [("412", True), ("431", True)]
+    assert all(any("komşularıyla tutmuyor" in w for w in p.warnings) for p in pages)
+
+
 def test_first_page_with_gap(tmp_path):
     job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (5, 6, 9)])
     pages = process_job(job, Options(first_page=100), footer_run({5: None, 6: None, 9: None}),
