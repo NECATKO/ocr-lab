@@ -202,10 +202,11 @@ def test_job_infers_book_pages_and_warns_pdf_order(tmp_path):
     assert [(p.book_page, p.book_page_inferred) for p in blank] == [("PDF s. 50", True), ("PDF s. 51", True)]
     assert "s. 50: kitap sayfa numarası bulunamadı, PDF sırası kullanıldı" in blank[0].warnings
 
-    # görüntülerde index hep 1: etiket iş içindeki sıradan gelir
+    # görüntülerde index hep 1: numarasız görüntünün etiketi iş içindeki sıradan gelir (R17)
     imgs = [SourcePage(source(tmp_path, f"t{k}.png"), 1) for k in (1, 2)]
     shots = process_job(DocJob("t", imgs), Options(), lambda img, m: "[]", lambda img: "", progress=lambda m: None)
-    assert [p.book_page for p in shots] == ["PDF s. 1", "PDF s. 2"]
+    assert [p.book_page for p in shots] == ["görsel 1", "görsel 2"]
+    assert shots[1].warnings == ["t2.png: kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"]
 
 
 def test_job_first_page_option(tmp_path):
@@ -219,7 +220,7 @@ def test_job_progress_messages(tmp_path):
     job = DocJob("kitap", [SourcePage(source(tmp_path), i) for i in (1, 2)])
     msgs: list[str] = []
     process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=msgs.append)
-    assert len(msgs) == 2 and msgs[0].startswith("kitap s. 1/2") and msgs[1].startswith("kitap s. 2/2")
+    assert msgs == ["kitap: s. 1 (1/2) okunuyor…", "kitap: s. 2 (2/2) okunuyor…"]
     msgs.clear()
     process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=msgs.append)
     assert len(msgs) == 2 and all("önbellek" in m for m in msgs)
@@ -231,3 +232,86 @@ def test_job_builds_word_list_once(tmp_path, monkeypatch):
     job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (1, 2, 3)])
     process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=lambda m: None)
     assert built == [(paths.GT, paths.SETTINGS / "kesme.txt")]
+
+
+def with_footer(n: int | None) -> str:
+    """Tek Text bloğu ve (n verilirse) altlıkta n numarası olan sentetik sayfa."""
+    foot = [("Page-footer", [100, 950, 200, 980], str(n))] if n is not None else []
+    return blocks_json(("Text", [0, 0, 500, 500], "metin"), *foot)
+
+
+def footer_run(numbers: dict[int, int | None]):
+    """syf<N>.png → altlığında numbers[N] olan sayfa (None: numarasız)."""
+    return lambda img, mode: with_footer(numbers[int(img.stem[3:])])
+
+
+def book(pages):
+    return [(p.book_page, p.book_page_inferred) for p in pages]
+
+
+def test_gapped_selection_uses_pdf_index(tmp_path):
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (1, 3, 7)])
+    quiet = dict(tsv=lambda img: "", progress=lambda m: None)
+    pages = process_job(job, Options(), footer_run({1: 412, 3: 414, 7: 418}), **quiet)
+    assert book(pages) == [("412", False), ("414", False), ("418", False)]
+    other = DocJob("k", [SourcePage(source(tmp_path, "b.pdf"), i) for i in (1, 3, 7)])
+    pages = process_job(other, Options(), footer_run({1: 412, 3: None, 7: None}), **quiet)
+    assert book(pages) == [("412", False), ("414", True), ("418", True)]
+
+
+def test_first_page_with_gap(tmp_path):
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (5, 6, 9)])
+    pages = process_job(job, Options(first_page=100), footer_run({5: None, 6: None, 9: None}),
+                        lambda img: "", progress=lambda m: None)
+    assert [p.book_page for p in pages] == ["100", "101", "104"]
+
+
+def test_merged_pdfs_keep_own_numbers_and_prefix(tmp_path):
+    a, b = source(tmp_path, "a.pdf"), source(tmp_path, "b.pdf", b"%PDF-baska")
+    job = DocJob("a_birlesik", [SourcePage(a, i) for i in (1, 2)] + [SourcePage(b, i) for i in (1, 2)])
+    replies = [with_footer(n) for n in (10, 11, 1, None)]   # sahte render iki PDF'te de syf1.png verir: sırayla
+    run = lambda img, mode: replies.pop(0)  # noqa: E731
+    msgs: list[str] = []
+    pages = process_job(job, Options(first_page=10), run, lambda img: "", progress=msgs.append)
+    assert book(pages) == [("10", False), ("11", False), ("1", False), ("2", True)]
+    assert msgs[2] == "a_birlesik: b.pdf s. 1 (3/4) okunuyor…"
+    # bloğun satır uyarısı birleşik işte dosya adıyla başlar; önbellekte tek kaynaklı kimlik durur
+    assert pages[2].warnings == ["b.pdf s. 1, blok 1: satır yapısı kurulamadı: Text bloğu, tesseract satırı yok"]
+    cached = json.loads(cache_path(job.pages[2], Options()).read_text(encoding="utf-8"))
+    assert cached["warnings"] == ["s. 1, blok 1: satır yapısı kurulamadı: Text bloğu, tesseract satırı yok"]
+    again = process_job(job, Options(), lambda img, m: pytest.fail("önbellek"), lambda img: "",
+                        progress=lambda m: None)
+    assert again[2].warnings == pages[2].warnings
+
+
+def test_image_job_warning_prefix(tmp_path):
+    imgs = [SourcePage(source(tmp_path, f"tarama{k}.png"), 1) for k in (1, 2, 3)]
+    raw = blocks_json(("Text", [0, 0, 500, 500], "metin"), ("Text", [0, 600, 500, 900], "öteki"))
+    msgs: list[str] = []
+    pages = process_job(DocJob("tarama", imgs), Options(), lambda img, m: raw, lambda img: "", progress=msgs.append)
+    assert "tarama3.png, blok 2: satır yapısı kurulamadı: Text bloğu, tesseract satırı yok" in pages[2].warnings
+    assert msgs[2] == "tarama: tarama3.png (3/3) okunuyor…"
+
+
+def test_failed_page_prefix_in_merged_job(tmp_path):
+    a, b = source(tmp_path, "a.pdf"), source(tmp_path, "b.pdf", b"%PDF-baska")
+    job = DocJob("m", [SourcePage(a, 1), SourcePage(b, 4)])
+
+    def run(img, mode):
+        raise RuntimeError("çöktü")
+    pages = process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
+    assert pages[1].warnings[0] == "b.pdf s. 4: okunamadı: çöktü"
+    assert pages[1].warnings[1] == "b.pdf s. 4: kitap sayfa numarası bulunamadı, PDF sırası kullanıldı"
+    assert pages[1].book_page == "PDF s. 4"
+
+
+def test_cache_write_failure_leaves_no_tmp(tmp_path, monkeypatch):
+    job = DocJob("k", [SourcePage(source(tmp_path), 1)])
+    target = cache_path(job.pages[0], Options())
+
+    def broken(self, *a, **k):
+        raise OSError("disk dolu")
+    monkeypatch.setattr(Path, "replace", broken)
+    pages = process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=lambda m: None)
+    assert "s. 1: önbelleğe yazılamadı (disk dolu)" in pages[0].warnings
+    assert list(target.parent.iterdir()) == []
