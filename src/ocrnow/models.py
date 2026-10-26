@@ -262,6 +262,11 @@ def main(argv: list[str]) -> int:
         return 2
     names = (list(engines.ENGINES) if args.hepsi else args.adlar
              or [n for n, e in engines.ENGINES.items() if e.recommended])
+    gpu = gpu_total_gb()
+    for n in names:
+        vram = engines.ENGINES[n].vram_gb
+        if gpu is not None and vram is not None and vram > gpu:
+            print(f"Uyarı: {n} tahminen {vram:.1f} GB GPU belleği ister, GPU'da {gpu:.1f} GB var; çalışmayabilir.")
     steps = install_steps(names)
     if not steps:
         print("Seçilen modellerin hepsi zaten kurulu.")

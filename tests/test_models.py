@@ -10,6 +10,12 @@ def _text(steps):
     return [" ".join(s.cmd) if s.cmd else s.desc for s in steps]
 
 
+@pytest.fixture(autouse=True)
+def no_gpu_query(monkeypatch):
+    """main() gerçek nvidia-smi çağırmasın; GPU isteyen test kendi değerini koyar."""
+    monkeypatch.setattr(models, "gpu_total_gb", lambda: None)
+
+
 @pytest.fixture
 def bos_kok(monkeypatch, tmp_path):
     """Hiçbir şeyin kurulu olmadığı sahte kök; HF önbelleği de boş."""
@@ -51,6 +57,24 @@ def test_every_engine_has_measured_sizes():
         assert e.vram_gb is None if e.kind == "local" else e.vram_gb > 0
         if e.name != "tesseract":
             assert e.disk_gb > 0
+
+
+def test_fp8_vram_from_measured_load():
+    """M7: fp8 motorlarda vLLM logundaki yüklenen bellek (dots 3.44 GiB, deepseek 3.91 GiB) + 1.5 GB."""
+    assert engines.ENGINES["dots.mocr"].vram_gb == 4.9
+    assert engines.ENGINES["deepseek-ocr2"].vram_gb == 5.4
+
+
+def test_install_warns_for_engines_too_big_for_gpu(monkeypatch, capsys):
+    monkeypatch.setattr(models, "install_steps", lambda names: [])
+    monkeypatch.setattr(models, "gpu_total_gb", lambda: 4.5)
+    assert models.main(["install", "dots.mocr", "glm-ocr"]) == 0
+    out = capsys.readouterr().out
+    assert "Uyarı: dots.mocr tahminen 4.9 GB GPU belleği ister, GPU'da 4.5 GB var" in out
+    assert "glm-ocr tahminen" not in out
+    monkeypatch.setattr(models, "gpu_total_gb", lambda: None)            # GPU bilinmiyorsa uyarı yok
+    models.main(["install", "dots.mocr"])
+    assert "Uyarı" not in capsys.readouterr().out
 
 
 def _fake_smi(monkeypatch, out=None, exc=None):

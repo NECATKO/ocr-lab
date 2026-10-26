@@ -77,11 +77,13 @@ def _duz(prompt: str | None) -> dict[str, Mode]:
 
 # vram_gb: sunucu açıkken nvidia-smi ile ÖLÇÜLEMEZ, çünkü vLLM `--gpu-memory-utilization 0.85` ile belleğin
 # neredeyse hepsini baştan ayırır (kullanılan bellek ihtiyacı değil, ayrılan paydır). Bu yüzden tahmini asgari
-# kullanılır: yüklenen dtype'taki ağırlık boyutu + 1.5 GB (etkinleştirme/KV önbelleği/CUDA bağlamı payı).
-# Ağırlık boyutu: fp8 modellerde parametre sayısı × 1 bayt, bf16'da × 2 bayt, GGUF'ta dosya boyutu
-# (parametre sayıları HF önbelleğindeki safetensors başlıklarından; GB = 2^30 bayt):
+# kullanılır: yüklenen ağırlık boyutu + 1.5 GB (etkinleştirme/KV önbelleği/CUDA bağlamı payı).
+# Ağırlık boyutu: bf16'da parametre sayısı × 2 bayt, GGUF'ta dosya boyutu (parametre sayıları HF önbelleğindeki
+# safetensors başlıklarından; GB = 2^30 bayt). fp8 modellerde vLLM sunucu logunun bildirdiği yüklenen bellek
+# (parametre × 1 bayt tahmini ~0.6 GB düşük kalıyordu: nicemlenmeyen katmanlar bf16 kalır):
 #   paddleocr-vl GGUF 0.94+0.88 GB → 1.7+1.5=3.2 | glm-ocr 1.33 G param bf16 → 2.5+1.5=4.0
-#   lightonocr 1.01 G bf16 → 1.9+1.5=3.4 | deepseek-ocr2 3.39 G fp8 → 3.2+1.5=4.7 | dots.mocr 3.04 G fp8 → 2.8+1.5=4.3
+#   lightonocr 1.01 G bf16 → 1.9+1.5=3.4 | deepseek-ocr2 fp8 log 3.91 GiB → 3.9+1.5=5.4
+#   dots.mocr fp8 log 3.44 GiB → 3.4+1.5=4.9
 # disk_gb: HF önbelleği anlık görüntüsünün `du -sL` boyutu (GGUF için llama.cpp 1.0 GB dahil; kraken için
 # .venv-kraken 3.7 GB dahil); 0.1 GB'a yuvarlandı. tesseract sistem paketidir, bu tabloda yer tutmaz.
 # VLM'ler OpenAI uyumlu sunucu üzerinden çağrılır. Sunucuyu kendin açtıysan (docker, ollama vs.)
@@ -95,11 +97,11 @@ ENGINES: dict[str, Engine] = {e.name: e for e in [
            serve="vllm serve zai-org/GLM-OCR --port 8002 $VLLM"),
     Engine("lightonocr", "vlm", _duz(None), port=8003, recommended=True, vram_gb=3.4, disk_gb=1.9,  # LightOnOCR metin istemez, sadece görsel
            serve="""vllm serve lightonai/LightOnOCR-2-1B --port 8003 --limit-mm-per-prompt '{"image": 1}' $VLLM"""),
-    Engine("deepseek-ocr2", "vlm", _duz("Free OCR."), port=8004, vram_gb=4.7, disk_gb=6.3,  # bf16 hâli 8 GB'a sığmıyor → fp8
+    Engine("deepseek-ocr2", "vlm", _duz("Free OCR."), port=8004, vram_gb=5.4, disk_gb=6.3,  # bf16 hâli 8 GB'a sığmıyor → fp8
            serve="vllm serve deepseek-ai/DeepSeek-OCR-2 --port 8004 --quantization fp8 --enforce-eager $VLLM"),
     Engine("dots.mocr", "vlm",
            {"duz": Mode("Extract the text content from this image.", False), "duzen": Mode(LAYOUT_PROMPT, True)},
-           port=8005, recommended=True, vram_gb=4.3, disk_gb=5.7,  # 6 GB → fp8
+           port=8005, recommended=True, vram_gb=4.9, disk_gb=5.7,  # 6 GB → fp8
            serve="""vllm serve dots-studio/dots.mocr --port 8005 --trust-remote-code --chat-template-content-format string --quantization fp8 --enforce-eager --mm-processor-kwargs '{"max_pixels": 4000000}' $VLLM"""),
 ]}
 DEFAULT_ENGINE = "dots.mocr"
