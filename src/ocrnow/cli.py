@@ -205,6 +205,7 @@ def _free_stem(name: str, formats: list[str]) -> str:
         stem, k = f"{name}_{k}", k + 1
     return stem
 
+
 def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path],
              export_warnings: dict[str, list[str]]) -> bool:
     """Bitiş özetini yazar (uyarılar: sayfalarınki, sonra dışa aktarmanınki); en az bir sayfa okunamadıysa True."""

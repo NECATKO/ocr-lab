@@ -85,7 +85,7 @@ def _duz(prompt: str | None) -> dict[str, Mode]:
 # kullanılır: yüklenen ağırlık boyutu + 1.5 GB (etkinleştirme/KV önbelleği/CUDA bağlamı payı).
 # Ağırlık boyutu: bf16'da parametre sayısı × 2 bayt, GGUF'ta dosya boyutu (parametre sayıları HF önbelleğindeki
 # safetensors başlıklarından; GB = 2^30 bayt). fp8 modellerde vLLM sunucu logunun bildirdiği yüklenen bellek
-# (parametre × 1 bayt tahmini ~0.6 GB düşük kalıyordu: nicemlenmeyen katmanlar bf16 kalır):
+# (parametre × 1 bayt tahmini logdaki ölçümden ~0.6 GB düşük kalıyordu):
 #   paddleocr-vl GGUF 0.94+0.88 GB → 1.7+1.5=3.2 | glm-ocr 1.33 G param bf16 → 2.5+1.5=4.0
 #   lightonocr 1.01 G bf16 → 1.9+1.5=3.4 | deepseek-ocr2 fp8 log 3.91 GiB → 3.9+1.5=5.4
 #   dots.mocr fp8 log 3.44 GiB → 3.4+1.5=4.9
