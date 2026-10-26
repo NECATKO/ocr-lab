@@ -202,7 +202,8 @@ def process_job(job: DocJob, opts: Options, run, tsv=engines.tesseract_tsv,
         except Exception as e:  # sayfa düzeyinde hata: iş devam eder
             progress(f"{head} {READ_FAILED}: {_error_text(e)}")
             page = Page(source=str(src.source), index=src.index, width=0, height=0, engine=opts.engine,
-                        mode=opts.mode, blocks=[], warnings=[f"{pid}: {READ_FAILED}: {_error_text(e)}"])
+                        mode=opts.mode, blocks=[], warnings=[f"{pid}: {READ_FAILED}: {_error_text(e)}"],
+                        failed=True)
             read.append(None)
         else:
             if pid != page_id(src):

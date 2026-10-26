@@ -149,6 +149,16 @@ def test_failed_and_unnumbered_pages(tmp_path):
     assert [s.footer.paragraphs[0].text for s in d.sections] == ["401", "[PDF s. 2]", ""]
 
 
+def test_failed_page_has_placeholder(tmp_path):
+    """R22: okunamayan sayfa belgede boş sayfa değil, açık bir yer tutucudur."""
+    failed = Page("k.pdf", 2, 0, 0, "dots.mocr", "duzen", [], book_page="402", book_page_inferred=True, failed=True)
+    d = Document(write_docx([page(1), failed, page(3)], tmp_path / "a.docx"))
+    assert [p.text for p in d.paragraphs] == ["bir iki-\nüç dört", "[Bu sayfa okunamadı]", "bir iki-\nüç dört"]
+    assert [s.footer.paragraphs[0].text for s in d.sections] == ["401", "[402]", "403"]
+    txt = write_txt([page(1), failed], tmp_path / "a.txt").read_text(encoding="utf-8")
+    assert txt.endswith("--- s. [402] ---\n[Bu sayfa okunamadı]\n")
+
+
 def test_long_lines_shrink_font():
     assert font_size_for(85) == 10.5 and font_size_for(120) <= 8
     assert font_size_for(100) * 2 == int(font_size_for(100) * 2)       # 0.5'lik adım

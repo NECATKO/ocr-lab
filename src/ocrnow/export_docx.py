@@ -14,7 +14,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
-from ocrnow.export_txt import page_label, plain_text, split_blocks
+from ocrnow.export_txt import FAILED_TEXT, page_label, plain_text, split_blocks
 from ocrnow.layout import Block, Page
 
 BOLD_DEFAULT = r"\[\d+[ab] [^\]]*\]"   # yazma nüsha işaretleri: [106b sayfanın sağ yanı]
@@ -209,6 +209,8 @@ def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_patter
             for block in footnotes:
                 last = doc.add_paragraph()
                 _add_runs(last, block, sup, bold_re, highlight, footnote_pt)
+        if page.failed:
+            last = doc.add_paragraph(FAILED_TEXT)
         if last is None:
             last = doc.add_paragraph()      # bloksuz (ya da yalnız numaralı) sayfa: boş paragraf
         if n < len(pages) - 1:

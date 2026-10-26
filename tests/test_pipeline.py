@@ -100,6 +100,7 @@ def test_engine_error_keeps_going(tmp_path):
     pages = process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
     assert len(pages) == 2 and any("okunamadı" in w for w in pages[0].warnings)
     assert pages[0].blocks == [] and pages[0].index == 1
+    assert pages[0].failed is True and pages[1].failed is False
     assert "s. 1: okunamadı: sunucu yanıt vermedi" in pages[0].warnings
     assert not any("Traceback" in w for w in pages[0].warnings)
     assert not any("okunamadı" in w for w in pages[1].warnings)

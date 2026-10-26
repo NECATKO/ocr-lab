@@ -41,6 +41,14 @@ def test_roundtrip_full_page_and_none_bbox_non_ascii():
     assert q.blocks[0].bbox is None
 
 
+def test_failed_flag_roundtrip_and_old_json_default():
+    p = Page("a.pdf", 3, 0, 0, "dots.mocr", "duzen", [], failed=True)
+    assert page_from_json(page_to_json(p)).failed is True
+    old = json.loads(page_to_json(Page("a.pdf", 1, 10, 10, "dots.mocr", "duzen", [])))
+    del old["failed"]                                     # alan eklenmeden önce yazılmış önbellek
+    assert page_from_json(json.dumps(old)).failed is False
+
+
 def test_smart_resize_values():
     assert smart_resize(2339, 1653) == (2352, 1652)       # 28'in katları, 4 MP altında
     h, w = smart_resize(4678, 3306)

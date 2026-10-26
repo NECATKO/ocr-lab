@@ -6,6 +6,7 @@ from pathlib import Path
 from ocrnow.layout import Block, Page
 
 SKIPPED = frozenset({"Page-header", "Page-footer"})   # .txt'ye yazılmaz (numara ayraçta)
+FAILED_TEXT = "[Bu sayfa okunamadı]"                 # okunamayan sayfanın yer tutucusu (docx ve txt)
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -36,7 +37,7 @@ def write_txt(pages: list[Page], out: Path) -> Path:
     for page in pages:
         label = page_label(page)
         _, body, footnotes = split_blocks(page)
-        paragraphs = [t for b in body + footnotes if (t := plain_text(b))]
+        paragraphs = [FAILED_TEXT] if page.failed else [t for b in body + footnotes if (t := plain_text(b))]
         head = f"--- s. {label} ---" if label else "---"
         chunks.append("\n".join([head, "\n\n".join(paragraphs)]) if paragraphs else head)
     out.parent.mkdir(parents=True, exist_ok=True)

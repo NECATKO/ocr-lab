@@ -46,6 +46,7 @@ class Page:
     book_page_inferred: bool = False
     book_page_side: str | None = None  # "sol" | "sag"
     warnings: list[str] = field(default_factory=list)
+    failed: bool = False  # sayfa okunamadı (önbelleğe girmez); belgede yer tutucu durur
 
 
 def page_to_json(p: Page) -> str:
