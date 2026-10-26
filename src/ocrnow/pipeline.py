@@ -51,10 +51,11 @@ def _word_list() -> dict[str, str]:
 
 
 def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path, str], str],
-                 tsv: Callable[[Path], str] = engines.tesseract_tsv,
+                 tsv: Callable[[Path], str] | None = None,
                  size: tuple[int, int] | None = None, *, words: dict[str, str] | None = None) -> Page:
-    """Tek sayfayı işler. size=(genişlik, yükseklik); None ise img'den okunur. words None ise liste burada kurulur."""
-    tsv_text = tsv(img)          # önce: tesseract hata verirse model (VLM) boşuna beklenmez
+    """Tek sayfayı işler. size=(genişlik, yükseklik); None ise img'den okunur. words None ise liste burada kurulur.
+    tsv None ise engines.tesseract_tsv (çağrı anında okunur)."""
+    tsv_text = (tsv or engines.tesseract_tsv)(img)   # önce: tesseract hata verirse model (VLM) boşuna beklenmez
     raw = run(img, opts.mode)
     if size is None:
         with Image.open(img) as im:
@@ -190,7 +191,7 @@ def _job_id(src: SourcePage, multi: bool) -> str:
     return f"{src.source.name} {page_id(src)}" if multi and _is_pdf(src) else page_id(src)
 
 
-def process_job(job: DocJob, opts: Options, run, tsv=engines.tesseract_tsv,
+def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | None = None,
                 progress: Callable[[str], None] = print) -> list[Page]:
     """Belgenin sayfalarını sırayla işler; hatalı sayfa uyarıyla boş geçilir, sonunda kitap numaraları tahmin edilir.
 
