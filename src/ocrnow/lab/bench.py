@@ -5,9 +5,10 @@ Ayrıca paths.LAB_OUT/summary.csv'ye satır eklenir (koşular arasında birikir)
 """
 import csv
 import json
+import dataclasses
 import os
+import re
 import sys
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -59,11 +60,39 @@ def _error_text(error: Exception) -> str:
     return str(error) or type(error).__name__
 
 
+def _raw_texts(raw: str, n: int) -> list[str | None] | None:
+    """Model JSON'u geçerliyse her öğenin ham "text" değeri (blok içi satır sonları korunur); aksi hâlde None.
+
+    layout.parse_output boşlukları tek satıra katlar; bu yüzden satır sonu tireleri (senâ-\nkâr) blok metninden
+    birleştirilemez. JSON bozuk/kesikse (kurtarma yolu) ham satır sonları bilinemez: blok metni kullanılır ve
+    tire birleştirme bu sayfada çalışmaz (bilinen sınır).
+    """
+    try:
+        items = json.loads(re.sub(r"\s*```$", "", re.sub(r"^```[A-Za-z]*\s*", "", raw.strip())))
+    except ValueError:
+        return None
+    if not (isinstance(items, list) and len(items) == n and all(isinstance(i, dict) for i in items)):
+        return None
+    return [i.get("text") if isinstance(i.get("text"), str) else None for i in items]
+
+
 def _model_text(raw: str, engine: str, mode: str, size: tuple[int, int]) -> str:
-    """Ölçülen metin: düz modda ham çıktı; düzen modunda blokların metni (JSON değil), boş satırla ayrılmış."""
+    """Ölçülen metin: düz modda ham çıktı. Düzen modunda blok metinleri boş satırla ayrılır; Picture blokları
+    ([Görsel] yer tutucusu modelin metni değil) atlanır, Table düz metne çevrilir, blok içi satır sonları
+    mümkünse modelin ham JSON'undan alınır."""
     if not engines.ENGINES[engine].modes[mode].layout:
         return raw
-    return "\n\n".join(b.text for b in parse_output(raw, True, size)[0])
+    blocks = parse_output(raw, True, size)[0]
+    texts = _raw_texts(raw, len(blocks)) or [None] * len(blocks)
+    parts = []
+    for block, text in zip(blocks, texts):
+        if block.category == "Picture":
+            continue
+        if text is not None:
+            block = dataclasses.replace(block, text=text)
+        if part := plain_text(block).strip():
+            parts.append(part)
+    return "\n\n".join(parts)
 
 
 def _pipeline_lines(page: Page) -> list[str]:
@@ -79,14 +108,7 @@ def _pipeline_lines(page: Page) -> list[str]:
 
 def _words_without(gt_dir: Path, own: Path) -> dict[str, str]:
     """Kesme kelime listesi; ölçülen sayfanın kendi gt'si hariç (liste kendi cevaplarını içermesin)."""
-    user_file = paths.SETTINGS / "kesme.txt"
-    if not own.exists():
-        return build_word_list(gt_dir, user_file)
-    with tempfile.TemporaryDirectory() as tmp:
-        for f in gt_dir.glob("*.txt"):
-            if f != own:
-                (Path(tmp) / f.name).symlink_to(f.resolve())
-        return build_word_list(Path(tmp), user_file)
+    return build_word_list(gt_dir, paths.SETTINGS / "kesme.txt", exclude=own)
 
 
 def _measure(gt: str, text: str, lines: list[str], page: Page) -> dict:
@@ -104,7 +126,7 @@ def _measure(gt: str, text: str, lines: list[str], page: Page) -> dict:
 
 def _empty_record(src: SourcePage, engine: str, mode: str) -> dict:
     return {"pdf": src.source.stem, "page": src.index, "engine": engine, "mode": mode, "seconds": None,
-            "chars": None, "raw_path": None, **dict.fromkeys(METRICS), "apostrophe_n": None,
+            "chars": None, "raw_path": None, **dict.fromkeys(METRICS), "apostrophe_n": None, "apostrophe_flagged": None,
             "word_errors": [], "lines": [], "warnings": [], "error": None}
 
 
@@ -135,23 +157,27 @@ def write_comparison(path: Path, stem: str, targets: list[tuple[str, str]], reco
     """Bugünkü karşılaştırma Markdown'u: her sayfa için sayfa görüntüsü, ölçü tablosu ve her çıktının metni."""
     show = lambda v: "—" if v is None else f"{v:.4f}"  # noqa: E731
     lines = [f"# {stem} — OCR karşılaştırması", "",
-             f"{time.strftime('%Y-%m-%d %H:%M')} · {', '.join(f'{e}/{m}' for e, m in targets)}", ""]
+             f"{time.strftime('%Y-%m-%d %H:%M')} · {', '.join(f'{e}/{m}' for e, m in targets)}", "",
+             "Süre yalnız model çağrısıdır (sayfa görüntüsü, tesseract ve hat işleme dahil değil). "
+             "Düzen modunda model JSON'u bozuksa blok içi satır sonları korunamaz; satır sonu tireleri "
+             "o sayfada CER norm'u etkiler.", ""]
     mine = [r for r in records if r["pdf"] == stem]
     for index in sorted({r["page"] for r in mine}):
         img = images.get((stem, index))
         lines += [f"## Sayfa {index}", ""]
         if img:
             lines += [f"![sayfa {index}]({Path(os.path.relpath(img, path.parent)).as_posix()})", ""]
-        lines += ["| Motor/mod | Süre (sn) | Karakter | CER | CER norm | WER | Satır sonu | Kesme |",
-                  "|---|---|---|---|---|---|---|---|"]
+        lines += ["| Motor/mod | Model süresi (sn) | Karakter | CER | CER norm | WER | Satır sonu | Kesme | Sarı kesme |",
+                  "|---|---|---|---|---|---|---|---|---|"]
         rows = [r for r in mine if r["page"] == index]
         for r in rows:
             name = f"{r['engine']}/{r['mode']}"
             if r["error"]:
-                lines.append(f"| {name} | — | — | HATA | | | | |")
+                lines.append(f"| {name} | — | — | HATA | | | | | |")
             else:
                 lines.append(f"| {name} | {r['seconds']:.1f} | {r['chars']} | {show(r['cer_raw'])} | "
-                             f"{show(r['cer_norm'])} | {show(r['wer'])} | {show(r['line_end'])} | {show(r['apostrophe'])} |")
+                             f"{show(r['cer_norm'])} | {show(r['wer'])} | {show(r['line_end'])} | {show(r['apostrophe'])} | "
+                             f"{'—' if r['apostrophe_flagged'] is None else r['apostrophe_flagged']} |")
         for r in rows:
             body = f"HATA: {r['error']}" if r["error"] else texts[stem, index, r["engine"], r["mode"]].strip()
             lines += ["", f"### {r['engine']}/{r['mode']}", "", "````text", body, "````"]
@@ -213,7 +239,8 @@ def run_bench(source_pages: list[SourcePage], targets: list[tuple[str, str]], gt
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_text(cap.raw, encoding="utf-8")
             rec.update(seconds=cap.seconds, chars=len(text), raw_path=str(raw_path), lines=lines,
-                       warnings=page.warnings)
+                       warnings=page.warnings,
+                       apostrophe_flagged=sum(m.kind == "kesme" for b in page.blocks for m in b.marks))
             texts[rec["pdf"], src.index, engine, mode] = text
             if gt_path.exists():
                 rec.update(_measure(gt_path.read_text(encoding="utf-8"), text, lines, page))

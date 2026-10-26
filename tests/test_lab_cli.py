@@ -23,7 +23,7 @@ def make_pdf(path, n):
 def record(error=None, **kw):
     base = {"pdf": "k", "page": 1, "engine": "glm-ocr", "mode": "duz", "seconds": 1.5, "chars": 10,
             "cer_raw": 0.1, "cer_norm": 0.05, "cer_body": None, "cer_base": 0.02, "wer": 0.2, "line_end": 0.9,
-            "apostrophe": None, "error": error}
+            "apostrophe": None, "apostrophe_flagged": 2, "error": error}
     return {**base, **kw}
 
 

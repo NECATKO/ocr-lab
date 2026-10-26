@@ -120,9 +120,10 @@ def _num(value, digits: int = 3) -> str:
 
 def print_table(records: list[dict]) -> None:
     """Başarılı kayıtlar tablo olur (ölçü yoksa —); hatalılar tablonun altında tek satır."""
-    head = ["motor/mod", "sayfa", "süre", "kr", "cer", "norm", "gövde", "harf", "wer", "satır", "kesme"]
+    head = ["motor/mod", "sayfa", "süre", "kr", "cer", "norm", "gövde", "harf", "wer", "satır", "kesme", "sarı"]
     rows = [[f"{r['engine']}/{r['mode']}", f"{r['pdf']} s.{r['page']}", _num(r["seconds"], 1), str(r["chars"]),
-             *(_num(r[k]) for k in ("cer_raw", "cer_norm", "cer_body", "cer_base", "wer", "line_end", "apostrophe"))]
+             *(_num(r[k]) for k in ("cer_raw", "cer_norm", "cer_body", "cer_base", "wer", "line_end", "apostrophe")),
+             "—" if r["apostrophe_flagged"] is None else str(r["apostrophe_flagged"])]
             for r in records if not r["error"]]
     widths = [max(len(row[i]) for row in [head, *rows]) for i in range(len(head))]
     print()

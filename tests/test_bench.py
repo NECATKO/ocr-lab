@@ -187,8 +187,9 @@ def test_comparison_markdown(tmp_path, env):
     md = (out / "kitap_karsilastirma.md").read_text(encoding="utf-8")
     assert md.startswith("# kitap — OCR karşılaştırması")
     assert "## Sayfa 1" in md and "![sayfa 1](../pages/kitap_syf1.png)" in md
+    assert "Model süresi (sn)" in md and "yalnız model çağrısıdır" in md and "Sarı kesme" in md
     assert "| dots.mocr/duzen |" in md and "| glm-ocr/duz | — | — | HATA |" in md
-    assert "### dots.mocr/duzen" in md and "BAŞLIK\n\nbir iki üç dört beş\n\n12" in md and "HATA: model çöktü" in md
+    assert "### dots.mocr/duzen" in md and "BAŞLIK\n\nbir iki üç\ndört beş\n\n12" in md and "HATA: model çöktü" in md
 
 
 def test_results_written_even_when_interrupted(tmp_path, env):
@@ -213,3 +214,46 @@ def test_new_run_dir_adds_suffix_when_taken(tmp_path):
     assert new_run_dir(tmp_path, now).name == "20261025-1200"
     assert new_run_dir(tmp_path, now).name == "20261025-1200-2"
     assert new_run_dir(tmp_path, now).name == "20261025-1200-3"
+
+
+def layout(*items):
+    return json.dumps([{"category": c, "bbox": [0, 0, 10, 10], **({"text": t} if t is not None else {})} for c, t in items],
+                      ensure_ascii=False)
+
+
+SIZE = (100, 100)
+
+
+def test_model_text_matches_manual_join_on_spike(spike_layout):
+    manual = "\n\n".join(b["text"] for b in json.loads(spike_layout))
+    assert bench._model_text(spike_layout, "dots.mocr", "duzen", (1653, 2339)) == manual
+
+
+def test_model_text_skips_pictures_flattens_tables_keeps_line_breaks():
+    raw = layout(("Text", "senâ-\nkâr"), ("Picture", None), ("Table", "<table><tr><td>a</td><td>b</td></tr></table>"),
+                 ("Text", "son"))
+    assert bench._model_text(raw, "dots.mocr", "duzen", SIZE) == "senâ-\nkâr\n\na b\n\nson"
+    assert metrics_norm_equal("senâkâr", bench._model_text(layout(("Text", "senâ-\nkâr")), "dots.mocr", "duzen", SIZE))
+
+
+def metrics_norm_equal(a, b):
+    from ocrnow.lab import metrics
+    return metrics.cer_norm(a, b) == 0
+
+
+def test_model_text_falls_back_to_block_text_on_broken_json():
+    raw = layout(("Text", "ilk"), ("Text", "ikinci"))[:-3]   # kesik JSON: kurtarma yolu
+    assert bench._model_text(raw, "dots.mocr", "duzen", SIZE) == "ilk\n\nikinci"
+
+
+def test_model_text_plain_mode_is_raw():
+    assert bench._model_text("a\nb", "glm-ocr", "duz", SIZE) == "a\nb"
+
+
+def test_apostrophe_flagged_counts_undecided_marks(tmp_path, env):
+    env.outputs["glm-ocr", "duz"] = "cür'et ve ba'z"
+    rec = load(run_bench([src(tmp_path)], [("glm-ocr", "duz")], tmp_path / "gt", tmp_path / "run"))[0]
+    assert rec["apostrophe_flagged"] == 2     # liste ve kural karar veremedi, ikisi de sarı
+    env.fail_page.add(("glm-ocr", "kitap_syf1.png"))
+    rec = load(run_bench([src(tmp_path)], [("glm-ocr", "duz")], tmp_path / "gt", tmp_path / "run2"))[0]
+    assert rec["apostrophe_flagged"] is None

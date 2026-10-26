@@ -59,6 +59,14 @@ def test_build_word_list(tmp_path):
     assert build_word_list(tmp_path, user)["mes'ele"] == "mes‘ele"
 
 
+def test_build_word_list_exclude(tmp_path):
+    (tmp_path / "a.txt").write_text("mes’ele", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("ba‘z", encoding="utf-8")
+    words = build_word_list(tmp_path, tmp_path / "yok.txt", exclude=tmp_path / "a.txt")
+    assert "ba'z" in words and "mes'ele" not in words
+    assert "mes'ele" in build_word_list(tmp_path, tmp_path / "yok.txt")
+
+
 def test_gt_page_rules_only(gt_syf1):
     flat = re.sub("[’‘]", "'", gt_syf1)
     out, marks = restore(flat, {})

@@ -49,10 +49,16 @@ def _add_words(text: str, words: dict[str, str], *, override: bool) -> None:
                 words[k] = w
 
 
-def build_word_list(gt_dir: Path, user_file: Path) -> dict[str, str]:
-    """gt/*.txt içindeki ’/‘ geçen kelimeler + kullanıcı dosyası (satır başı # yorum; kullanıcı gt'yi ezer)."""
+def build_word_list(gt_dir: Path, user_file: Path, *, exclude: Path | None = None) -> dict[str, str]:
+    """gt/*.txt içindeki ’/‘ geçen kelimeler + kullanıcı dosyası (satır başı # yorum; kullanıcı gt'yi ezer).
+
+    exclude: listeye alınmayacak gt dosyası (benchmark ölçtüğü sayfanın kendi cevabını görmesin).
+    """
     words: dict[str, str] = {}
+    skip = Path(exclude).resolve() if exclude else None
     for f in sorted(Path(gt_dir).glob("*.txt")):
+        if skip and f.resolve() == skip:
+            continue
         _add_words(f.read_text(encoding="utf-8"), words, override=False)
     if Path(user_file).is_file():
         for line in Path(user_file).read_text(encoding="utf-8").splitlines():
