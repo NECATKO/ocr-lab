@@ -40,7 +40,8 @@ Her sayfa için şu adımlar sırayla yapılır:
    Böylece her satır kitaptaki yerinden kırılır, satır sonu tireleri de doğru yere konur.
 4. **Ayın (‘) ve hemze (’) ayrılır.** Bunu yapan kurallar ve bir kelime listesidir.
 5. **Şüpheli kelimeler işaretlenir.** Ana model ile tesseract'ın farklı okuduğu kelimeler sarıya boyanır.
-6. **Kitap sayfa numarası bulunur.** Önce sayfadan okunur. Okunamazsa komşu sayfalardan tahmin edilir.
+6. **Kitap sayfa numarası bulunur.** Sayfadan okunan numaraya güvenilir. Okunamazsa, yalnız güvenli olduğunda
+   komşu sayfalardan tahmin edilir.
 7. **Dışa aktarılır.** Yazılan biçimler `.docx` ve `.txt`'dir. Adım 1–2'nin çıktısı önbelleğe yazılır; sonraki
    adımlar her çalıştırmada yeniden yapılır (bkz. Önbellek).
 
@@ -96,13 +97,24 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 - Kitabın sayfa numarası altlıkta, kitaptaki tarafta durur.
 - Punto her sayfa için en uzun satır sığacak şekilde seçilir: en çok 10.5, en az 8 pt.
 
-**Köşeli parantezli sayfa numarası** (`[413]`) tahmin edilmiş demektir.
-- Numara ya sayfadan okunamadı ya da komşularıyla çelişiyordu.
-- Kendi içinde tutarlı okumalar korunur, ör. 412–415'ten sonra 418–425.
-- Yalnız tek başına aykırı kalan okuma düzeltilir ve uyarılır (`s. 2: okunan 431 → [413]`).
-- Hiçbiri birbirini tutmuyorsa (ör. iki sayfalık alıntıda 412 ve 431) hangisinin doğru olduğu bilinemez. Okunan
-  numaralar korunur ama köşeli parantezle yazılır ve uyarılır.
-- Hiç ipucu yoksa `[PDF s. 3]` yazılır.
+**Sayfa numarası.** Sayfadan okunan numara olduğu gibi yazılır; komşularıyla tutmaması tek başına sorun sayılmaz.
+Taranmış belge kitabın farklı yerlerinden, hatta ters sırayla alınmış parçalardan oluşabilir.
+**Köşeli parantezli numara** (`[413]`) tahmin edilmiş ya da kontrol edilmesi gereken numaradır:
+- **Tarafla çelişen okuma.** Okumalardan kitabın kuralı öğrenilir: çift numaralar solda mı, sağda mı (en az iki
+  okuma ve açık çoğunluk gerekir). Kurala aykırı okuma okunduğu gibi kalır ama köşeli parantezle yazılır ve
+  uyarılır (`s. 4: okunan 416 sayfanın tarafıyla çelişiyor (sağ sayfada çift numara), kontrol edin`).
+- **Koşu içinde tek aykırı okuma.** Artan (412, 413, 414) ya da azalan (412, 411, 410) tutarlı bir koşunun
+  ortasındaki tek aykırı okuma koşudan düzeltilir ve uyarılır (`s. 2: okunan 431 → [413]`). Kendi içinde tutarlı
+  okumalar korunur, ör. 412–415'ten sonra 418–425.
+- **Okunamayan numara** yalnız şu durumlarda tahmin edilir: sayfa bir koşunun içindeyse, en az iki okumalı bir
+  koşunun hemen devamıysa ya da seçimdeki tek okumadan sonra geliyorsa. Koşudan önceki sayfa tahmin edilmez.
+- Tahmin, sayfanın çiftliğiyle çelişirse yapılmaz. Çiftlik, sayfanın başlığından öğrenilir: ör. yazar adı hep çift,
+  kitap adı hep tek sayfadaysa (büyük/küçük harf ve aksan farkı yok sayılır).
+- Tahmin yapılamazsa `[PDF s. 3]` yazılır ve uyarılır. Gerekirse `--ilk-sayfa` ile numara verin.
+
+Aynı numara birden fazla sayfada okunduysa her birine uyarı eklenir
+(`s. 23: 285 numarası s. 12'de de okundu (aynı sayfa iki kez taranmış olabilir)`).
+`--ilk-sayfa` verilirse numaralar ondan sırayla sayılır; taraf, başlık ve tekrar denetimi yapılmaz.
 
 **Sarı vurgu** iki durumda konur. Amaç, hataların bütün sayfayı okumadan bulunabilmesidir.
 - Ana model ile tesseract'ın farklı okuduğu, bakılmaya değer bir kelime.

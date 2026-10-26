@@ -319,12 +319,70 @@ def test_overridden_reading_warns_and_real_break_is_kept(tmp_path):
     assert not any("okunan" in w for p in pages for w in p.warnings)
 
 
-def test_conflicting_readings_are_flagged(tmp_path):
-    # iki sayfalık alıntı, okunan numaralar birbirini tutmuyor: okunduğu gibi kalır, köşeli parantez ve uyarı alır
+def test_disagreeing_readings_are_trusted(tmp_path):
+    # R25: iki sayfalık alıntıda birbirini tutmayan okumalar okunduğu gibi kalır: köşeli parantez ve uyarı yok
     job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (10, 11)])
     pages = process_job(job, Options(), footer_run({10: 412, 11: 431}), lambda img: "", progress=lambda m: None)
-    assert book(pages) == [("412", True), ("431", True)]
-    assert all(any("komşularıyla tutmuyor" in w for w in p.warnings) for p in pages)
+    assert book(pages) == [("412", False), ("431", False)]
+    assert all(p.warnings == ["s. %d, blok 1: satır yapısı kurulamadı: Text bloğu, tesseract satırı yok" % p.index]
+               for p in pages)
+
+
+def numbered(n: int | None, side: str = "sol", header: str | None = None) -> str:
+    """Altlığında n numarası (side tarafında) ve isteğe bağlı başlığı olan sentetik sayfa."""
+    x = 100 if side == "sol" else 800
+    head = [("Page-header", [300, 20, 700, 50], header)] if header else []
+    foot = [("Page-footer", [x, 950, x + 100, 980], str(n))] if n is not None else []
+    return blocks_json(*head, ("Text", [0, 100, 500, 500], "metin"), *foot)
+
+
+def replies_run(replies: dict[int, str]):
+    return lambda img, mode: replies[int(img.stem[3:])]
+
+
+def test_reading_contradicting_side_rule_is_flagged(tmp_path):
+    # R25: okumalardan çift=sol öğrenilir; sağ sayfada okunan 416 okunduğu gibi kalır ama işaretlenir ve uyarılır
+    replies = {1: numbered(412, "sol"), 2: numbered(413, "sag"), 3: numbered(414, "sol"), 4: numbered(416, "sag")}
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in replies])
+    pages = process_job(job, Options(), replies_run(replies), lambda img: "", progress=lambda m: None)
+    assert book(pages) == [("412", False), ("413", False), ("414", False), ("416", True)]
+    assert "s. 4: okunan 416 sayfanın tarafıyla çelişiyor (sağ sayfada çift numara), kontrol edin" in pages[3].warnings
+    assert not any("çelişiyor" in w for p in pages[:3] for w in p.warnings)
+
+
+def test_guess_contradicting_header_is_not_made(tmp_path):
+    # ters taranmış koşu 412, 411, 410; s. 4 numarasız, başlığı yazar adı (hep çift sayfada): 409 yazılmaz
+    replies = {1: numbered(412, "sol", "YAZAR ADI"), 2: numbered(411, "sag", "KİTAP ADI"),
+               3: numbered(410, "sol", "Yazar Âdı"), 4: numbered(None, header="YAZAR ADI")}
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in replies])
+    pages = process_job(job, Options(), replies_run(replies), lambda img: "", progress=lambda m: None)
+    assert book(pages) == [("412", False), ("411", False), ("410", False), ("PDF s. 4", True)]
+    assert "s. 4: kitap sayfa numarası bulunamadı, PDF sırası kullanıldı" in pages[3].warnings
+    replies[4] = numbered(None, header="KİTAP ADI")
+    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf"), i) for i in replies])
+    assert book(process_job(other, Options(), replies_run(replies), lambda img: "", progress=lambda m: None))[3] \
+        == ("409", True)
+
+
+def test_same_number_read_twice_warns_each_page(tmp_path):
+    replies = {1: numbered(285, "sag"), 2: numbered(199, "sag"), 3: numbered(285, "sag")}
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in replies])
+    pages = process_job(job, Options(), replies_run(replies), lambda img: "", progress=lambda m: None)
+    assert book(pages) == [("285", False), ("199", False), ("285", False)]
+    assert "s. 1: 285 numarası s. 3'te de okundu (aynı sayfa iki kez taranmış olabilir)" in pages[0].warnings
+    assert "s. 3: 285 numarası s. 1'de de okundu (aynı sayfa iki kez taranmış olabilir)" in pages[2].warnings
+    assert not any("okundu" in w for w in pages[1].warnings)
+    # --ilk-sayfa verilince eski davranış: numaralar sıradan, tekrar uyarısı yok
+    again = process_job(job, Options(first_page=1), replies_run(replies), lambda img: "", progress=lambda m: None)
+    assert not any("okundu" in w for p in again for w in p.warnings)
+
+
+@pytest.mark.parametrize("pid,exp", [
+    ("s. 12", "s. 12'de"), ("s. 3", "s. 3'te"), ("s. 6", "s. 6'da"), ("s. 10", "s. 10'da"), ("s. 40", "s. 40'ta"),
+    ("s. 70", "s. 70'te"), ("s. 100", "s. 100'de"), ("s. 2000", "s. 2000'de"), ("k.pdf s. 9", "k.pdf s. 9'da"),
+    ("tarama.png", "tarama.png sayfasında")])
+def test_locative(pid, exp):
+    assert pipeline._locative(pid) == exp
 
 
 def test_first_page_with_gap(tmp_path):

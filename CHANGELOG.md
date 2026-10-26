@@ -7,9 +7,17 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 ## [Yayımlanmadı]
 
 ### Düzeltildi
-- İki-üç sayfalık bir seçimde okunan kitap sayfa numaraları birbirini tutmuyorsa (ör. 412 ve 431) artık sessiz
-  kalmıyor. Numaralar okunduğu gibi korunur ama köşeli parantezle (`[412]`, `[431]`) yazılır ve her sayfaya
-  "sayfa numarası komşularıyla tutmuyor" uyarısı eklenir.
+- Kitap sayfa numarası (gerçek bir 24 sayfalık, kitabın farklı yerlerinden ters sırayla taranmış belgeyle
+  denendi):
+  - Sayfadan okunan numaraya güvenilir; komşularıyla tutmadığı için köşeli paranteze alınmaz.
+  - Okumalardan kitabın taraf–çiftlik kuralı (çift numara solda ya da sağda) öğrenilir. Kurala aykırı okuma
+    okunduğu gibi kalır ama köşeli parantezle yazılır ve "sayfanın tarafıyla çelişiyor" uyarısı alır.
+  - Azalan koşular (412, 411, 410) da tanınır; koşu içindeki tek aykırı okuma iki yönde de düzeltilir.
+  - Okunamayan numara yalnız sayfa bir koşunun içindeyse ya da en az iki okumalı bir koşunun hemen devamıysa
+    tahmin edilir. Tahmin, sayfanın başlığından öğrenilen çiftlikle (ör. yazar adı hep çift sayfada) çelişirse
+    yapılmaz, `[PDF s. N]` yazılır. Koşudan önceki sayfa artık tahmin edilmez.
+  - Aynı numara birden fazla sayfada okunduysa her birine "aynı sayfa iki kez taranmış olabilir" uyarısı eklenir.
+  - `--ilk-sayfa` verildiğinde davranış değişmedi.
 - Günümüz Türkçesi sayfalarında özel addan sonra gelen y'li ve yaygın ekler (`Kahire’ye`, `İstanbul’daki`,
   `Ankara’dır`, `Türkiye’nin`, `Osmanlı’lar`) artık hemze (’) alıyor; önceden ‘ yazılıp sarıya boyanıyordu.
   Ayınlı özel adlar (`Ka‘be`, `Sa‘d`) etkilenmez.

@@ -6,6 +6,7 @@ yazılır; açma/kapama yalnız dışa aktarmada yapılır. Kitap sayfa numaras�
 """
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,8 @@ READ_FAILED = "okunamadı"
 PDF_ORDER_WARNING = "kitap sayfa numarası bulunamadı, PDF sırası kullanıldı"
 IMAGE_ORDER_WARNING = "kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"
 TRUNCATED_WARNING = "model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir"
-CONFLICT_WARNING = "sayfa numarası komşularıyla tutmuyor, okunduğu gibi bırakıldı; kontrol edin"
+SIDE_WARNING = "sayfanın tarafıyla çelişiyor"
+DUPLICATE_WARNING = "aynı sayfa iki kez taranmış olabilir"
 CACHE_VERSION = 2   # 1: işlenmiş Page (eski; ıska sayılır), 2: ham OCR çıktısı (RawPage)
 
 
@@ -197,31 +199,73 @@ def _runs(job_pages: list[SourcePage]) -> list[list[int]]:
     return runs
 
 
-def _book_pages(job_pages: list[SourcePage], read: list[str | None],
-                first_page: int | None) -> list[tuple[str, bool]]:
+def _book_pages(job_pages: list[SourcePage], read: list[str | None], sides: list[str | None],
+                headers: list[str | None], first_page: int | None) -> list[tuple[str, bool]]:
     """Kitap sayfa numaraları (R17): PDF koşularında PDF sayfa indeksi uzayında (seçilmeyen sayfalar boşluk sayılır),
-    görüntü koşularında sırayla. first_page işin ilk seçili sayfasını numaralar ve yalnız ilk koşuya uygulanır."""
+    görüntü koşularında sırayla. first_page işin ilk seçili sayfasını numaralar ve yalnız ilk koşuya uygulanır.
+    sides/headers: okunan numaranın tarafı ve sayfanın başlık metni (R25, çiftlik ipuçları)."""
     out: list[tuple[str, bool]] = [("", False)] * len(job_pages)
     for r, run in enumerate(_runs(job_pages)):
         start = first_page if r == 0 else None
         if _is_pdf(job_pages[run[0]]):
             base = min(job_pages[i].index for i in run)
-            dense: list[str | None] = [None] * (max(job_pages[i].index for i in run) - base + 1)
+            size = max(job_pages[i].index for i in run) - base + 1
+            d_read, d_sides, d_headers = ([None] * size for _ in range(3))
             for i in run:
-                dense[job_pages[i].index - base] = read[i]
+                k = job_pages[i].index - base
+                d_read[k], d_sides[k], d_headers[k] = read[i], sides[i], headers[i]
             if start is not None:
                 start -= job_pages[run[0]].index - base   # ilk seçili sayfa first_page olsun
-            labels = infer(dense, start)
+            labels = infer(d_read, start, d_sides, d_headers)
             for i in run:
                 label, inferred = labels[job_pages[i].index - base]
                 if label.startswith("PDF s. "):
                     label = f"PDF s. {job_pages[i].index}"
                 out[i] = (label, inferred)
         else:
-            labels = infer([read[i] for i in run], start)
+            labels = infer([read[i] for i in run], start, [sides[i] for i in run], [headers[i] for i in run])
             for i, (label, inferred) in zip(run, labels):
                 out[i] = (f"görsel {i + 1}" if label.startswith("PDF s. ") else label, inferred)
     return out
+
+
+def _duplicates(job_pages: list[SourcePage], read: list[str | None], first_page: int | None) -> dict[int, list[int]]:
+    """Aynı kaynakta aynı Arap rakamı birden fazla sayfada okunduysa: iş konumu → aynı numaralı diğer konumlar (R25).
+    first_page verilen ilk koşuda (eski davranış) aranmaz."""
+    out: dict[int, list[int]] = {}
+    for r, run in enumerate(_runs(job_pages)):
+        if r == 0 and first_page is not None:
+            continue
+        same: dict[str, list[int]] = {}
+        for i in run:
+            if read[i] is not None and read[i].isdigit():
+                same.setdefault(read[i], []).append(i)
+        for group in same.values():
+            if len(group) > 1:
+                out.update({i: [j for j in group if j != i] for i in group})
+    return out
+
+
+_LOCATIVE_UNITS = dict(zip("123456789", "de de te te te da de de da".split()))    # bir, iki, üç … dokuz
+_LOCATIVE_TENS = dict(zip("123456789", "da de da ta de ta te de da".split()))     # on, yirmi, otuz … doksan
+
+
+def _locative(pid: str) -> str:
+    """Sayfa kimliği + bulunma eki: "s. 12'de", "s. 3'te", "s. 40'ta"; numarasız kimlikte "<ad> sayfasında"."""
+    if not (m := re.search(r"\d+$", pid)):
+        return f"{pid} sayfasında"
+    digits = m.group()
+    if digits[-1] != "0":
+        suffix = _LOCATIVE_UNITS[digits[-1]]
+    elif len(digits) > 1 and digits[-2] != "0":
+        suffix = _LOCATIVE_TENS[digits[-2]]
+    else:
+        suffix = "de"                                       # yüz, bin
+    return f"{pid}'{suffix}"
+
+
+def _header_text(page: Page) -> str | None:
+    return " ".join(b.text for b in page.blocks if b.category == "Page-header") or None
 
 
 def _job_id(src: SourcePage, multi: bool) -> str:
@@ -238,6 +282,8 @@ def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | No
     multi = len({p.source for p in job.pages if _is_pdf(p)}) > 1
     pages: list[Page] = []
     read: list[str | None] = []
+    sides: list[str | None] = []
+    headers: list[str | None] = []
     n = len(job.pages)
     for i, src in enumerate(job.pages, 1):
         pid = _job_id(src, multi)
@@ -252,20 +298,32 @@ def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | No
                         mode=opts.mode, blocks=[], warnings=[f"{pid}: {READ_FAILED}: {_error_text(e)}"],
                         failed=True)
             read.append(None)
+            sides.append(None)
+            headers.append(None)
         else:
             if pid != page_id(src):
                 page.warnings = [f"{src.source.name} {w}" for w in page.warnings]
             if save_error:
                 page.warnings.append(f"{pid}: önbelleğe yazılamadı ({save_error})")
             read.append(page.book_page)
+            sides.append(page.book_page_side)
+            headers.append(_header_text(page))
         pages.append(page)
-    for page, src, value, (label, inferred) in zip(pages, job.pages, read,
-                                                   _book_pages(job.pages, read, opts.first_page)):
+    labels = _book_pages(job.pages, read, sides, headers, opts.first_page)
+    duplicates = _duplicates(job.pages, read, opts.first_page)
+    for pos, (page, src, value, (label, inferred)) in enumerate(zip(pages, job.pages, read, labels)):
         pid = _job_id(src, multi)
         if value is not None and value.isdigit() and label != value:   # okunan numara düzeltildi (R21)
             page.warnings.append(f"{pid}: okunan {value} → [{label}]")
-        elif value is not None and value.isdigit() and inferred:   # çelişen okumalar: hangisi doğru bilinemez
-            page.warnings.append(f"{pid}: {CONFLICT_WARNING} [{label}]")
+        elif value is not None and value.isdigit() and inferred:
+            # okunduğu gibi ama tahmin işaretli: kitabın taraf–çiftlik kuralına aykırı (R25, pagenum.infer)
+            side = "sol" if page.book_page_side == "sol" else "sağ"
+            parity = "çift" if int(value) % 2 == 0 else "tek"
+            page.warnings.append(f"{pid}: okunan {value} {SIDE_WARNING} ({side} sayfada {parity} numara), kontrol edin")
+        if pos in duplicates:
+            ids = [_job_id(job.pages[j], multi) for j in duplicates[pos]]
+            where = ", ".join(ids[:-1] + [_locative(ids[-1])])
+            page.warnings.append(f"{pid}: {value} numarası {where} de okundu ({DUPLICATE_WARNING})")
         if label.startswith(("PDF s. ", "görsel ")):
             page.warnings.append(f"{pid}: {PDF_ORDER_WARNING if _is_pdf(src) else IMAGE_ORDER_WARNING}")
         page.book_page, page.book_page_inferred = label, inferred
