@@ -45,6 +45,10 @@ LAYOUT_PROMPT = """Please output the layout information from the PDF image, incl
 """
 
 
+class ServerError(RuntimeError):
+    """Motor sunucusu açılamadı: hiçbir sayfa okunamaz, koşu durmalı (sayfa düzeyinde hata değil)."""
+
+
 @dataclass(frozen=True)
 class Mode:
     prompt: str | None
@@ -240,7 +244,7 @@ def server(name: str) -> Iterator[Callable[[Path, str], str]]:
 def lazy_server(name: str) -> Iterator[Callable[[Path, str], str]]:
     """server() gibi, ama motor ilk run çağrısında açılır: bütün sayfalar önbellekteyse GPU hiç kullanılmaz.
 
-    Açılış hata verirse aynı hata sonraki çağrılarda yeniden fırlatılır (her sayfada yeniden beklenmez).
+    Açılış hata verirse ServerError fırlatılır; sonraki çağrılarda da aynısı (her sayfada yeniden beklenmez).
     """
     with ExitStack() as stack:
         state: dict = {}
@@ -252,7 +256,7 @@ def lazy_server(name: str) -> Iterator[Callable[[Path, str], str]]:
                 try:
                     state["run"] = stack.enter_context(server(name))
                 except Exception as e:
-                    state["error"] = e
-                    raise
+                    state["error"] = ServerError(f"'{name}' modeli başlatılamadı: {e}")
+                    raise state["error"] from e
             return state["run"](img, mode)
         yield run

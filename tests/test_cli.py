@@ -12,9 +12,13 @@ from ocrnow.layout import Page
 from ocrnow.pages import DocJob, InputError, SourcePage
 
 
-def fake_page(index, warnings=(), label="413", inferred=True):
+def fake_page(index, warnings=(), label="413", inferred=True, failed=False):
     return Page(source="k.pdf", index=index, width=10, height=10, engine="dots.mocr", mode="duzen",
-                blocks=[], book_page=label, book_page_inferred=inferred, warnings=list(warnings))
+                blocks=[], book_page=label, book_page_inferred=inferred, warnings=list(warnings), failed=failed)
+
+
+def failed_page(index):
+    return fake_page(index, [f"s. {index}: {pipeline.READ_FAILED}: boom"], failed=True)
 
 
 class Env:
@@ -233,10 +237,38 @@ def test_input_error_exit_2(fake_env, monkeypatch, capsys):
 
 
 def test_failed_page_exit_1_but_documents_written(fake_env, capsys):
-    fake_env.pages = [fake_page(1), fake_page(2, [f"s. 2: {pipeline.READ_FAILED}: boom"])]
+    fake_env.pages = [fake_page(1), failed_page(2)]
     assert main(["k.pdf", "-f", "txt"]) == 1
     assert "txt" in fake_env.written
     assert f"s. 2: {pipeline.READ_FAILED}: boom" in capsys.readouterr().out
+
+
+def test_all_pages_failed_job_is_not_written(fake_env, monkeypatch, capsys):
+    """R22: hiçbir sayfası okunamayan iş boş belge yazmaz (eski aynı adlı belgeyi de ezmez)."""
+    fake_env.pages = [failed_page(1), failed_page(2)]
+    assert main(["k.pdf", "-f", "docx", "txt"]) == 1
+    assert fake_env.written == {}
+    out = capsys.readouterr().out
+    assert "k: hiçbir sayfa okunamadı, belge yazılmadı" in out
+    assert str(paths.DOCS_OUT / "k.docx") not in out
+    no_questions(monkeypatch)                    # yazılacak belge yoksa sondaki sorular da sorulmaz
+    assert main(["k.pdf"]) == 1 and fake_env.written == {}
+
+
+def test_server_start_failure_stops_whole_run(fake_env, monkeypatch, capsys):
+    """R22: model sunucusu açılamazsa koşu tek açık mesajla durur; her sayfa ayrı ayrı 'okunamadı' olmaz."""
+    fake_env.jobs = [DocJob("a", [SourcePage(Path("a.pdf"), 1)]), DocJob("b", [SourcePage(Path("b.pdf"), 1)])]
+
+    @contextmanager
+    def broken(name):
+        raise RuntimeError("sunucu ayağa kalkmadı, bkz. dots.mocr.server.log")
+        yield
+
+    monkeypatch.setattr(engines, "server", broken)
+    assert main(["a.pdf", "b.pdf", "-f", "txt"]) == 1
+    err = capsys.readouterr().err
+    assert err.count("Hata:") == 1 and "dots.mocr" in err and "ayağa kalkmadı" in err and "yazılmadı" in err
+    assert len(fake_env.opts) == 1 and fake_env.written == {}
 
 
 def test_ordinary_warnings_do_not_fail(fake_env):

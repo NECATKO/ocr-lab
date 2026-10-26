@@ -197,6 +197,19 @@ def test_lazy_server_start_failure_not_retried(monkeypatch, tmp_path):
     monkeypatch.setattr(engines, "_start_server", start)
     with engines.lazy_server("dots.mocr") as run:
         for _ in range(2):   # her sayfa için yeniden 20 dk beklenmez
-            with pytest.raises(RuntimeError, match="ayağa kalkmadı"):
+            with pytest.raises(engines.ServerError, match="'dots.mocr' modeli başlatılamadı: sunucu ayağa kalkmadı"):
                 run(tmp_path / "x.png", "duzen")
     assert starts == ["dots.mocr"]
+
+
+def test_lazy_server_page_error_is_not_server_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(engines, "_start_server", lambda eng: ("http://x/v1", "mdl", "P"))
+    monkeypatch.setattr(engines, "_stop_server", lambda proc: None)
+
+    def vlm(*a):
+        raise RuntimeError("zaman aşımı")
+    monkeypatch.setattr(engines, "_vlm", vlm)
+    with engines.lazy_server("dots.mocr") as run:
+        with pytest.raises(RuntimeError) as e:
+            run(tmp_path / "x.png", "duzen")
+    assert not isinstance(e.value, engines.ServerError)

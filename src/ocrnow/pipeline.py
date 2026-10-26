@@ -199,6 +199,8 @@ def process_job(job: DocJob, opts: Options, run, tsv=engines.tesseract_tsv,
         head = f"{job.name}: {pid} ({i}/{n})"
         try:
             page, save_error = _job_page(src, opts, run, tsv, words, lambda state: progress(f"{head} {state}"))
+        except engines.ServerError:
+            raise                 # sunucu açılamadı: sonraki sayfalar da okunamaz, koşu durur
         except Exception as e:  # sayfa düzeyinde hata: iş devam eder
             progress(f"{head} {READ_FAILED}: {_error_text(e)}")
             page = Page(source=str(src.source), index=src.index, width=0, height=0, engine=opts.engine,

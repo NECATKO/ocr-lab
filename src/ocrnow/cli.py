@@ -181,9 +181,12 @@ def _ask_highlight() -> bool:
 
 def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path]) -> bool:
     """Bitiş özetini yazar; en az bir sayfa okunamadıysa True döndürür."""
-    print("\nYazılan belgeler:")
+    print("\nYazılan belgeler:" if written else "\nYazılan belge yok.")
     for path in written:
         print(f"  {path}")
+    for job, doc_pages in results:
+        if all(p.failed for p in doc_pages):
+            print(f"  {job.name}: hiçbir sayfa okunamadı, belge yazılmadı")
     failed = False
     for job, doc_pages in results:
         guessed = [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred]
@@ -191,7 +194,7 @@ def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path]) -> b
             print(f"\n{job.name}: tahmin edilen sayfa numaraları:")
             print(textwrap.fill(", ".join(guessed), width=88, initial_indent="  ", subsequent_indent="  "))
         warns = [w for p in doc_pages for w in p.warnings]
-        failed = failed or any(pipeline.READ_FAILED in w for w in warns)
+        failed = failed or any(p.failed for p in doc_pages)
         if warns:
             print(f"\n{job.name}: uyarılar:")
             for w in warns:
@@ -215,19 +218,25 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     opts = pipeline.Options(engine=args.model, mode=args.okuma, apostrophes=not args.kesme_yok,
                             first_page=args.ilk_sayfa, dpi=args.dpi)
     results = []
-    with engines.lazy_server(args.model) as run:   # model ilk okunan sayfada bir kez açılır; hepsi önbellekteyse hiç
-        for job in jobs:
-            results.append((job, pipeline.process_job(job, opts, run, progress=print)))
+    try:
+        with engines.lazy_server(args.model) as run:   # model ilk okunan sayfada bir kez açılır; hepsi önbellekteyse hiç
+            for job in jobs:
+                results.append((job, pipeline.process_job(job, opts, run, progress=print)))
+    except engines.ServerError as e:
+        _err(f"Hata: {e}\nHiçbir belge yazılmadı.")
+        return 1
 
-    formats = args.format or (_ask_formats() if interactive else ["docx"])
+    writable = [(job, doc_pages) for job, doc_pages in results   # boş belge yazılmaz, aynı adlı eski belge ezilmez
+                if not all(p.failed for p in doc_pages)]
+    formats = args.format or (_ask_formats() if interactive and writable else ["docx"])
     highlight = args.isaretle
     if highlight is None:
-        highlight = _ask_highlight() if interactive and "docx" in formats else True
+        highlight = _ask_highlight() if interactive and writable and "docx" in formats else True
     bold = args.kalin_kalip or None   # boş kalıp kalın işaretlemeyi kapatır
 
     written: list[Path] = []
     write_failed = False
-    for job, doc_pages in results:
+    for job, doc_pages in writable:
         for fmt in formats:
             out = paths.DOCS_OUT / f"{job.name}.{fmt}"
             try:

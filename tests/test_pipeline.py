@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from ocrnow import paths, pipeline
+from ocrnow import engines, paths, pipeline
 from ocrnow.layout import page_to_json
 from ocrnow.pages import DocJob, SourcePage
 from ocrnow.pipeline import Options, cache_path, process_job, process_page
@@ -105,6 +105,19 @@ def test_engine_error_keeps_going(tmp_path):
     assert not any("Traceback" in w for w in pages[0].warnings)
     assert not any("okunamadı" in w for w in pages[1].warnings)
     assert not cache_path(job.pages[0], Options()).exists()   # hatalı sayfa önbelleğe girmez
+
+
+def test_server_error_is_not_a_page_error(tmp_path):
+    """Sunucu açılamadıysa (engines.ServerError) iş sayfa sayfa sürmez: hata çağırana gider."""
+    job = DocJob("k", [SourcePage(source(tmp_path), 1), SourcePage(source(tmp_path), 2)])
+    calls = []
+
+    def run(img, mode):
+        calls.append(img)
+        raise engines.ServerError("'dots.mocr' modeli başlatılamadı: sunucu ayağa kalkmadı")
+    with pytest.raises(engines.ServerError):
+        process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
+    assert len(calls) == 1
 
 
 def test_blank_page():
