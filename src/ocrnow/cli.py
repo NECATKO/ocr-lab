@@ -179,6 +179,14 @@ def _ask_highlight() -> bool:
 
 # ---- çalıştırma ----
 
+def _free_stem(name: str, formats: list[str]) -> str:
+    """Belgeler klasöründe bu biçimlerin hiçbiri yoksa name; varsa name_2, name_3 ... (eski belge ezilmez, biçimler
+    aynı eki paylaşır)."""
+    stem, k = name, 2
+    while any((paths.DOCS_OUT / f"{stem}.{fmt}").exists() for fmt in formats):
+        stem, k = f"{name}_{k}", k + 1
+    return stem
+
 def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path],
              export_warnings: dict[str, list[str]]) -> bool:
     """Bitiş özetini yazar (uyarılar: sayfalarınki, sonra dışa aktarmanınki); en az bir sayfa okunamadıysa True."""
@@ -243,8 +251,9 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     export_warnings: dict[str, list[str]] = {}
     write_failed = False
     for job, doc_pages in writable:
+        stem = _free_stem(job.name, formats)
         for fmt in formats:
-            out = paths.DOCS_OUT / f"{job.name}.{fmt}"
+            out = paths.DOCS_OUT / f"{stem}.{fmt}"
             try:
                 if fmt == "docx":
                     export_docx.write_docx(doc_pages, out, highlight=highlight, bold_pattern=bold,

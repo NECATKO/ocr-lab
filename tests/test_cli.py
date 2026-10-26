@@ -163,6 +163,21 @@ def test_asks_format_at_end(fake_env, monkeypatch):
     assert fake_env.written["txt"]["out"] == paths.DOCS_OUT / "k.txt"
 
 
+def test_existing_documents_are_not_overwritten(fake_env):
+    """R23: eski belge (belki elle düzeltilmiş) ezilmez; yeni ad _2, _3 ... ve biçimler aynı eki paylaşır."""
+    paths.DOCS_OUT.mkdir()
+    (paths.DOCS_OUT / "k.docx").write_bytes(b"eski")
+    main(["k.pdf", "-f", "docx"])
+    assert fake_env.written["docx"]["out"] == paths.DOCS_OUT / "k_2.docx"
+    (paths.DOCS_OUT / "k_2.txt").write_text("eski")
+    main(["k.pdf", "-f", "docx", "txt"])
+    assert fake_env.written["docx"]["out"] == paths.DOCS_OUT / "k_3.docx"
+    assert fake_env.written["txt"]["out"] == paths.DOCS_OUT / "k_3.txt"
+    main(["k.pdf", "-f", "txt"])                   # k.txt yok: ad olduğu gibi
+    assert fake_env.written["txt"]["out"] == paths.DOCS_OUT / "k.txt"
+    assert (paths.DOCS_OUT / "k.docx").read_bytes() == b"eski"
+
+
 @pytest.mark.parametrize("answer,formats", [("1", {"docx"}), ("docx", {"docx"}), ("2", {"txt"}), ("txt", {"txt"}),
                                            ("3", {"docx", "txt"}), ("ikisi", {"docx", "txt"}), ("", {"docx"})])
 def test_format_answers(fake_env, monkeypatch, answer, formats):

@@ -86,7 +86,7 @@ def test_pdf_per_job_with_spec_applied_to_each(tmp_path):
     a = make_pdf(tmp_path / "a.pdf", 5)
     b = make_pdf(tmp_path / "b.pdf", 3)
     jobs, warns = collect_jobs([a, b], "2-4")
-    assert [j.name for j in jobs] == ["a", "b"]
+    assert [j.name for j in jobs] == ["a_s2-4", "b_s2-3"]       # R23: seçim adda (b'de kırpılmış hâli)
     assert [p.index for p in jobs[0].pages] == [2, 3, 4]
     assert [p.index for p in jobs[1].pages] == [2, 3]
     assert len(warns) == 1 and "b.pdf" in warns[0] and "kırpıldı" in warns[0]
@@ -211,6 +211,20 @@ def test_natural_sort_tolerates_unicode_digits(tmp_path):
         (tmp_path / n).write_bytes(b"")
     jobs, _ = collect_jobs([tmp_path], None)
     assert [p.source.name for p in jobs[0].pages][-2:] == ["2.jpg", "10.jpg"]
+
+
+@pytest.mark.parametrize("spec,name", [(None, "k"), ("hepsi", "k"), ("1-30", "k"), ("1-50", "k"),
+                                       ("11-20", "k_s11-20"), ("5", "k_s5"), ("1,3,7", "k_s1,3,7"),
+                                       ("ilk3", "k_s1-3"), ("7,1-3", "k_s1-3,7"), ("1,2,4,5", "k_s1-2,4-5")])
+def test_partial_selection_in_job_name(tmp_path, spec, name):
+    """R23: bütün sayfalar seçilmediyse çıktı adı seçimi taşır: -p 1-10 ile -p 11-20 aynı belgeyi ezmez."""
+    jobs, _ = collect_jobs([make_pdf(tmp_path / "k.pdf", 30)], spec)
+    assert jobs[0].name == name
+
+
+def test_partial_selection_in_merged_name(tmp_path):
+    a, b = make_pdf(tmp_path / "a.pdf", 2), make_pdf(tmp_path / "b.pdf", 2)
+    assert collect_jobs([a, b], "1", merge=True)[0][0].name == "a_s1_birlesik"
 
 
 def test_duplicate_job_names_made_unique(tmp_path):

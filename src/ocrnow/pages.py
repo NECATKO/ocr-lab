@@ -79,14 +79,30 @@ def pdf_page_count(path: Path) -> int:
     return n
 
 
+def _selection_label(idx: list[int]) -> str:
+    """Sıralı 0 tabanlı indeksler → "1-3,7" (1 tabanlı, ardışıklar aralık olur)."""
+    parts: list[str] = []
+    start = prev = idx[0]
+    for i in [*idx[1:], None]:
+        if i is not None and i == prev + 1:
+            prev = i
+            continue
+        parts.append(f"{start + 1}" if start == prev else f"{start + 1}-{prev + 1}")
+        if i is not None:
+            start = prev = i
+    return ",".join(parts)
+
+
 def _pdf_job(path: Path, spec: str | None, warnings: list[str]) -> DocJob:
+    """Bütün sayfalar seçilmediyse ad seçimi taşır (`kitap_s11-20`): başka seçimin belgesiyle karışmaz."""
     n = pdf_page_count(path)
     try:
         idx, warns = parse_pages(spec, n)
     except InputError as e:
         raise InputError(f"{path.name}: {e}") from e
     warnings += [f"{path.name}: {w}" for w in warns]
-    return DocJob(path.stem, [SourcePage(path, i + 1) for i in idx])
+    name = path.stem if len(idx) == n else f"{path.stem}_s{_selection_label(idx)}"
+    return DocJob(name, [SourcePage(path, i + 1) for i in idx])
 
 
 def _is_image(path: Path) -> bool:
