@@ -142,3 +142,25 @@ def test_spike_page_all_blocks_cover_text(spike_layout, spike_tsv):
     for b in blocks:
         apply_line_structure(b, lines_in(b.bbox, tl))
         assert_covers(b.text, b.lines)
+
+
+ROWS = [f"bu {k}. satırın metni burada yazılı duruyor" for k in range(1, 11)]
+
+
+def test_merged_long_line_falls_back():
+    """R23: tesseract on satırlık paragrafta bir satırı kaçırınca oran eşiği geçilir ama iki satır birleşir:
+    ortancanın 1.6 katından uzun satır varsa akan paragraf + uyarı (punto küçülmesin)."""
+    text = " ".join(ROWS)
+    b = Block("Text", (0, 0, 500, 500), text)
+    warn = apply_line_structure(b, [L(r) for k, r in enumerate(ROWS) if k != 4])
+    assert warn.startswith("satır yapısı kurulamadı: Text bloğu, satır ") and "çok uzun" in warn
+    assert b.lines == [Line(0, len(text), False)] and b.indent is False
+
+
+def test_short_last_line_and_two_line_blocks_are_fine():
+    text = " ".join(ROWS[:3] + ["son."])
+    b = Block("Text", (0, 0, 500, 500), text)
+    assert apply_line_structure(b, [L(r) for r in ROWS[:3] + ["son."]]) is None and len(b.lines) == 4
+    two = "kısa " + ROWS[0] + " " + ROWS[1]           # iki satırlı blokta karşılaştırma yapılmaz
+    b = Block("Text", (0, 0, 500, 500), two)
+    assert apply_line_structure(b, [L("kısa"), L(ROWS[0] + " " + ROWS[1])]) is None

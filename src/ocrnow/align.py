@@ -1,10 +1,13 @@
 """Satır kırılımı hizalaması: ana modelin blok metni, tesseract satırlarının sonlarından yeniden kırılır."""
+import statistics
+
 from ocrnow.layout import Block, Line
 from ocrnow.tesslines import TessLine
 
 HYPH = "-.¬,"        # tesseract satır sonu tiresini bazen . ¬ ya da , okuyor
 MAX_RATIO = 0.30     # bundan pahalı hizalamada satır yapısı kurulmaz (akan paragraf)
 INDENT_PX = 30       # ilk satır blok kutusundan bundan fazla içerideyse paragraf girintili
+LONG_LINE = 1.6      # 3+ satırlı blokta ortancanın bu katından uzun satır: iki satır birleşmiş (tesseract kaçırmış)
 
 
 def _align_map(a: str, b: str) -> tuple[list[int], int]:
@@ -79,6 +82,18 @@ def rebreak(text: str, tlines: list[TessLine]) -> tuple[list[Line], float]:
     return lines, dist / max(len(T), 1)
 
 
+def _overlong(lines: list[Line]) -> str | None:
+    """3+ satırlı blokta ortanca uzunluğun LONG_LINE katını aşan ilk satırın tarifi; yoksa None."""
+    if len(lines) < 3:
+        return None
+    lengths = [l.end - l.start for l in lines]
+    median = statistics.median(lengths)
+    for k, n in enumerate(lengths, 1):
+        if n > LONG_LINE * median:
+            return f"satır {k} çok uzun ({n} karakter, ortanca {median:g}; tesseract bir satırı kaçırmış olabilir)"
+    return None
+
+
 def apply_line_structure(block: Block, tlines: list[TessLine]) -> str | None:
     """block.lines ve block.indent'i doldurur. Satır yapısı kurulamazsa akan paragraf yapar ve uyarı döner."""
     if not tlines:
@@ -89,6 +104,8 @@ def apply_line_structure(block: Block, tlines: list[TessLine]) -> str | None:
             reason = f"oran {ratio:.2f}"
         elif any(l.start >= l.end for l in lines):    # bloğa yabancı satır düşmüş (başlık, sayfa no, komşu blok)
             reason = "satır sayısı tutmuyor"
+        elif long := _overlong(lines):
+            reason = long
         else:
             block.lines = lines
             block.indent = block.bbox is not None and tlines[0].box[0] - block.bbox[0] > INDENT_PX
