@@ -30,28 +30,30 @@ tesseract bir sistem paketidir. Kurulu değilse kurulum çalıştırılacak komu
 
 | Model | GPU belleği | Disk | Not |
 |---|---|---|---|
-| ★ **dots.mocr** | 4.3 GB | 5.7 GB | varsayılan; düzen modu başlık, paragraf, dipnot ve sayfa numarasını ayırır |
+| ★ **dots.mocr** | 4.9 GB | 5.7 GB | varsayılan; düzen modu başlık, paragraf, dipnot ve sayfa numarasını ayırır |
 | ★ glm-ocr | 4.0 GB | 2.5 GB | hızlı alternatif |
 | ★ lightonocr | 3.4 GB | 1.9 GB | hızlı alternatif; metni biraz modernleştirir |
-| ★ tesseract | CPU | — | satır yapısı ve sarı işaretleme için her zaman gerekli |
+| ★ tesseract | CPU | — | satır yapısı ve sarı işaretleme için her zaman gerekli (yoksa iki komut da baştan durur) |
 | paddleocr-vl | 3.2 GB | 2.7 GB | yalnız ocr-lab'da denemek için |
-| deepseek-ocr2 | 4.7 GB | 6.3 GB | yalnız ocr-lab'da denemek için |
+| deepseek-ocr2 | 5.4 GB | 6.3 GB | yalnız ocr-lab'da denemek için |
 | kraken | CPU | 3.7 GB | yalnız ocr-lab'da denemek için |
 
-Disk sütunu vLLM motorlarının ortak ortamını (`.venv-vllm`, ~8 GB) içermez. GPU belleği tahmini asgaridir.
+Disk sütunu vLLM motorlarının ortak ortamını (`.venv-vllm`, ~8 GB) içermez. GPU belleği tahmini asgaridir
+(fp8 motorlarda vLLM logundaki yüklenen bellek + 1.5 GB). `models install` GPU'ya sığmayabilecek motor için uyarır.
 
 ## ocr-now: belge üretme
 
 ```bash
 ./ocr-now                                        # adım adım sorar: dosya, sayfalar, model, okuma modu, format
-./ocr-now input/kitap.pdf -p 10-25 -f docx       # sormadan: 10-25. sayfalar Word'e
+./ocr-now input/kitap.pdf -p 10-25 -f docx       # sormadan: 10-25. sayfalar Word'e (kitap_s10-25.docx)
 ./ocr-now input/kitap.pdf -p 1 -f docx txt       # ikisi birden
 ./ocr-now taramalar/ -f txt                      # klasördeki PDF'ler ayrı belge, görüntüler tek belge
 ./ocr-now a.pdf b.pdf --birlestir -f docx        # iki PDF tek belgede (a_birlesik.docx)
 ./ocr-now input/kitap.pdf -p ilk10 --ilk-sayfa 412 -f docx --isaretle
 ```
 
-Girdi verilmezse `input/` klasörü kullanılır. Format ve sarı işaretleme verilmezse iş sonunda sorulur (girdi terminal değilse sorulmaz: `docx`, işaretleme açık).
+Girdi verilmezse `input/` klasörü kullanılır. Format ve sarı işaretleme verilmezse iş sonunda sorulur (girdi terminal
+değilse sorulmaz: `docx`, işaretleme açık).
 
 **Dikkat:** `-f` birden fazla değer alır. Girdileri `-f`'den önce yazın ya da araya `--` koyun:
 `./ocr-now -f docx -- input/kitap.pdf`. Aksi hâlde dosya adı biçim sanılır.
@@ -60,30 +62,40 @@ Girdi verilmezse `input/` klasörü kullanılır. Format ve sarı işaretleme ve
 |---|---|
 | `-p`, `--sayfalar` | `hepsi` (varsayılan), `5`, `1,3,7`, `10-25`, `ilk10`, karışık: `1-3,7`. Birden fazla PDF'te hepsine uygulanır. PDF'i aşan kısım kırpılır ve uyarı verilir |
 | `-m`, `--model` | motor (varsayılan `dots.mocr`) |
-| `-o`, `--okuma` | okuma modu: `duzen` (varsayılan) ya da `duz`. Düz modda başlık/dipnot/sayfa numarası ayrımı yapılamaz |
-| `-f`, `--format` | `docx`, `txt` ya da `docx txt` |
-| `--isaretle` / `--isaretleme` | şüpheli kelimeleri sarı işaretle / işaretleme (varsayılan: açık) |
+| `-o`, `--okuma` | okuma modu: `duzen` (varsayılan; model desteklemiyorsa `duz`) ya da `duz`. Düz modda başlık/dipnot/sayfa numarası ayrımı yapılamaz |
+| `-f`, `--format` | `docx`, `txt` ya da `docx txt` (verilmezse sonda sorulur; terminal değilse `docx`) |
+| `--isaretle` / `--isaretleme` | şüpheli kelimeleri sarı işaretle / işaretleme (verilmezse sonda sorulur; terminal değilse açık) |
 | `--kesme-yok` | ayın/hemze (‘ ’) geri getirme adımını kapat |
-| `--kalin-kalip KALIP` | kalın yazılacak nüsha işaretinin düzenli ifadesi (varsayılan `\[\d+[ab] [^\]]*\]`, ör. `[106b sayfanın sağ yanı]`); `''` kalın yapmaz |
+| `--kalin-kalip KALIP` | kalın yazılacak nüsha işaretinin düzenli ifadesi (varsayılan `\[\d+[ab] [^\]]*\]`, ör. `[106b sayfanın sağ yanı]`); `''` kalın yapmaz; geçersiz ifade baştan reddedilir |
 | `--ilk-sayfa N` | ilk seçilen sayfanın kitap sayfa numarası (okunamayan numaralar buradan sayılır) |
 | `--birlestir` | bütün girdileri tek belgede birleştir |
 | `--dpi N` | PDF görüntüleme çözünürlüğü (varsayılan 200) |
 
 ### Çıktı
 
-- `output/belgeler/<kaynak adı>.docx` ve `.txt`. Her PDF kendi belgesini üretir. Bir klasördeki görüntüler dosya adı
-  sırasıyla (`2.jpg` → `10.jpg`) tek belgede birleşir.
+- `output/belgeler/<kaynak adı>.docx` ve `.txt`. Her PDF kendi belgesini üretir. Bütün sayfalar seçilmediyse ad
+  seçimi taşır (`-p 11-20` → `kitap_s11-20.docx`). Aynı adlı belge varsa üzerine yazılmaz: `_2`, `_3` ... eklenir
+  (elle düzeltilmiş belge kaybolmaz). Bir klasördeki görüntüler dosya adı sırasıyla (`2.jpg` → `10.jpg`) tek
+  belgede birleşir. Çok sayfalı TIFF'in yalnız ilk sayfası okunur (uyarı verilir).
 - **`.docx`:** Her taranmış sayfa ayrı bir Word bölümüdür. Satır kırılımları ve satır sonu tireleri kitaptaki gibidir.
   Tekrar eden kitap başlığı üstte ortalı, dipnotlar metnin altında küçük puntoyla, dipnot numarası üst simge, nüsha
-  işaretleri kalın. Kitabın sayfa numarası altlıkta, kitaptaki tarafta durur.
-- **Köşeli parantezli sayfa numarası** (`[413]`): numara sayfadan okunamadı ya da sırayla çelişiyordu, komşu
-  sayfalardan tahmin edildi. Tahminler iş sonunda listelenir. Hiç ipucu yoksa `[PDF s. 3]` yazılır ve uyarı verilir.
+  işaretleri kalın. Kitabın sayfa numarası altlıkta, kitaptaki tarafta durur. Punto her sayfa için ayrı hesaplanır
+  (en uzun satır sığsın diye, en çok 10.5, en az 8 pt); 8 pt'de de sığmayan satır uyarılır, Word onu kaydırabilir.
+  40'tan çok satırlı bir sayfa Word'de ikinci bir sayfaya taşabilir; altlıktaki kitap sayfa numarası yine doğrudur
+  (taşan sayfada da aynı numara görünür).
+- **Köşeli parantezli sayfa numarası** (`[413]`): numara sayfadan okunamadı ya da komşularıyla çelişiyordu, komşu
+  sayfalardan tahmin edildi. Kendi içinde tutarlı okumalar korunur (atlanan tarama sayfası, iki ayrı alıntı:
+  412–415 ardından 418–425 olduğu gibi kalır); yalnız tek başına aykırı okuma düzeltilir ve uyarılır
+  (`s. 2: okunan 431 → [413]`). Tahminler iş sonunda listelenir. Hiç ipucu yoksa `[PDF s. 3]` yazılır ve uyarı
+  verilir.
 - **Sarı vurgu:** ya ana model ile tesseract'ın farklı okuduğu (bakılmaya değer) bir kelime, ya da kuralların karar
   veremediği bir ayın/hemze işareti. Hatalar bütün sayfayı okumadan bulunabilsin diye.
 - **`.txt`:** süssüz ham metin. Paragraflar tek satır, satır sonu tireleri birleştirilmiş, sayfalar arasında
   `--- s. 412 ---` ayracı.
-- İş sonunda uyarılar listelenir (ör. satır yapısı kurulamayan blok, okunamayan sayfa). Hata veren sayfa atlanır,
-  iş sürer, eksik sayfalar sonda söylenir.
+- İş sonunda uyarılar listelenir (ör. satır yapısı kurulamayan blok, okunamayan sayfa, uzunluk sınırında kesilen
+  model çıktısı: sayfa sonu eksik olabilir). Hata veren sayfa belgede `[Bu sayfa okunamadı]` yer tutucusuyla durur,
+  iş sürer, eksik sayfalar sonda söylenir (çıkış kodu 1). Hiçbir sayfası okunamayan belge yazılmaz. Model sunucusu
+  açılamazsa koşu tek bir hata mesajıyla durur.
 
 ### Önbellek
 
@@ -104,13 +116,14 @@ ekleyin (ör. `mes’ele`, `bâ‘is`). Karar verilemeyen işarete ‘ yazılır
 
 ```bash
 ./ocr-lab                                            # adım adım sorar
+./ocr-lab input/tarama5.pdf -e glm-ocr                # -p verilmezse yalnız 1. sayfa
 ./ocr-lab input/tarama5.pdf -p 1 -e dots.mocr glm-ocr # motor yazılırsa bütün modları (dots.mocr: duzen + duz)
 ./ocr-lab input/tarama5.pdf -p 1-3 -e dots.mocr:duzen # yalnız bir mod
 ./ocr-lab rapor                                      # önceki koşuları marimo notebook'unda açar
 ./ocr-lab rapor --html                               # statik sayfa: output/lab/rapor.html
 ```
 
-`-e` de birden fazla değer alır: PDF'leri `-e`'den önce yazın. Doğru metin `gt/<pdf adı>_syf<N>.txt` varsa
+`-e` de birden fazla değer alır: PDF'leri `-e`'den önce yazın. `-p` varsayılanı `1`'dir (ocr-now'da `hepsi`). Doğru metin `gt/<pdf adı>_syf<N>.txt` varsa
 ölçüler hesaplanır: ham, normalize, gövde ve harf CER, WER, satır sonu doğruluğu (`line_end`), ayın/hemze doğruluğu
 (`apostrophe`) ve sarıya düşen işaret sayısı (`apostrophe_flagged`). Benchmark'ta kazanan motor/mod
 `engines.DEFAULT_ENGINE` / `engines.DEFAULT_MODE` ile ocr-now'ın varsayılanı yapılır.
@@ -131,7 +144,7 @@ output/belgeler/               ocr-now belgeleri (.docx, .txt)
 output/_cache/                 sayfa yapısı önbelleği
 output/lab/                    ocr-lab koşuları, summary.csv, rapor.html
 output/_pages/                 modele giden sayfa görselleri
-output/_logs/                  VLM sunucu logları: bir motor çökerse buraya bak (<motor>.server.log)
+output/_logs/                  VLM sunucu logları: bir motor çökerse buraya bak (<motor>.server.log); gpu.lock
 models/                        kraken modeli + PaddleOCR-VL GGUF bağlantıları
 tools/llama.cpp/               hazır CUDA llama-server
 .venv  .venv-vllm  .venv-kraken   ayrı ortamlar (vLLM ile kraken bağımlılıkları çakışıyor)
@@ -152,8 +165,9 @@ klasörlerdeki dosyaları yalnız okur, yoksa atlanır.
 | `deepseek-ocr2` | vLLM, **fp8** (bf16 hâli 8 GB GPU'ya sığmıyor) | duz |
 | `dots.mocr` | vLLM, **fp8** | duzen, duz |
 
-Aynı anda tek GPU işi çalıştırın: iki koşu GPU'yu paylaşınca ikisi de çöker. VLM sunucuları sırayla açılıp
-kapatılır. Sunucu komutları ve istemler `src/ocrnow/engines.py`'deki `ENGINES` kaydında, ortak vLLM ayarları
+Aynı anda tek GPU işi çalışır: iki koşu GPU'yu paylaşınca ikisi de çöker. Bu yüzden VLM sunucusu açıkken
+`output/_logs/gpu.lock` kilidi tutulur; ikinci bir ocr-now/ocr-lab koşusu açık bir hatayla durur (kilidi tutan
+süreç numarası yazılır). VLM sunucuları sırayla açılıp kapatılır. Sunucu komutları ve istemler `src/ocrnow/engines.py`'deki `ENGINES` kaydında, ortak vLLM ayarları
 `VLLM_FLAGS`'te. Sunucuyu kendiniz açtıysanız (docker, ollama vs.) yalnız portu eşleyin: kayıt ona bağlanır,
 kapatmaz.
 
