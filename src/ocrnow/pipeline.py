@@ -24,6 +24,7 @@ TEXT_CATEGORIES = frozenset({"Text", "Title", "Section-header", "List-item", "Fo
 READ_FAILED = "okunamadı"
 PDF_ORDER_WARNING = "kitap sayfa numarası bulunamadı, PDF sırası kullanıldı"
 IMAGE_ORDER_WARNING = "kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"
+TRUNCATED_WARNING = "model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir"
 
 
 @dataclass
@@ -61,6 +62,8 @@ def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path,
     blocks, parse_warnings = parse_output(raw, layout, size)
     pid = page_id(src)
     warnings = [f"{pid}: {w}" for w in parse_warnings]
+    if isinstance(raw, engines.Truncated):    # yoğun sayfada son bloklar (çoğu kez dipnotlar) eksik kalır
+        warnings.append(f"{pid}: {TRUNCATED_WARNING}")
     if opts.apostrophes and words is None:
         words = _word_list()
     tlines = parse_tsv(tsv_text)

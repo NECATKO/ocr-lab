@@ -1,4 +1,6 @@
 import ast
+import io
+import json
 import shutil
 
 import pytest
@@ -213,3 +215,15 @@ def test_lazy_server_page_error_is_not_server_error(monkeypatch, tmp_path):
         with pytest.raises(RuntimeError) as e:
             run(tmp_path / "x.png", "duzen")
     assert not isinstance(e.value, engines.ServerError)
+
+
+@pytest.mark.parametrize("reason,truncated", [("length", True), ("stop", False), (None, False)])
+def test_vlm_marks_truncated_output(monkeypatch, tmp_path, reason, truncated):
+    """R22: finish_reason == "length" → metin Truncated (str alt sınıfı) olarak döner."""
+    img = tmp_path / "x.png"
+    img.write_bytes(b"png")
+    choice = {"message": {"content": "metin"}, **({"finish_reason": reason} if reason else {})}
+    monkeypatch.setattr(engines.urllib.request, "urlopen",
+                        lambda req, timeout: io.BytesIO(json.dumps({"choices": [choice]}).encode()))
+    out = engines._vlm(img, "http://x/v1", "mdl", "istem")
+    assert out == "metin" and isinstance(out, engines.Truncated) is truncated

@@ -49,6 +49,10 @@ class ServerError(RuntimeError):
     """Motor sunucusu açılamadı: hiçbir sayfa okunamaz, koşu durmalı (sayfa düzeyinde hata değil)."""
 
 
+class Truncated(str):
+    """Model çıktısı max_tokens sınırında kesildi (finish_reason == "length"); metnin kendisi olarak kullanılır."""
+
+
 @dataclass(frozen=True)
 class Mode:
     prompt: str | None
@@ -217,7 +221,9 @@ def _vlm(img: Path, base: str, model: str, prompt: str | None) -> str:
     body = {"model": model, "messages": [{"role": "user", "content": content}], "temperature": 0, "max_tokens": MAX_TOKENS}
     req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=900) as r:
-        return json.load(r)["choices"][0]["message"]["content"]
+        choice = json.load(r)["choices"][0]
+    content = choice["message"]["content"]
+    return Truncated(content) if choice.get("finish_reason") == "length" else content
 
 
 def _mode(eng: Engine, mode: str) -> Mode:

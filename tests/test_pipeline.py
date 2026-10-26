@@ -128,6 +128,16 @@ def test_tesseract_runs_before_model():
     assert order == ["tesseract", "model"]
 
 
+def test_truncated_model_output_warns():
+    raw = engines.Truncated(blocks_json(("Text", [0, 0, 500, 500], "metin")))
+    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 5), Options(mode="duz"), lambda img, m: raw,
+                     lambda img: "", (1000, 1000))
+    assert "s. 5: model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir" in p.warnings
+    plain = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 5), Options(mode="duz"), lambda img, m: "metin",
+                         lambda img: "", (1000, 1000))
+    assert not any("kesildi" in w for w in plain.warnings)
+
+
 def test_blank_page():
     p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(),
                      lambda img, m: "[]", lambda img: "", (100, 100))
