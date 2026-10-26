@@ -259,6 +259,20 @@ def test_gapped_selection_uses_pdf_index(tmp_path):
     assert book(pages) == [("412", False), ("414", True), ("418", True)]
 
 
+def test_overridden_reading_warns_and_real_break_is_kept(tmp_path):
+    quiet = dict(tsv=lambda img: "", progress=lambda m: None)
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (1, 2, 3)])
+    pages = process_job(job, Options(), footer_run({1: 412, 2: 431, 3: 414}), **quiet)
+    assert book(pages) == [("412", False), ("413", True), ("414", False)]
+    assert "s. 2: okunan 431 → [413]" in pages[1].warnings      # R21: düzeltilen okuma görünür
+    # C1: 412–415, sonra 418–425 (iki tarama sayfası yok): doğru okunan numaralar ezilmez
+    numbers = dict(enumerate([*range(412, 416), *range(418, 426)], 1))
+    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf"), i) for i in numbers])
+    pages = process_job(other, Options(), footer_run(numbers), **quiet)
+    assert book(pages) == [(str(n), False) for n in numbers.values()]
+    assert not any("okunan" in w for p in pages for w in p.warnings)
+
+
 def test_first_page_with_gap(tmp_path):
     job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (5, 6, 9)])
     pages = process_job(job, Options(first_page=100), footer_run({5: None, 6: None, 9: None}),

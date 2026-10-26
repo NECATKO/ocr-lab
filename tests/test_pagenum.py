@@ -33,16 +33,49 @@ def test_start_overrides_read():
     assert infer(["10", None], start=10) == [("10", False), ("11", True)]
 
 
-def test_majority_offset_wins_tie_goes_to_first():
-    # çoğunluk: 3 oylu ofset kazanır
-    assert [x[0] for x in infer(["100", "101", "300", "301", "302"])] == ["298", "299", "300", "301", "302"]
-    # eşitlikte ilk sayfanın okuması kazanır
-    assert [x[0] for x in infer(["100", "101", "300", "301"])] == ["100", "101", "102", "103"]
+def test_two_consistent_runs_are_both_kept():
+    # R21: kendi içinde tutarlı iki koşu (atlanan tarama sayfası, iki ayrı alıntı) ikisi de okunduğu gibi kalır
+    assert infer(["100", "101", "300", "301", "302"]) == [("100", False), ("101", False), ("300", False),
+                                                          ("301", False), ("302", False)]
+    assert [x[0] for x in infer(["100", "101", "300", "301"])] == ["100", "101", "300", "301"]
 
 
-def test_late_conflict_corrected_from_chain():
+def test_second_excerpt_restarting_numbers_is_kept():
     out = infer(["1", "2", "3", "4", "5", "6", "1", "2"])
-    assert out[6:] == [("7", True), ("8", True)]
+    assert out[6:] == [("1", False), ("2", False)]
+
+
+def test_real_break_keeps_correct_readings():
+    # C1: 412–415, sonra (iki tarama sayfası atlanmış) 418–425
+    read = [str(n) for n in [*range(412, 416), *range(418, 426)]]
+    assert infer(read) == [(n, False) for n in read]
+
+
+def test_unsupported_reading_takes_previous_supported_offset():
+    assert infer(["412", "413", "500", "415"]) == [("412", False), ("413", False), ("414", True), ("415", False)]
+
+
+def test_unsupported_first_reading_takes_next_supported_offset():
+    assert infer(["9", "413", "414"]) == [("412", True), ("413", False), ("414", False)]
+
+
+def test_gap_filled_from_previous_supported_run():
+    assert infer(["412", "413", None, "418", "419"]) == [("412", False), ("413", False), ("414", True),
+                                                          ("418", False), ("419", False)]
+    assert infer([None, "413", "414"]) == [("412", True), ("413", False), ("414", False)]
+
+
+def test_support_window_is_two_readings():
+    # 412 ile 414 arada bir aykırı okumayla iki okuma uzaklıkta: birbirini destekler
+    assert infer(["412", "800", "414"]) == [("412", False), ("413", True), ("414", False)]
+    # arada iki aykırı okuma varsa 412 ile 415 üç okuma uzakta, birbirini görmez; hiçbiri destekli değil → hepsi korunur
+    assert [x[0] for x in infer(["412", "700", "800", "415"])] == ["412", "700", "800", "415"]
+
+
+def test_no_supported_reading_keeps_all_readings():
+    # iki farklı okuma: hangisinin yanlış olduğu bilinemez, okunduğu gibi kalır
+    assert infer(["412", "431"]) == [("412", False), ("431", False)]
+    assert infer(["412", None, "431"]) == [("412", False), ("413", True), ("431", False)]
 
 
 def test_nonpositive_derived_falls_back_to_pdf_label():

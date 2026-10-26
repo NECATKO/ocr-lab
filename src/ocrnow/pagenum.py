@@ -1,6 +1,5 @@
 """Kitap sayfa numarası: blok metninden okuma ve komşu sayfalardan tahmin."""
 import re
-from collections import Counter
 
 from ocrnow.layout import Block
 
@@ -8,6 +7,7 @@ _ROMAN = re.compile(r"(?i)m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})
 _ROMAN_MAX = 200  # ön söz sayfaları kısa olur; "mi", "di" gibi sözcükler roma sayılmasın
 _ROMAN_VALUES = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
 _DIGITS = re.compile(r"[0-9]{1,4}")
+SUPPORT_WINDOW = 2   # bir okuma, önceki/sonraki bu kadar okuma içinde aynı ofsetli okuma varsa destekli
 
 
 def _roman_value(token: str) -> int:
@@ -64,30 +64,41 @@ def read_book_page(blocks: list[Block], width: int) -> tuple[str | None, str | N
     return None, None
 
 
+def _offsets(read: list[str | None]) -> list[int | None]:
+    """Her sayfa için ofset (numara - sıra), parçalı (R21).
+
+    Arap rakamıyla okunan numara, önceki/sonraki SUPPORT_WINDOW okuma içinde aynı ofsetli başka bir okuma varsa
+    destekli sayılır ve ofsetini korur; tek okuma (ya da hiçbir okuma destekli değilse her okuma) da korunur.
+    Desteksiz okuma ve boşluk, en yakın önceki destekli ofseti (yoksa sonrakini) alır.
+    """
+    readings = [(i, int(v) - i) for i, v in enumerate(read) if v is not None and v.isdigit()]
+    supported: dict[int, int] = {}   # sayfa sırası → ofset, sıra düzeninde
+    for k, (i, off) in enumerate(readings):
+        near = readings[max(0, k - SUPPORT_WINDOW):k] + readings[k + 1:k + 1 + SUPPORT_WINDOW]
+        if any(o == off for _, o in near):
+            supported[i] = off
+    if not supported:
+        supported = dict(readings)   # zincir yok (tek okuma ya da hepsi farklı): hiçbir okuma aykırı sayılamaz
+    out: list[int | None] = []
+    last = None
+    for i in range(len(read)):
+        last = supported.get(i, last)
+        out.append(last)
+    first = next(iter(supported.values()), None)   # ilk destekli okumadan önceki sayfalar sonrakini alır
+    return [first if o is None else o for o in out]
+
+
 def infer(read: list[str | None], start: int | None = None) -> list[tuple[str, bool]]:
     """Okunan numaralardan her sayfa için (etiket, tahmin_mi) üretir.
 
-    Arap rakamları sayfa sırasına göre tek bir ofsete (numara - sıra) oy verir; en çok oy alan ofset
-    zinciri belirler (eşitlikte ilk sayfanın okuması). `start` verilirse ofset budur. Roma rakamları
-    okunduğu gibi kalır ve oy vermez. Türetilen değer 1'in altına düşerse ya da hiç ipucu yoksa
-    etiket "PDF s. N" olur.
+    Ofset parçalıdır (bkz. _offsets): kendi içinde tutarlı koşular (atlanan tarama sayfası, iki ayrı alıntı)
+    okunduğu gibi kalır, tek aykırı okuma komşu koşudan düzeltilir. `start` verilirse bütün sayfaların ofseti
+    budur. Roma rakamları okunduğu gibi kalır ve ofsete girmez. Türetilen değer 1'in altına düşerse ya da hiç ipucu
+    yoksa etiket "PDF s. N" olur.
     """
-    votes: Counter[int] = Counter()
-    first_seen: dict[int, int] = {}
-    for i, value in enumerate(read):
-        if value is not None and value.isdigit():
-            offset = int(value) - i
-            votes[offset] += 1
-            first_seen.setdefault(offset, i)
-    if start is not None:
-        offset: int | None = start
-    elif votes:
-        offset = max(votes, key=lambda o: (votes[o], -first_seen[o]))
-    else:
-        offset = None
-
+    offsets = [start] * len(read) if start is not None else _offsets(read)
     out: list[tuple[str, bool]] = []
-    for i, value in enumerate(read):
+    for i, (value, offset) in enumerate(zip(read, offsets)):
         if value is not None and not value.isdigit():
             out.append((value, False))  # roma: okunduğu gibi
             continue

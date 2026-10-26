@@ -211,9 +211,12 @@ def process_job(job: DocJob, opts: Options, run, tsv=engines.tesseract_tsv,
                 page.warnings.append(f"{pid}: önbelleğe yazılamadı ({save_error})")
             read.append(page.book_page)
         pages.append(page)
-    for page, src, (label, inferred) in zip(pages, job.pages, _book_pages(job.pages, read, opts.first_page)):
+    for page, src, value, (label, inferred) in zip(pages, job.pages, read,
+                                                   _book_pages(job.pages, read, opts.first_page)):
+        pid = _job_id(src, multi)
+        if value is not None and value.isdigit() and label != value:   # okunan numara düzeltildi (R21)
+            page.warnings.append(f"{pid}: okunan {value} → [{label}]")
         if label.startswith(("PDF s. ", "görsel ")):
-            pid = _job_id(src, multi)
             page.warnings.append(f"{pid}: {PDF_ORDER_WARNING if _is_pdf(src) else IMAGE_ORDER_WARNING}")
         page.book_page, page.book_page_inferred = label, inferred
     return pages
