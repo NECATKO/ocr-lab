@@ -6,7 +6,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 import pytest
 
-from ocrnow import engines, export_docx, export_txt, pages, paths, pipeline
+from ocrnow import cli, engines, export_docx, export_txt, pages, paths, pipeline
 from ocrnow.cli import main, parse_args
 from ocrnow.layout import Page
 from ocrnow.pages import DocJob, InputError, SourcePage
@@ -192,6 +192,19 @@ def test_format_answers(fake_env, monkeypatch, answer, formats):
     tty(monkeypatch, [answer, "e"])            # txt tek başına seçilirse işaretleme sorulmaz; kalan cevap kullanılmaz
     main(["k.pdf"])
     assert set(fake_env.written) == formats
+
+
+def test_new_exporter_needs_only_registry_entry(fake_env, monkeypatch):
+    """M5: yeni dışa aktarıcı tek yerde (EXPORTERS) eklenir: -f, sondaki soru ve yazma döngüsü onu tanır."""
+    got = []
+    monkeypatch.setitem(cli.EXPORTERS, "md", lambda doc_pages, out, settings: got.append(out))
+    assert main(["k.pdf", "-f", "md"]) == 0 and got == [paths.DOCS_OUT / "k.md"]
+    tty(monkeypatch, ["3"])                         # 1) docx 2) txt 3) md 4) hepsi
+    main(["k.pdf"])
+    assert got[-1] == paths.DOCS_OUT / "k.md" and fake_env.written == {}
+    tty(monkeypatch, ["hepsi", "e"])
+    main(["k.pdf"])
+    assert set(fake_env.written) == {"docx", "txt"} and len(got) == 3
 
 
 def test_invalid_format_answer_is_asked_again(fake_env, monkeypatch):

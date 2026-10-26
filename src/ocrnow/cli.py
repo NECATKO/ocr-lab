@@ -4,14 +4,20 @@ import importlib
 import re
 import sys
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 from ocrnow import engines, export_docx, export_txt, pages, paths, pipeline, ui
+from ocrnow.layout import Page
 from ocrnow.pages import DEFAULT_DPI, InputError
 
-FORMATS = ("docx", "txt")
-FORMAT_ANSWERS = {"1": ["docx"], "docx": ["docx"], "2": ["txt"], "txt": ["txt"],
-                  "3": ["docx", "txt"], "ikisi": ["docx", "txt"]}
+# Dışa aktarıcılar: biçim → yaz(sayfalar, çıktı yolu, ayarlar). Yeni biçim yalnız buraya eklenir; -f, sondaki soru ve
+# yazma döngüsü buradan okur. ayarlar: highlight, bold (kalın kalıbı ya da None), warnings (eklenecek uyarı listesi).
+EXPORTERS: dict[str, Callable[[list[Page], Path, dict], object]] = {
+    "docx": lambda doc_pages, out, settings: export_docx.write_docx(
+        doc_pages, out, highlight=settings["highlight"], bold_pattern=settings["bold"], warnings=settings["warnings"]),
+    "txt": lambda doc_pages, out, settings: export_txt.write_txt(doc_pages, out),
+}
 MODE_LABELS = {"duz": "duz — düz metin", "duzen": "duzen — başlık, dipnot ve sütunları ayırarak"}
 YES = {"e", "evet", "y", "yes"}
 NO = {"h", "hayır", "hayir", "n", "no"}
@@ -57,7 +63,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help=f"motor: {', '.join(engines.ENGINES)} (varsayılan: %(default)s)")
     p.add_argument("-o", "--okuma", default=engines.DEFAULT_MODE, action=_Explicit,
                    help="okuma modu: duz ya da duzen (varsayılan: %(default)s; model desteklemiyorsa duz)")
-    p.add_argument("-f", "--format", nargs="+", help="çıktı biçimi: docx, txt ya da ikisi (verilmezse sonda sorulur)")
+    p.add_argument("-f", "--format", nargs="+",
+                   help=f"çıktı biçimi: {', '.join(EXPORTERS)} ya da birkaçı (verilmezse sonda sorulur)")
     p.add_argument("--isaretle", dest="isaretle", action="store_true", default=None,
                    help="şüpheli kelimeleri sarı işaretle (verilmezse sonda sorulur)")
     p.add_argument("--isaretleme", dest="isaretle", action="store_false", default=None,
@@ -88,9 +95,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         except re.error as e:
             parser.error(f"--kalin-kalip geçersiz düzenli ifade: '{args.kalin_kalip}' ({e})")
     if args.format is not None:
-        bad = [f for f in args.format if f not in FORMATS]
+        bad = [f for f in args.format if f not in EXPORTERS]
         if bad:
-            parser.error(f"bilinmeyen biçim '{bad[0]}' (olanlar: docx, txt; girdileri -f'den önce yazın)")
+            parser.error(f"bilinmeyen biçim '{bad[0]}' (olanlar: {', '.join(EXPORTERS)}; girdileri -f'den önce yazın)")
         args.format = list(dict.fromkeys(args.format))
     return args
 
@@ -167,11 +174,16 @@ def _ask_start(args: argparse.Namespace) -> tuple[list[pages.DocJob], list[str]]
 # ---- sondaki sorular ----
 
 def _ask_formats() -> list[str]:
-    print("\nÇıktı biçimi:\n  1) docx\n  2) txt\n  3) ikisi")
+    """Her biçim tek başına, sonra hepsi birden (iki biçimde "ikisi"); numarayla ya da adıyla seçilir."""
+    names = list(EXPORTERS)
+    choices = [(n, [n]) for n in names] + [("ikisi" if len(names) == 2 else "hepsi", names)]
+    answers = {"hepsi": names} | {label: fmts for label, fmts in choices} \
+        | {str(k): fmts for k, (_, fmts) in enumerate(choices, 1)}
+    print("\nÇıktı biçimi:\n" + "\n".join(f"  {k}) {label}" for k, (label, _) in enumerate(choices, 1)))
     while True:
         answer = ui.ask("Seçim", "1").lower()
-        if answer in FORMAT_ANSWERS:
-            return FORMAT_ANSWERS[answer]
+        if answer in answers:
+            return answers[answer]
         print("  Geçersiz seçim, tekrar dene.")
 
 
@@ -251,7 +263,7 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     highlight = args.isaretle
     if highlight is None:
         highlight = _ask_highlight() if interactive and writable and "docx" in formats else True
-    bold = args.kalin_kalip or None   # boş kalıp kalın işaretlemeyi kapatır
+    settings = {"highlight": highlight, "bold": args.kalin_kalip or None}   # boş kalıp kalın işaretlemeyi kapatır
 
     written: list[Path] = []
     export_warnings: dict[str, list[str]] = {}
@@ -261,11 +273,7 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
         for fmt in formats:
             out = paths.DOCS_OUT / f"{stem}.{fmt}"
             try:
-                if fmt == "docx":
-                    export_docx.write_docx(doc_pages, out, highlight=highlight, bold_pattern=bold,
-                                           warnings=export_warnings.setdefault(job.name, []))
-                else:
-                    export_txt.write_txt(doc_pages, out)
+                EXPORTERS[fmt](doc_pages, out, {**settings, "warnings": export_warnings.setdefault(job.name, [])})
             except OSError as e:
                 _err(f"Hata: {out} yazılamadı ({e})")
                 write_failed = True
