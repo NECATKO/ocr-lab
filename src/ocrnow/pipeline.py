@@ -1,8 +1,10 @@
-"""Sayfa ve belge işleme hattı: model + tesseract → bloklar → kesme, sarı işaret, satır yapısı → önbellek.
+"""Sayfa ve belge işleme hattı: model + tesseract (→ önbellek) → bloklar → kesme, sarı işaret, satır yapısı.
 
-Sarı işaret her zaman hesaplanıp Page'e yazılır; açma/kapama yalnız dışa aktarmada yapılır.
-Önbellekte kitap sayfa numarasının okunan hâli durur; tahmin (infer) her işte yeniden yapılır.
+Önbellekte yalnız OCR çıktısı durur (ham model cevabı + tesseract TSV, R27); sayfa yapısı her işte bundan yeniden
+kurulur, böylece kod ve kelime listesi değişiklikleri GPU'suz uygulanır. Sarı işaret her zaman hesaplanıp Page'e
+yazılır; açma/kapama yalnız dışa aktarmada yapılır. Kitap sayfa numarası tahmini (infer) her işte yeniden yapılır.
 """
+import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,7 +16,7 @@ from ocrnow import engines, paths
 from ocrnow.align import apply_line_structure
 from ocrnow.apostrophe import build_word_list, restore
 from ocrnow.engines import DEFAULT_ENGINE, DEFAULT_MODE
-from ocrnow.layout import Page, page_from_json, page_to_json, parse_output
+from ocrnow.layout import Page, parse_output
 from ocrnow.pagenum import infer, read_book_page
 from ocrnow.pages import DEFAULT_DPI, DocJob, InputError, SourcePage, render
 from ocrnow.tesslines import lines_in, parse_tsv
@@ -27,6 +29,7 @@ PDF_ORDER_WARNING = "kitap sayfa numarası bulunamadı, PDF sırası kullanıld�
 IMAGE_ORDER_WARNING = "kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"
 TRUNCATED_WARNING = "model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir"
 CONFLICT_WARNING = "sayfa numarası komşularıyla tutmuyor, okunduğu gibi bırakıldı; kontrol edin"
+CACHE_VERSION = 2   # 1: işlenmiş Page (eski; ıska sayılır), 2: ham OCR çıktısı (RawPage)
 
 
 @dataclass
@@ -42,6 +45,16 @@ def _is_pdf(src: SourcePage) -> bool:
     return src.source.suffix.lower() == ".pdf"
 
 
+@dataclass
+class RawPage:
+    """Sayfanın OCR çıktısı, önbellekte duran hâli: ham model cevabı, tesseract TSV, görüntü boyutu."""
+    raw: str
+    tsv: str
+    width: int
+    height: int
+    truncated: bool = False   # model cevabı uzunluk sınırında kesildi (engines.Truncated)
+
+
 def page_id(src: SourcePage) -> str:
     """Uyarılardaki sayfa kimliği: PDF'te "s. N", görüntüde dosya adı (görüntünün index'i hep 1)."""
     return f"s. {src.index}" if _is_pdf(src) else src.source.name
@@ -51,25 +64,30 @@ def _word_list() -> dict[str, str]:
     return build_word_list(paths.GT, paths.SETTINGS / "kesme.txt")
 
 
-def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path, str], str],
-                 tsv: Callable[[Path], str] | None = None,
-                 size: tuple[int, int] | None = None, *, words: dict[str, str] | None = None) -> Page:
-    """Tek sayfayı işler. size=(genişlik, yükseklik); None ise img'den okunur. words None ise liste burada kurulur.
+def ocr_page(img: Path, opts: Options, run: Callable[[Path, str], str], tsv: Callable[[Path], str] | None = None,
+             size: tuple[int, int] | None = None) -> RawPage:
+    """Sayfanın OCR'ı: tesseract ve model. size=(genişlik, yükseklik); None ise img'den okunur.
     tsv None ise engines.tesseract_tsv (çağrı anında okunur)."""
     tsv_text = (tsv or engines.tesseract_tsv)(img)   # önce: tesseract hata verirse model (VLM) boşuna beklenmez
     raw = run(img, opts.mode)
     if size is None:
         with Image.open(img) as im:
             size = im.size
+    return RawPage(str(raw), tsv_text, size[0], size[1], isinstance(raw, engines.Truncated))
+
+
+def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str, str] | None = None) -> Page:
+    """OCR çıktısından sayfa yapısı (OCR dışı bütün adımlar). words None ise kelime listesi burada kurulur."""
+    size = (ocr.width, ocr.height)
     layout = engines.ENGINES[opts.engine].modes[opts.mode].layout
-    blocks, parse_warnings = parse_output(raw, layout, size)
+    blocks, parse_warnings = parse_output(ocr.raw, layout, size)
     pid = page_id(src)
     warnings = [f"{pid}: {w}" for w in parse_warnings]
-    if isinstance(raw, engines.Truncated):    # yoğun sayfada son bloklar (çoğu kez dipnotlar) eksik kalır
+    if ocr.truncated:    # yoğun sayfada son bloklar (çoğu kez dipnotlar) eksik kalır
         warnings.append(f"{pid}: {TRUNCATED_WARNING}")
     if opts.apostrophes and words is None:
         words = _word_list()
-    tlines = parse_tsv(tsv_text)
+    tlines = parse_tsv(ocr.tsv)
     for k, block in enumerate(blocks, 1):
         if block.category not in RESTORE_CATEGORIES:
             continue
@@ -87,14 +105,22 @@ def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path,
             warnings.append(f"{pid}, blok {k}: {warning}")
     book_page, side = read_book_page(blocks, size[0])
     return Page(source=str(src.source), index=src.index, width=size[0], height=size[1],
-                engine=opts.engine, mode=opts.mode, blocks=blocks, tess_tsv=tsv_text,
+                engine=opts.engine, mode=opts.mode, blocks=blocks, tess_tsv=ocr.tsv,
                 book_page=book_page, book_page_side=side, warnings=warnings)
 
 
+def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path, str], str],
+                 tsv: Callable[[Path], str] | None = None,
+                 size: tuple[int, int] | None = None, *, words: dict[str, str] | None = None) -> Page:
+    """Tek sayfayı okur ve işler (ocr_page + build_page)."""
+    return build_page(ocr_page(img, opts, run, tsv, size), src, opts, words=words)
+
+
 def cache_path(src: SourcePage, opts: Options) -> Path:
-    """CACHE/<ad>-<boyut>/syf<N>[_<dpi>dpi].<motor>.<mod>[.kesmesiz].json
+    """CACHE/<ad>-<boyut>/syf<N>[_<dpi>dpi].<motor>.<mod>.json
 
     Klasör adı pages.render ile aynı mantıkta; dpi eki yalnız PDF'te ve 200 dışında (görüntüde dpi anlamsız).
+    Kesme adımı önbellekten sonra uygulandığı için --kesme-yok aynı dosyayı kullanır (R27).
     """
     s = src.source
     try:
@@ -102,24 +128,31 @@ def cache_path(src: SourcePage, opts: Options) -> Path:
     except OSError as e:
         raise InputError(f"Dosya okunamadı: {s} ({e})") from e
     dpi = f"_{opts.dpi}dpi" if _is_pdf(src) and opts.dpi != DEFAULT_DPI else ""
-    plain = "" if opts.apostrophes else ".kesmesiz"
-    return paths.CACHE / f"{s.stem}-{size}" / f"syf{src.index}{dpi}.{opts.engine}.{opts.mode}{plain}.json"
+    return paths.CACHE / f"{s.stem}-{size}" / f"syf{src.index}{dpi}.{opts.engine}.{opts.mode}.json"
 
 
-def _load(path: Path) -> Page | None:
-    """Önbellekteki sayfa; yoksa, okunamıyorsa ya da şeması eskiyse None (yeniden OCR)."""
+def _load(path: Path, opts: Options) -> RawPage | None:
+    """Önbellekteki OCR çıktısı; yoksa, okunamıyorsa, sürümü eskiyse ya da motor/mod tutmuyorsa None (yeniden OCR)."""
     try:
-        return page_from_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        d = json.loads(path.read_text(encoding="utf-8"))
+        if d["version"] != CACHE_VERSION or (d["engine"], d["mode"]) != (opts.engine, opts.mode):
+            return None
+        ocr = RawPage(d["raw"], d["tsv"], d["width"], d["height"], d["truncated"])
+    except (OSError, ValueError, KeyError, TypeError):
         return None
+    ok = (isinstance(ocr.raw, str) and isinstance(ocr.tsv, str) and isinstance(ocr.truncated, bool)
+          and all(isinstance(v, int) and not isinstance(v, bool) for v in (ocr.width, ocr.height)))
+    return ocr if ok else None
 
 
-def _save(path: Path, page: Page) -> None:
+def _save(path: Path, ocr: RawPage, opts: Options) -> None:
     """Yarım yazılmış dosya önbellekte kalmasın: geçici dosyaya yazılıp yeniden adlandırılır."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    record = {"version": CACHE_VERSION, "engine": opts.engine, "mode": opts.mode, "width": ocr.width,
+              "height": ocr.height, "truncated": ocr.truncated, "raw": ocr.raw, "tsv": ocr.tsv}
     try:
-        tmp.write_text(page_to_json(page), encoding="utf-8")
+        tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -131,21 +164,23 @@ def _error_text(error: Exception) -> str:
 
 
 def _job_page(src: SourcePage, opts: Options, run, tsv, words, say: Callable[[str], None]) -> tuple[Page, str | None]:
-    """(sayfa, önbellek yazma hatası). Önbellekte varsa ne render ne model çağrılır; yoksa işlenip önbelleğe yazılır.
+    """(sayfa, önbellek yazma hatası). OCR çıktısı önbellekte varsa ne render ne tesseract ne model çağrılır; yoksa
+    okunup önbelleğe yazılır. Sayfa yapısı her iki durumda da OCR çıktısından kurulur (R27).
 
-    Önbellekteki uyarılar tek kaynaklı kimlikle (page_id) durur; birleşik işin öneki çağıran tarafta eklenir.
+    Uyarılar tek kaynaklı kimlikle (page_id) kurulur; birleşik işin öneki çağıran tarafta eklenir.
     """
     path = cache_path(src, opts)
-    if (page := _load(path)) is not None:
+    if (ocr := _load(path, opts)) is not None:
         say("önbellekten")
-        return page, None
+        return build_page(ocr, src, opts, words=words), None
     say("okunuyor…")
-    page = process_page(render(src, dpi=opts.dpi), src, opts, run, tsv, words=words)
+    ocr = ocr_page(render(src, dpi=opts.dpi), opts, run, tsv)
+    save_error = None
     try:
-        _save(path, page)
+        _save(path, ocr, opts)
     except OSError as e:
-        return page, str(e)
-    return page, None
+        save_error = str(e)
+    return build_page(ocr, src, opts, words=words), save_error
 
 
 def _runs(job_pages: list[SourcePage]) -> list[list[int]]:

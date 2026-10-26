@@ -16,6 +16,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 - Modelin italik/kalın için kullandığı Markdown yıldızları (`*a.g.e.*`, `**Sâniyen:**`) artık belgeye sızmıyor:
   `.docx`'te italik/kalın yazılıyor, `.txt`'de düz metin oluyor. Tek başına duran yıldıza dokunulmuyor.
 
+### Değişti
+- Önbellek artık işlenmiş sayfayı değil, OCR çıktısını (ham model cevabı, tesseract TSV, görüntü boyutu) saklıyor.
+  Sayfa yapısı her çalıştırmada bundan yeniden kuruluyor; kod, `ayarlar/kesme.txt` ve `--kesme-yok` değişiklikleri
+  önbellekteki sayfalara GPU'suz uygulanıyor. `.kesmesiz` önbellek dosyaları artık kullanılmıyor. Eski önbellek
+  dosyaları tanınmıyor: o sayfalar bir kez yeniden okunuyor.
+
 ## [0.1.0] - 2026-10-26
 
 İlk sürüm. Tek dosyalık `bench.py` karşılaştırma tezgâhı, ortak bir çekirdeği (`src/ocrnow/`) paylaşan iki komuta

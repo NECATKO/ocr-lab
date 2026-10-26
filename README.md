@@ -41,7 +41,8 @@ Her sayfa için şu adımlar sırayla yapılır:
 4. **Ayın (‘) ve hemze (’) ayrılır.** Bunu yapan kurallar ve bir kelime listesidir.
 5. **Şüpheli kelimeler işaretlenir.** Ana model ile tesseract'ın farklı okuduğu kelimeler sarıya boyanır.
 6. **Kitap sayfa numarası bulunur.** Önce sayfadan okunur. Okunamazsa komşu sayfalardan tahmin edilir.
-7. **Sayfa yapısı önbelleğe yazılır, sonra dışa aktarılır.** Yazılan biçimler `.docx` ve `.txt`'dir.
+7. **Dışa aktarılır.** Yazılan biçimler `.docx` ve `.txt`'dir. Adım 1–2'nin çıktısı önbelleğe yazılır; sonraki
+   adımlar her çalıştırmada yeniden yapılır (bkz. Önbellek).
 
 Örnek sayfada (2800 karakter) sonuçlar şöyle:
 - **Doğruluk:** dots.mocr düzen modunun normalize CER'i **%0.32**.
@@ -119,10 +120,14 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 
 ### Önbellek
 
-Sayfa yapısı `output/_cache/` altına sayfa başına bir kez yazılır.
+Her sayfanın OCR çıktısı (modelin ham cevabı ve tesseract'ın satırları) `output/_cache/` altına sayfa başına bir
+kez yazılır.
 - Aynı sayfa aynı model/modla yeniden istenirse (ör. önce `-f docx`, sonra `-f txt`) OCR yeniden çalışmaz.
 - Bütün sayfalar önbellekteyse model sunucusu hiç açılmaz.
-- `ayarlar/kesme.txt` değişirse eski sayfalar tazelenmez. İlgili `output/_cache/<kaynak>-<boyut>/` klasörünü silin.
+- Sayfa yapısı (satırlar, ayın/hemze, sarı işaretler) her çalıştırmada önbellekteki çıktıdan yeniden kurulur
+  (sayfa başına ~0.2 sn). Bu yüzden `ayarlar/kesme.txt`'deki ya da programdaki değişiklikler, `--kesme-yok` dahil,
+  GPU'suz ve yeniden OCR gerekmeden uygulanır.
+- Eski sürümün önbellek dosyaları tanınmaz; o sayfalar bir kez yeniden okunur.
 
 ### Ayın/hemze kelime listesi
 

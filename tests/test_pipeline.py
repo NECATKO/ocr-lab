@@ -206,7 +206,7 @@ def test_cache_path_naming(tmp_path):
     src = SourcePage(source(tmp_path, "Kitap.pdf", b"x" * 1234), 5)
     base = paths.CACHE / "Kitap-1234"
     assert cache_path(src, Options()) == base / "syf5.dots.mocr.duzen.json"
-    assert cache_path(src, Options(apostrophes=False)) == base / "syf5.dots.mocr.duzen.kesmesiz.json"
+    assert cache_path(src, Options(apostrophes=False)) == base / "syf5.dots.mocr.duzen.json"   # R27: ek yok
     assert cache_path(src, Options(dpi=300)) == base / "syf5_300dpi.dots.mocr.duzen.json"
     assert cache_path(src, Options(engine="glm-ocr", mode="duz")) == base / "syf5.glm-ocr.duz.json"
     img = SourcePage(source(tmp_path, "tarama.png", b"y" * 10), 1)
@@ -221,7 +221,7 @@ def test_unreadable_cache_is_miss(tmp_path):
     run, calls = fake_run("[]")
     pages = process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
     assert len(calls) == 1 and pages[0].blocks == []
-    assert json.loads(target.read_text(encoding="utf-8"))["index"] == 1   # yeniden yazıldı
+    assert json.loads(target.read_text(encoding="utf-8"))["version"] == 2   # yeniden yazıldı
 
 
 def test_job_passes_dpi_and_skips_render_on_hit(tmp_path, isolated):
@@ -343,13 +343,14 @@ def test_merged_pdfs_keep_own_numbers_and_prefix(tmp_path):
     pages = process_job(job, Options(first_page=10), run, lambda img: "", progress=msgs.append)
     assert book(pages) == [("10", False), ("11", False), ("1", False), ("2", True)]
     assert msgs[2] == "a_birlesik: b.pdf s. 1 (3/4) okunuyor…"
-    # bloğun satır uyarısı birleşik işte dosya adıyla başlar; önbellekte tek kaynaklı kimlik durur
+    # bloğun satır uyarısı birleşik işte dosya adıyla başlar; aynı önbellekten tek kaynaklı işte öneksiz
     assert pages[2].warnings == ["b.pdf s. 1, blok 1: satır yapısı kurulamadı: Text bloğu, tesseract satırı yok"]
-    cached = json.loads(cache_path(job.pages[2], Options()).read_text(encoding="utf-8"))
-    assert cached["warnings"] == ["s. 1, blok 1: satır yapısı kurulamadı: Text bloğu, tesseract satırı yok"]
     again = process_job(job, Options(), lambda img, m: pytest.fail("önbellek"), lambda img: "",
                         progress=lambda m: None)
     assert again[2].warnings == pages[2].warnings
+    alone = process_job(DocJob("b", [job.pages[2]]), Options(), lambda img, m: pytest.fail("önbellek"),
+                        lambda img: "", progress=lambda m: None)
+    assert alone[0].warnings[0] == "s. 1, blok 1: satır yapısı kurulamadı: Text bloğu, tesseract satırı yok"
 
 
 def test_image_job_warning_prefix(tmp_path):
@@ -396,3 +397,58 @@ def test_markdown_emphasis_kept_as_marks_and_stripped_before_rules():
     assert body.text == "bu mes’ele ve şu ba‘zı"
     assert [(m.start, m.end, m.kind) for m in body.marks] == [(3, 10, "italik"), (14, 16, "kalin"), (19, 20, "kesme")]
     assert header.text == "Kitab’ın adı" and [m.kind for m in header.marks] == ["italik"]
+
+
+def test_cache_stores_raw_model_output_and_tsv(tmp_path):
+    # R27: önbellek işlenmiş sayfa değil, ham model çıktısı + tesseract TSV + görüntü boyutu (+ motor, mod) saklar
+    raw = blocks_json(("Text", [0, 0, 980, 980], "bu *mes'ele*"))
+    tsv = tsv_rows(((10, 10, 900, 40), "bu mes'ele"))
+    job = DocJob("k", [SourcePage(source(tmp_path), 1)])
+    process_job(job, Options(), lambda img, m: raw, lambda img: tsv, progress=lambda m: None)
+    cached = json.loads(cache_path(job.pages[0], Options()).read_text(encoding="utf-8"))
+    assert cached == {"version": 2, "engine": "dots.mocr", "mode": "duzen", "width": 1000, "height": 1000,
+                      "truncated": False, "raw": raw, "tsv": tsv}
+
+
+def test_cache_hit_rebuilds_page_with_current_rules(tmp_path):
+    # önbellek isabetinde sayfa ham çıktıdan yeniden kurulur: kelime listesi ve --kesme-yok GPU'suz uygulanır
+    raw = blocks_json(("Text", [0, 0, 980, 980], "bu mes'ele"))
+    tsv = tsv_rows(((10, 10, 900, 40), "bu mes'ele"))
+    job = DocJob("k", [SourcePage(source(tmp_path), 1)])
+    first = process_job(job, Options(), lambda img, m: raw, lambda img: tsv, progress=lambda m: None)
+    assert first[0].blocks[0].text == "bu mes‘ele" and [m.kind for m in first[0].blocks[0].marks] == ["kesme"]
+    (tmp_path / "ayarlar").mkdir()
+    (tmp_path / "ayarlar" / "kesme.txt").write_text("mes’ele\n", encoding="utf-8")
+    cached = dict(run=lambda img, m: pytest.fail("önbellek"), tsv=lambda img: pytest.fail("önbellek"),
+                  progress=lambda m: None)
+    second = process_job(job, Options(), **cached)
+    assert second[0].blocks[0].text == "bu mes’ele" and second[0].blocks[0].marks == []
+    plain = process_job(job, Options(apostrophes=False), **cached)
+    assert plain[0].blocks[0].text == "bu mes'ele"
+    assert second[0].tess_tsv == tsv and (second[0].width, second[0].height) == (1000, 1000)
+
+
+def test_truncated_flag_survives_cache(tmp_path):
+    raw = engines.Truncated(blocks_json(("Text", [0, 0, 500, 500], "metin")))
+    job = DocJob("k", [SourcePage(source(tmp_path), 5)])
+    process_job(job, Options(), lambda img, m: raw, lambda img: "", progress=lambda m: None)
+    again = process_job(job, Options(), lambda img, m: pytest.fail("önbellek"), lambda img: "",
+                        progress=lambda m: None)
+    assert "s. 5: model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir" in again[0].warnings
+
+
+def test_old_format_cache_is_miss(tmp_path):
+    # sürüm 1 (işlenmiş Page) ve motor/modu tutmayan dosya ıska sayılır: bir kez yeniden OCR
+    job = DocJob("k", [SourcePage(source(tmp_path), 1)])
+    target = cache_path(job.pages[0], Options())
+    target.parent.mkdir(parents=True)
+    run, calls = fake_run("[]")
+    old = process_page(Path("x.png"), job.pages[0], Options(), run, lambda img: "", (100, 100))
+    for stale in (page_to_json(old),
+                  json.dumps({"version": 2, "engine": "glm-ocr", "mode": "duzen", "width": 1, "height": 1,
+                              "truncated": False, "raw": "[]", "tsv": ""})):
+        target.write_text(stale, encoding="utf-8")
+        calls.clear()
+        process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
+        assert len(calls) == 1
+        assert json.loads(target.read_text(encoding="utf-8"))["engine"] == "dots.mocr"
