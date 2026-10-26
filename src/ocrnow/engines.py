@@ -59,30 +59,39 @@ class Engine:
     port: int | None = None
     serve: str | None = None  # $TOOLS, $MODELS ve $VLLM yer tutucuları kullanılabilir
     recommended: bool = False
-    vram_gb: float | None = None  # Görev 12'de ölçülerek doldurulur
-    disk_gb: float | None = None
+    vram_gb: float | None = None  # tahmini asgari GPU belleği (GB); None → işlemci (aşağıdaki nota bkz.)
+    disk_gb: float | None = None  # motora özgü diskte yer (GB); ortak .venv-vllm (~8 GB) dahil değil
 
 
 def _duz(prompt: str | None) -> dict[str, Mode]:
     return {"duz": Mode(prompt, False)}
 
 
+# vram_gb: sunucu açıkken nvidia-smi ile ÖLÇÜLEMEZ, çünkü vLLM `--gpu-memory-utilization 0.85` ile belleğin
+# neredeyse hepsini baştan ayırır (kullanılan bellek ihtiyacı değil, ayrılan paydır). Bu yüzden tahmini asgari
+# kullanılır: yüklenen dtype'taki ağırlık boyutu + 1.5 GB (etkinleştirme/KV önbelleği/CUDA bağlamı payı).
+# Ağırlık boyutu: fp8 modellerde parametre sayısı × 1 bayt, bf16'da × 2 bayt, GGUF'ta dosya boyutu
+# (parametre sayıları HF önbelleğindeki safetensors başlıklarından; GB = 2^30 bayt):
+#   paddleocr-vl GGUF 0.94+0.88 GB → 1.7+1.5=3.2 | glm-ocr 1.33 G param bf16 → 2.5+1.5=4.0
+#   lightonocr 1.01 G bf16 → 1.9+1.5=3.4 | deepseek-ocr2 3.39 G fp8 → 3.2+1.5=4.7 | dots.mocr 3.04 G fp8 → 2.8+1.5=4.3
+# disk_gb: HF önbelleği anlık görüntüsünün `du -sL` boyutu (GGUF için llama.cpp 1.0 GB dahil; kraken için
+# .venv-kraken 3.7 GB dahil); 0.1 GB'a yuvarlandı. tesseract sistem paketidir, bu tabloda yer tutmaz.
 # VLM'ler OpenAI uyumlu sunucu üzerinden çağrılır. Sunucuyu kendin açtıysan (docker, ollama vs.)
 # sadece portu eşle; kayıt ona bağlanır, kapatmaz.
 ENGINES: dict[str, Engine] = {e.name: e for e in [
     Engine("tesseract", "local", _duz(None), recommended=True),
-    Engine("kraken", "local", _duz(None)),
-    Engine("paddleocr-vl", "vlm", _duz("OCR:"), port=8001,
+    Engine("kraken", "local", _duz(None), disk_gb=3.7),
+    Engine("paddleocr-vl", "vlm", _duz("OCR:"), port=8001, vram_gb=3.2, disk_gb=2.7,
            serve="$TOOLS/llama.cpp/llama-server -m $MODELS/PaddleOCR-VL-1.6.gguf --mmproj $MODELS/PaddleOCR-VL-1.6-mmproj.gguf --temp 0 -ngl 99 -c 8192 --port 8001"),
-    Engine("glm-ocr", "vlm", _duz("Text Recognition:"), port=8002, recommended=True,
+    Engine("glm-ocr", "vlm", _duz("Text Recognition:"), port=8002, recommended=True, vram_gb=4.0, disk_gb=2.5,
            serve="vllm serve zai-org/GLM-OCR --port 8002 $VLLM"),
-    Engine("lightonocr", "vlm", _duz(None), port=8003, recommended=True,  # LightOnOCR metin istemez, sadece görsel
+    Engine("lightonocr", "vlm", _duz(None), port=8003, recommended=True, vram_gb=3.4, disk_gb=1.9,  # LightOnOCR metin istemez, sadece görsel
            serve="""vllm serve lightonai/LightOnOCR-2-1B --port 8003 --limit-mm-per-prompt '{"image": 1}' $VLLM"""),
-    Engine("deepseek-ocr2", "vlm", _duz("Free OCR."), port=8004,  # bf16 hâli 8 GB'a sığmıyor → fp8
+    Engine("deepseek-ocr2", "vlm", _duz("Free OCR."), port=8004, vram_gb=4.7, disk_gb=6.3,  # bf16 hâli 8 GB'a sığmıyor → fp8
            serve="vllm serve deepseek-ai/DeepSeek-OCR-2 --port 8004 --quantization fp8 --enforce-eager $VLLM"),
     Engine("dots.mocr", "vlm",
            {"duz": Mode("Extract the text content from this image.", False), "duzen": Mode(LAYOUT_PROMPT, True)},
-           port=8005, recommended=True,  # 6 GB → fp8
+           port=8005, recommended=True, vram_gb=4.3, disk_gb=5.7,  # 6 GB → fp8
            serve="""vllm serve dots-studio/dots.mocr --port 8005 --trust-remote-code --chat-template-content-format string --quantization fp8 --enforce-eager --mm-processor-kwargs '{"max_pixels": 4000000}' $VLLM"""),
 ]}
 DEFAULT_ENGINE = "dots.mocr"
