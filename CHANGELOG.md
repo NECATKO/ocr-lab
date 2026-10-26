@@ -15,7 +15,10 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   - Azalan koşular (412, 411, 410) da tanınır; koşu içindeki tek aykırı okuma iki yönde de düzeltilir.
   - Okunamayan numara yalnız sayfa bir koşunun içindeyse ya da en az iki okumalı bir koşunun hemen devamıysa
     tahmin edilir. Tahmin, sayfanın başlığından öğrenilen çiftlikle (ör. yazar adı hep çift sayfada) çelişirse
-    yapılmaz, `[PDF s. N]` yazılır. Koşudan önceki sayfa artık tahmin edilmez.
+    yapılmaz, `[PDF s. N]` yazılır. Seçimin başındaki numarasız sayfalar ilk koşudan geriye doğru sayılır; iki
+    koşu arasındaki boşluk sonraki koşudan sayılmaz.
+  - Koşu içinde ters yöndeki komşuyla tesadüfen eşleşen yanlış okuma (412, 413, 412, 415) da düzeltilir.
+  - İş sonunda tarafla çelişen okunan numaralar, tahmin edilenlerden ayrı listelenir.
   - Aynı numara birden fazla sayfada okunduysa her birine "aynı sayfa iki kez taranmış olabilir" uyarısı eklenir.
   - `--ilk-sayfa` verildiğinde davranış değişmedi.
 - Günümüz Türkçesi sayfalarında özel addan sonra gelen y'li ve yaygın ekler (`Kahire’ye`, `İstanbul’daki`,

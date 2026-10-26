@@ -133,8 +133,10 @@ def _run_keys(readings: list[tuple[int, int]], clues: _Clues) -> tuple[list[Key 
     """(her okumanın koşu anahtarı ya da None, düzeltilen okumalar: sayfa sırası → numara).
 
     Bir okuma, önceki/sonraki SUPPORT_WINDOW okuma içinde aynı artan (yoksa azalan) anahtarlı bir okuma varsa
-    destekli bir koşudadır. Desteksiz okuma okunduğu gibi kalır; yalnız iki yanındaki okuma aynı koşudansa (R21:
-    tutarlı koşu içindeki tek aykırı okuma) koşudan düzeltilir, düzeltme sayfanın çiftlik ipucuyla çelişmiyorsa.
+    destekli bir koşudadır. Okuma, iki yanındaki okuma kendisinin olmayan aynı koşudansa (R21: tutarlı koşu içindeki
+    tek aykırı okuma) koşudan düzeltilir, düzeltme sayfanın çiftlik ipucuyla çelişmiyorsa; desteksiz ya da ters yönde
+    tesadüfen desteklenmiş (412, 413, 412, 415: 412 azalan yönde 413'le eşleşir) okuma da buna dahildir. Diğer
+    okumalar okunduğu gibi kalır.
     """
     keys: list[Key | None] = []
     for k, (i, n) in enumerate(readings):
@@ -144,7 +146,7 @@ def _run_keys(readings: list[tuple[int, int]], clues: _Clues) -> tuple[list[Key 
     corrected: dict[int, int] = {}
     for k in range(1, len(readings) - 1):
         key, i = keys[k - 1], readings[k][0]
-        if keys[k] is None and key is not None and keys[k + 1] == key:
+        if key is not None and keys[k + 1] == key and keys[k] != key:
             derived = _value(key, i)
             if derived >= 1 and clues.allows(i, derived):
                 keys[k], corrected[i] = key, derived
@@ -154,10 +156,11 @@ def _run_keys(readings: list[tuple[int, int]], clues: _Clues) -> tuple[list[Key 
 def _guess(i: int, readings: list[tuple[int, int]], keys: list[Key | None]) -> int | None:
     """Okunamayan sayfa için koşudan tahmin; yalnız en yakın önceki okuma bir koşudaysa (anahtarı olan okumanın
     koşusunda en az iki okuma vardır: sayfa koşunun içinde ya da hemen devamında) ya da bütün dizide tek okuma
-    varsa ve sayfa ondan sonraysa (kısa alıntı). Koşudan önceki sayfa tahmin edilmez."""
+    varsa ve sayfa ondan sonraysa (kısa alıntı). İlk okumadan önceki sayfalar (numarasız bölüm başı) yalnız ilk okuma
+    bir koşudaysa geriye doğru sayılır; aradaki boşluğun sonraki koşudan geriye doğru sayılması yoktur."""
     before = [k for k, (j, _) in enumerate(readings) if j < i]
     if not before:
-        return None
+        return _value(keys[0], i) if readings and keys[0] is not None else None
     k = before[-1]
     if keys[k] is not None:
         return _value(keys[k], i)
@@ -174,7 +177,8 @@ def infer(read: list[str | None], start: int | None = None, sides: list[str | No
     Okunan Arap rakamı numaraya güvenilir. Kitabın taraf–çiftlik kuralına (sides: okunan numaranın tarafı,
     "sol"|"sag"|None) aykırı okuma okunduğu gibi kalır ama tahmin işaretlenir. Artan ya da azalan tutarlı bir koşunun
     içindeki tek aykırı okuma koşudan düzeltilir. Okunamayan sayfa yalnız bir koşunun içindeyse ya da en az iki
-    okumalı bir koşunun hemen devamıysa (ya da dizideki tek okumadan sonraysa) tahmin edilir; tahmin sayfanın
+    okumalı bir koşunun hemen devamıysa (ya da dizideki tek okumadan sonraysa, ya da ilk okumadan önce ve o okuma
+    bir koşudaysa) tahmin edilir; tahmin sayfanın
     çiftlik ipucuyla (headers: sayfanın Page-header metni) çelişirse, 1'in altına düşerse ya da tahmin yapılamazsa
     etiket "PDF s. N" olur. Roma rakamları okunduğu gibi kalır ve oy vermez. `start` verilirse bütün sayfalar
     start + sıra olur; okunan numara tutmuyorsa tahmin işaretlenir (taraf ve başlık kullanılmaz).

@@ -1,3 +1,5 @@
+import pytest
+
 from ocrnow.layout import Block
 from ocrnow.pagenum import infer, read_book_page
 
@@ -64,8 +66,7 @@ def test_outlier_at_run_edge_is_kept():
 def test_gap_filled_from_previous_supported_run():
     assert infer(["412", "413", None, "418", "419"]) == [("412", False), ("413", False), ("414", True),
                                                           ("418", False), ("419", False)]
-    # R25: koşudan önceki okunamayan sayfa tahmin edilmez (koşunun içinde ya da devamında değil)
-    assert infer([None, "413", "414"]) == [("PDF s. 1", True), ("413", False), ("414", False)]
+    assert infer([None, "413", "414"]) == [("412", True), ("413", False), ("414", False)]
 
 
 def test_support_window_is_two_readings():
@@ -204,3 +205,25 @@ def test_gap_after_run_with_uncorrected_outlier_is_guessed():
 
 def test_start_nonpositive_falls_back_to_pdf_label():
     assert infer([None, None], start=0) == [("PDF s. 1", True), ("1", True)]
+
+
+@pytest.mark.parametrize("read,fixed", [
+    (["412", "413", "412", "415", "416"], "414"), (["414", "415", "418", "417", "418"], "416"),
+    (["412", "413", "410", "415", "416"], "414"), (["413", "414", "413", "416", "417"], "415"),
+    (["413", "414", "419", "416", "417"], "415")])
+def test_misread_pairing_with_opposite_direction_is_corrected(read, fixed):
+    # ±2/±4 yanlış okuma ters yöndeki komşuyla tesadüfen eşleşse de iki yanı aynı koşudaysa düzeltilir
+    out = infer(read)
+    assert out[2] == (fixed, True)
+    assert all(not guessed for k, (_, guessed) in enumerate(out) if k != 2)
+
+
+def test_leading_pages_before_first_run_are_guessed_backwards():
+    # bölüm başı numarasız: ilk okumanın koşusu en az iki okumalıysa geriye doğru sayılır (ipucu denetimiyle)
+    assert infer([None, "402", "403", "404"]) == [("401", True), ("402", False), ("403", False), ("404", False)]
+    assert infer([None, None, "402", "403"])[:2] == [("400", True), ("401", True)]
+    assert infer([None, "412", "411", "410"])[0] == ("413", True)
+    assert infer([None, "413"])[0] == ("PDF s. 1", True)                       # tek okuma koşu değil
+    assert infer(["285", None, "199", "198"])[1] == ("PDF s. 2", True)         # ilk okumadan önce değil
+    blocked = infer([None, "412", "411", "410"], headers=["YAZAR", "YAZAR", "KİTAP", "YAZAR"])
+    assert blocked[0] == ("PDF s. 1", True)                                    # 413 tek, yazar adı çift sayfada

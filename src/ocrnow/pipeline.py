@@ -229,16 +229,18 @@ def _book_pages(job_pages: list[SourcePage], read: list[str | None], sides: list
     return out
 
 
-def _duplicates(job_pages: list[SourcePage], read: list[str | None], first_page: int | None) -> dict[int, list[int]]:
+def _duplicates(job_pages: list[SourcePage], read: list[str | None], labels: list[tuple[str, bool]],
+                first_page: int | None) -> dict[int, list[int]]:
     """Aynı kaynakta aynı Arap rakamı birden fazla sayfada okunduysa: iş konumu → aynı numaralı diğer konumlar (R25).
-    first_page verilen ilk koşuda (eski davranış) aranmaz."""
+    Koşudan düzeltilen okuma (etiketi okunandan farklı) sayılmaz; first_page verilen ilk koşuda (eski davranış)
+    aranmaz."""
     out: dict[int, list[int]] = {}
     for r, run in enumerate(_runs(job_pages)):
         if r == 0 and first_page is not None:
             continue
         same: dict[str, list[int]] = {}
         for i in run:
-            if read[i] is not None and read[i].isdigit():
+            if read[i] is not None and read[i].isdigit() and labels[i][0] == read[i]:
                 same.setdefault(read[i], []).append(i)
         for group in same.values():
             if len(group) > 1:
@@ -250,10 +252,11 @@ _LOCATIVE_UNITS = dict(zip("123456789", "de de te te te da de de da".split()))  
 _LOCATIVE_TENS = dict(zip("123456789", "da de da ta de ta te de da".split()))     # on, yirmi, otuz … doksan
 
 
-def _locative(pid: str) -> str:
-    """Sayfa kimliği + bulunma eki: "s. 12'de", "s. 3'te", "s. 40'ta"; numarasız kimlikte "<ad> sayfasında"."""
+def _also_in(pid: str) -> str:
+    """Sayfa kimliği + bulunma eki + "de/da" bağlacı, ünlü uyumuyla: "s. 12'de de", "s. 3'te de", "s. 40'ta da";
+    numarasız kimlikte "<ad> sayfasında da"."""
     if not (m := re.search(r"\d+$", pid)):
-        return f"{pid} sayfasında"
+        return f"{pid} sayfasında da"
     digits = m.group()
     if digits[-1] != "0":
         suffix = _LOCATIVE_UNITS[digits[-1]]
@@ -261,7 +264,7 @@ def _locative(pid: str) -> str:
         suffix = _LOCATIVE_TENS[digits[-2]]
     else:
         suffix = "de"                                       # yüz, bin
-    return f"{pid}'{suffix}"
+    return f"{pid}'{suffix} d{suffix[1]}"
 
 
 def _header_text(page: Page) -> str | None:
@@ -310,7 +313,7 @@ def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | No
             headers.append(_header_text(page))
         pages.append(page)
     labels = _book_pages(job.pages, read, sides, headers, opts.first_page)
-    duplicates = _duplicates(job.pages, read, opts.first_page)
+    duplicates = _duplicates(job.pages, read, labels, opts.first_page)
     for pos, (page, src, value, (label, inferred)) in enumerate(zip(pages, job.pages, read, labels)):
         pid = _job_id(src, multi)
         if value is not None and value.isdigit() and label != value:   # okunan numara düzeltildi (R21)
@@ -320,10 +323,11 @@ def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | No
             side = "sol" if page.book_page_side == "sol" else "sağ"
             parity = "çift" if int(value) % 2 == 0 else "tek"
             page.warnings.append(f"{pid}: okunan {value} {SIDE_WARNING} ({side} sayfada {parity} numara), kontrol edin")
+            page.book_page_check = True
         if pos in duplicates:
             ids = [_job_id(job.pages[j], multi) for j in duplicates[pos]]
-            where = ", ".join(ids[:-1] + [_locative(ids[-1])])
-            page.warnings.append(f"{pid}: {value} numarası {where} de okundu ({DUPLICATE_WARNING})")
+            where = ", ".join(ids[:-1] + [_also_in(ids[-1])])
+            page.warnings.append(f"{pid}: {value} numarası {where} okundu ({DUPLICATE_WARNING})")
         if label.startswith(("PDF s. ", "görsel ")):
             page.warnings.append(f"{pid}: {PDF_ORDER_WARNING if _is_pdf(src) else IMAGE_ORDER_WARNING}")
         page.book_page, page.book_page_inferred = label, inferred

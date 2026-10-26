@@ -45,6 +45,7 @@ class Page:
     book_page: str | None = None
     book_page_inferred: bool = False
     book_page_side: str | None = None  # "sol" | "sag"
+    book_page_check: bool = False  # okunan numara kitabın taraf–çiftlik kuralına aykırı: kontrol edilmeli (R25)
     warnings: list[str] = field(default_factory=list)
     failed: bool = False  # sayfa okunamadı (önbelleğe girmez); belgede yer tutucu durur
 
@@ -86,9 +87,11 @@ def _norm(text: object) -> str:
     return " ".join(text.split())
 
 
-# eşli Markdown vurgusu: *italik*, **kalın**, ***ikisi***; içi boşlukla başlamaz/bitmez, işaretler bir harfe/rakama
-# yapışık değil (kelime*, 3*4 gibi tek başına yıldızlar dipnot simgesi olabilir: dokunulmaz)
-_EMPHASIS = re.compile(r"(?<![\w*])(\*{1,3})(?=[^\s*])(.+?)(?<=[^\s*])\1(?![\w*])")
+# eşli Markdown vurgusu: *italik*, **kalın**, ***ikisi***; içi boşlukla başlamaz/bitmez, ")"/"]" ile başlamaz,
+# "("/"[" ile bitmez ve harf ya da rakam içerir; işaretler bir harfe/rakama yapışık değil (kelime*, 3*4, metin(*)
+# gibi yıldızlar dipnot simgesi olabilir: dokunulmaz)
+_EMPHASIS = re.compile(r"(?<![\w*])(\*{1,3})(?=[^\s*)\]])(.+?)(?<=[^\s*(\[])\1(?![\w*])")
+_ALNUM = re.compile(r"[^\W_]")
 _EMPHASIS_KINDS = {1: ("italik",), 2: ("kalin",), 3: ("italik", "kalin")}
 
 
@@ -98,6 +101,8 @@ def _emphasis(text: str) -> tuple[str, list[Mark]]:
     marks: list[Mark] = []
     pos = length = 0
     for m in _EMPHASIS.finditer(text):
+        if not _ALNUM.search(m.group(2)):
+            continue                      # "(*) … (*)", "*-*": vurgu değil, metinde kalır
         before = text[pos:m.start()]
         inner, inner_marks = _emphasis(m.group(2))
         start = length + len(before)
@@ -111,7 +116,10 @@ def _emphasis(text: str) -> tuple[str, list[Mark]]:
 
 
 def _text_block(category: str, bbox: tuple[int, int, int, int] | None, text: str) -> Block:
-    """Sadeleştirilmiş metinden blok; Markdown vurgu işaretleri biçim işaretine çevrilir (R26)."""
+    """Sadeleştirilmiş metinden blok; Markdown vurgu işaretleri biçim işaretine çevrilir (R26). Table'ın HTML'ine
+    dokunulmaz (hücredeki yıldız dipnot simgesi olabilir; işaretleri zaten dışa aktarılmaz)."""
+    if category == "Table":
+        return Block(category, bbox, text)
     text, marks = _emphasis(text)
     return Block(category, bbox, text, marks=marks)
 

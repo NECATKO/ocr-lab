@@ -107,7 +107,8 @@ Taranmış belge kitabın farklı yerlerinden, hatta ters sırayla alınmış pa
   ortasındaki tek aykırı okuma koşudan düzeltilir ve uyarılır (`s. 2: okunan 431 → [413]`). Kendi içinde tutarlı
   okumalar korunur, ör. 412–415'ten sonra 418–425.
 - **Okunamayan numara** yalnız şu durumlarda tahmin edilir: sayfa bir koşunun içindeyse, en az iki okumalı bir
-  koşunun hemen devamıysa ya da seçimdeki tek okumadan sonra geliyorsa. Koşudan önceki sayfa tahmin edilmez.
+  koşunun hemen devamıysa ya da seçimdeki tek okumadan sonra geliyorsa. Seçimin başındaki numarasız sayfalar
+  (ör. bölüm başı) ilk koşudan geriye doğru sayılır; iki koşu arasındaki boşluk sonraki koşudan sayılmaz.
 - Tahmin, sayfanın çiftliğiyle çelişirse yapılmaz. Çiftlik, sayfanın başlığından öğrenilir: ör. yazar adı hep çift,
   kitap adı hep tek sayfadaysa (büyük/küçük harf ve aksan farkı yok sayılır).
 - Tahmin yapılamazsa `[PDF s. 3]` yazılır ve uyarılır. Gerekirse `--ilk-sayfa` ile numara verin.
@@ -126,7 +127,8 @@ Aynı numara birden fazla sayfada okunduysa her birine uyarı eklenir
 - Sayfalar arasında `--- s. 412 ---` ayracı bulunur.
 
 **İş sonu:**
-- Belge yolları, tahmin edilen sayfa numaraları ve bütün uyarılar sayfa sayfa listelenir.
+- Belge yolları, tahmin edilen sayfa numaraları, tarafla çelişen (kontrol edilmesi gereken) okunan numaralar ve
+  bütün uyarılar sayfa sayfa listelenir.
 - Okunamayan sayfa belgede `[Bu sayfa okunamadı]` olarak durur. Bu durumda çıkış kodu 1 olur.
 - Hiçbir sayfası okunamayan belge yazılmaz.
 
@@ -137,7 +139,7 @@ kez yazılır.
 - Aynı sayfa aynı model/modla yeniden istenirse (ör. önce `-f docx`, sonra `-f txt`) OCR yeniden çalışmaz.
 - Bütün sayfalar önbellekteyse model sunucusu hiç açılmaz.
 - Sayfa yapısı (satırlar, ayın/hemze, sarı işaretler) her çalıştırmada önbellekteki çıktıdan yeniden kurulur
-  (sayfa başına ~0.2 sn). Bu yüzden `ayarlar/kesme.txt`'deki ya da programdaki değişiklikler, `--kesme-yok` dahil,
+  (sayfa başına ~0.3 sn). Bu yüzden `ayarlar/kesme.txt`'deki ya da programdaki değişiklikler, `--kesme-yok` dahil,
   GPU'suz ve yeniden OCR gerekmeden uygulanır.
 - Eski sürümün önbellek dosyaları tanınmaz; o sayfalar bir kez yeniden okunur.
 

@@ -216,3 +216,13 @@ def test_emphasis_in_header_and_footer_blocks():
                       {"bbox": [0, 90, 10, 99], "category": "Page-footer", "text": "*412*"}])
     blocks, _ = parse_output(raw, True, (100, 100))
     assert [(b.text, [m.kind for m in b.marks]) for b in blocks] == [("KİTAP", ["italik"]), ("412", ["italik"])]
+
+
+def test_footnote_star_pairs_and_tables_are_not_emphasis():
+    # (*) dipnot simgeleri, harfsiz/rakamsız iç, ")" ile başlayan ya da "(" ile biten iç vurgu değildir
+    for text in ("metin(*) ve öteki(*) dipnot", "(*) bkz. (*)", "[*] a [*]", "*-* ve *.*", "*) a (*"):
+        assert emphasis(text) == (text, []), text
+    assert emphasis("(*italik*) ve [*bu*]") == ("(italik) ve [bu]", [(1, 7, "italik"), (13, 15, "italik")])
+    raw = json.dumps([{"bbox": [0, 0, 10, 10], "category": "Table", "text": "<td>*</td><td>*a*</td><td>*</td>"}])
+    (b,), _ = parse_output(raw, True, (100, 100))
+    assert b.text == "<td>*</td><td>*a*</td><td>*</td>" and b.marks == []

@@ -12,9 +12,10 @@ from ocrnow.layout import Page
 from ocrnow.pages import DocJob, InputError, SourcePage
 
 
-def fake_page(index, warnings=(), label="413", inferred=True, failed=False):
+def fake_page(index, warnings=(), label="413", inferred=True, failed=False, check=False):
     return Page(source="k.pdf", index=index, width=10, height=10, engine="dots.mocr", mode="duzen",
-                blocks=[], book_page=label, book_page_inferred=inferred, warnings=list(warnings), failed=failed)
+                blocks=[], book_page=label, book_page_inferred=inferred, warnings=list(warnings), failed=failed,
+                book_page_check=check)
 
 
 def failed_page(index):
@@ -446,3 +447,11 @@ def test_interactive_start_empty_input_folder_exit_2(fake_env, monkeypatch, caps
     tty(monkeypatch, [])
     assert main([]) == 2
     assert "input" in capsys.readouterr().err
+
+
+def test_summary_lists_side_flagged_readings_separately(fake_env, capsys):
+    fake_env.pages = [fake_page(1, [], "413", True), fake_page(2, [], "416", True, check=True)]
+    main(["k.pdf", "-f", "txt"])
+    out = capsys.readouterr().out
+    assert "tahmin edilen sayfa numaraları:\n  [413]\n" in out
+    assert "kontrol edilmesi gereken okunan numaralar:\n  [416]\n" in out

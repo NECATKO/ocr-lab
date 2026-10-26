@@ -378,11 +378,40 @@ def test_same_number_read_twice_warns_each_page(tmp_path):
 
 
 @pytest.mark.parametrize("pid,exp", [
-    ("s. 12", "s. 12'de"), ("s. 3", "s. 3'te"), ("s. 6", "s. 6'da"), ("s. 10", "s. 10'da"), ("s. 40", "s. 40'ta"),
-    ("s. 70", "s. 70'te"), ("s. 100", "s. 100'de"), ("s. 2000", "s. 2000'de"), ("k.pdf s. 9", "k.pdf s. 9'da"),
-    ("tarama.png", "tarama.png sayfasında")])
-def test_locative(pid, exp):
-    assert pipeline._locative(pid) == exp
+    ("s. 12", "s. 12'de de"), ("s. 3", "s. 3'te de"), ("s. 6", "s. 6'da da"), ("s. 10", "s. 10'da da"),
+    ("s. 40", "s. 40'ta da"), ("s. 70", "s. 70'te de"), ("s. 100", "s. 100'de de"), ("s. 2000", "s. 2000'de de"),
+    ("k.pdf s. 9", "k.pdf s. 9'da da"), ("tarama.png", "tarama.png sayfasında da")])
+def test_also_in(pid, exp):
+    # bulunma eki ve "de/da" bağlacı ünlü uyumuyla
+    assert pipeline._also_in(pid) == exp
+
+
+def test_duplicate_warning_harmony_and_corrected_readings_ignored(tmp_path):
+    quiet = dict(tsv=lambda img: "", progress=lambda m: None)
+    replies = {1: numbered(285, "sag"), 6: numbered(285, "sag")}
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in replies])
+    pages = process_job(job, Options(), replies_run(replies), **quiet)
+    assert "s. 1: 285 numarası s. 6'da da okundu (aynı sayfa iki kez taranmış olabilir)" in pages[0].warnings
+    # s. 2'deki 431 koşudan 413'e düzeltildi: s. 4'teki 431 ile tekrar sayılmaz
+    numbers = {1: 412, 2: 431, 3: 414, 4: 431}
+    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf"), i) for i in numbers])
+    pages = process_job(other, Options(), footer_run(numbers), **quiet)
+    assert book(pages)[1] == ("413", True) and not any("okundu" in w for p in pages for w in p.warnings)
+
+
+def test_side_flagged_reading_is_marked_for_check(tmp_path):
+    replies = {1: numbered(412, "sol"), 2: numbered(413, "sag"), 3: numbered(414, "sol"), 4: numbered(416, "sag"),
+               5: numbered(None)}
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in replies])
+    pages = process_job(job, Options(), replies_run(replies), lambda img: "", progress=lambda m: None)
+    assert [p.book_page_check for p in pages] == [False, False, False, True, False]
+
+
+def test_chapter_opening_without_number_is_guessed(tmp_path):
+    numbers = {5: None, 6: 402, 7: 403, 8: 404}
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in numbers])
+    pages = process_job(job, Options(), footer_run(numbers), lambda img: "", progress=lambda m: None)
+    assert book(pages) == [("401", True), ("402", False), ("403", False), ("404", False)]
 
 
 def test_first_page_with_gap(tmp_path):

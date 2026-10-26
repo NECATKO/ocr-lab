@@ -217,10 +217,13 @@ def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path],
             print(f"  {job.name}: hiçbir sayfa okunamadı, belge yazılmadı")
     failed = False
     for job, doc_pages in results:
-        guessed = [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred]
-        if guessed:
-            print(f"\n{job.name}: tahmin edilen sayfa numaraları:")
-            print(textwrap.fill(", ".join(guessed), width=88, initial_indent="  ", subsequent_indent="  "))
+        guessed = [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred and not p.book_page_check]
+        checked = [export_txt.page_label(p) for p in doc_pages if p.book_page_check]
+        for title, labels in (("tahmin edilen sayfa numaraları", guessed),
+                              ("kontrol edilmesi gereken okunan numaralar", checked)):
+            if labels:
+                print(f"\n{job.name}: {title}:")
+                print(textwrap.fill(", ".join(labels), width=88, initial_indent="  ", subsequent_indent="  "))
         warns = [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, [])
         failed = failed or any(p.failed for p in doc_pages)
         if warns:
