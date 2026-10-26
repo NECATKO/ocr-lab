@@ -156,8 +156,8 @@ def test_long_lines_shrink_font():
 
 
 def test_docx_font_from_longest_line_across_pages(tmp_path):
-    long = "a" * 119 + " b"                                              # eklenen tireyle 120 karakter
-    p2 = page(2, text=long, lines=[Line(0, 119, True), Line(120, 121, False)])
+    long = "b " + "a" * 120                          # girintisiz ikinci satır, eklenen tireyle 120 karakter
+    p2 = page(2, text=long, lines=[Line(0, 1, False), Line(2, 121, True), Line(121, 122, False)])
     d = Document(write_docx([page(1), p2], tmp_path / "a.docx"))
     assert d.styles["Normal"].font.size == Pt(font_size_for(120))
 
@@ -202,3 +202,36 @@ def test_spike_page_docx(spike_layout, spike_tsv, tmp_path, monkeypatch):
     assert paras[sep + 1].runs[0].font.superscript
     longest = max(len(line) for q in body for line in q.text.split("\n"))
     assert d.styles["Normal"].font.size == Pt(font_size_for(longest))
+
+
+def normal_pt(d):
+    return d.styles["Normal"].font.size.pt
+
+
+def test_flowing_blocks_do_not_shrink_font(tmp_path):
+    """R18: satır yapısı olmayan uzun tek-span bloklar akan paragraftır (Word kaydırır), punto hesabına girmez."""
+    fallback = "a " * 210                                                       # R11 geri dönüşü: tek satır
+    p = blocks_page(Block("Text", None, fallback.strip(), [Line(0, len(fallback.strip()), False)]),
+                    Block("Table", None, "<table><tr><td>" + "b " * 100 + "</td></tr></table>",
+                          [Line(0, 10, False), Line(11, 20, False)]),
+                    Block("Caption", None, "c" * 120),
+                    Block("Footnote", None, "1 " + "d " * 100))
+    d = Document(write_docx([page(1), p], tmp_path / "a.docx"))
+    assert normal_pt(d) == 10.5
+    assert d.paragraphs[-1].runs[-1].font.size == Pt(9)                         # dipnot puntosu da küçülmez
+
+
+def test_indent_counts_in_first_line_width(tmp_path):
+    t = "f" * 86 + " g"
+    lines = [Line(0, 86, False), Line(87, 88, False)]
+    b = Block("Text", None, t, lines, True)
+    indented = Document(write_docx([blocks_page(b)], tmp_path / "b.docx"))
+    assert normal_pt(indented) == 10.0
+    b.indent = False
+    assert normal_pt(Document(write_docx([blocks_page(b)], tmp_path / "c.docx"))) == 10.5
+
+
+def test_long_header_shrinks_only_header(tmp_path):
+    p = blocks_page(Block("Page-header", None, "H" * 80), Block("Text", None, "kısa"))
+    d = Document(write_docx([p], tmp_path / "a.docx"))
+    assert d.paragraphs[0].runs[0].font.size == Pt(8) and normal_pt(d) == 10.5

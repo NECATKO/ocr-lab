@@ -23,19 +23,26 @@ FONT = "Times New Roman"
 BODY_PT = 10.5            # en büyük gövde puntosu
 FOOTNOTE_PT = 9.0
 HEADER_PT = 9.5           # Page-header ve altlıktaki numara
+HEADER_MIN_PT = 6.0       # bundan uzun başlık küçülmez, Word kaydırır
+HEADER_SPACING = 30       # Page-header harf aralığı (twip)
 SEPARATOR_PT = 8.0
 TEXT_WIDTH_PT = 391       # 17 cm - 2 × 1.6 cm kenar boşluğu
 CHAR_EM = 0.42            # Times New Roman ortalama harf genişliği (punto başına)
+INDENT = Cm(0.9)          # paragrafın ilk satır girintisi
 WHOLE_BOLD = frozenset({"Title", "Section-header"})
 Ranges = list[tuple[int, int]]
 
 
-def _fit(max_chars: int, cap: float) -> float:
-    """max_chars karakterlik satırın metin genişliğine sığdığı punto, 0.5'e aşağı yuvarlanır (yukarı yuvarlamak
-    satırı taşırıp Word'ün kendiliğinden kaydırmasına yol açabilirdi)."""
+def _half_down(pt: float) -> float:
+    """0.5'e aşağı yuvarlar (yukarı yuvarlamak satırı taşırıp Word'ün kendiliğinden kaydırmasına yol açabilirdi)."""
+    return math.floor(pt * 2) / 2
+
+
+def _fit(max_chars: int, cap: float, indent_pt: float = 0.0) -> float:
+    """max_chars karakterlik satırın (girinti payı indent_pt ile) metin genişliğine sığdığı punto, en çok cap."""
     if max_chars <= 0:
         return cap
-    return min(cap, math.floor(TEXT_WIDTH_PT / (CHAR_EM * max_chars) * 2) / 2)
+    return min(cap, _half_down((TEXT_WIDTH_PT - indent_pt) / (CHAR_EM * max_chars)))
 
 
 def font_size_for(max_chars: int) -> float:
@@ -49,9 +56,27 @@ def _spans(block: Block, text: str) -> list[tuple[int, int, bool]]:
     return [(0, len(text), False)]
 
 
-def _longest(blocks: list[Block]) -> int:
-    """Blokların en uzun satırının karakter sayısı (eklenen tire dahil)."""
-    return max((e - s + h for b in blocks for s, e, h in _spans(b, plain_text(b))), default=0)
+def _size_for(blocks: list[Block], cap: float, indented: bool) -> float:
+    """Blokların bütün satırlarının sığdığı punto (R18). Satır uzunluğuna eklenen tire, girintili ilk satıra girinti
+    payı girer. Satır yapısı olan satırlar sayılır: 2+ satırlı blokların satırları ve cap'te sığan tek satırlar.
+    cap'te sığmayan tek satırlı blok (R11 geri dönüşü, Table, lines == [] olanlar) akan paragraftır: Word kaydırır."""
+    size = cap
+    for b in blocks:
+        indent_pt = INDENT.pt if indented and b.indent else 0.0
+        fits = [_fit(e - s + h, cap, indent_pt if k == 0 else 0.0)
+                for k, (s, e, h) in enumerate(_spans(b, plain_text(b)))]
+        if len(fits) > 1 or fits[0] == cap:
+            size = min(size, *fits)
+    return size
+
+
+def _header_size(block: Block) -> float:
+    """Page-header puntosu: en uzun satırı harf aralığıyla sığmazsa yalnız başlık küçülür (en az HEADER_MIN_PT)."""
+    longest = max(e - s + h for s, e, h in _spans(block, block.text))
+    if longest <= 0:
+        return HEADER_PT
+    spacing_pt = HEADER_SPACING / 20
+    return max(HEADER_MIN_PT, min(HEADER_PT, _half_down((TEXT_WIDTH_PT / longest - spacing_pt) / CHAR_EM)))
 
 
 def _covers(ranges: Ranges, pos: int) -> bool:
@@ -73,7 +98,7 @@ def _sup_pattern(page: Page) -> re.Pattern | None:
 
 
 def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern | None, highlight: bool,
-              size: float | None = None) -> None:
+              size: float | None = None, spacing: int | None = None) -> None:
     """Bloğu satır satır run'lara yazar: run'lar kalın, üst simge ve sarı aralıklarının sınırlarından bölünür."""
     text = plain_text(block)
     if block.category in WHOLE_BOLD:
@@ -99,6 +124,10 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
         runs = []
         for s, (is_bold, is_sup, is_yellow) in merged or [["", (False, False, False)]]:
             r = p.add_run(s)
+            if spacing:     # harf aralığı; rPr'de ilk eklenir, python-docx sonrakileri şema sırasına yerleştirir
+                sp = OxmlElement("w:spacing")
+                sp.set(qn("w:val"), str(spacing))
+                r._r.get_or_add_rPr().append(sp)
             if is_bold:
                 r.bold = True
             if is_sup:
@@ -134,15 +163,7 @@ def _header(doc, block: Block):
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.space_after = Pt(10)
-    spans = _spans(block, block.text)
-    for k, (start, end, hyphen) in enumerate(spans):
-        r = p.add_run(block.text[start:end] + ("-" if hyphen else ""))
-        sp = OxmlElement("w:spacing")       # harf aralığı (twip); rPr'de sz'den önce gelmeli: boyuttan önce eklenir
-        sp.set(qn("w:val"), "30")
-        r._r.get_or_add_rPr().append(sp)
-        r.font.size = Pt(HEADER_PT)
-        if k < len(spans) - 1:
-            r.add_break(WD_BREAK.LINE)
+    _add_runs(p, block, None, None, False, _header_size(block), HEADER_SPACING)
     return p
 
 
@@ -157,8 +178,8 @@ def _close_section(doc, last_paragraph) -> None:
 
 def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_pattern: str | None = BOLD_DEFAULT) -> Path:
     groups = [split_blocks(page) for page in pages]
-    body_pt = font_size_for(max((_longest(body) for _, body, _ in groups), default=0))
-    footnote_pt = min(body_pt, _fit(max((_longest(fns) for _, _, fns in groups), default=0), FOOTNOTE_PT))
+    body_pt = _size_for([b for _, body, _ in groups for b in body], BODY_PT, indented=True)
+    footnote_pt = min(body_pt, _size_for([b for _, _, fns in groups for b in fns], FOOTNOTE_PT, indented=False))
     bold_re = re.compile(bold_pattern) if bold_pattern else None
 
     doc = Document()
@@ -179,7 +200,7 @@ def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_patter
             last = doc.add_paragraph()
             last.paragraph_format.space_after = Pt(5)
             if block.indent:
-                last.paragraph_format.first_line_indent = Cm(0.9)
+                last.paragraph_format.first_line_indent = INDENT
             _add_runs(last, block, sup, bold_re, highlight)
         if footnotes:
             sep = doc.add_paragraph()
