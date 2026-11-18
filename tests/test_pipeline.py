@@ -107,9 +107,10 @@ def test_engine_error_keeps_going(tmp_path):
     assert not cache_path(job.pages[0], Options()).exists()   # hatalı sayfa önbelleğe girmez
 
 
-def test_server_error_is_not_a_page_error(tmp_path):
-    """Sunucu açılamadıysa (engines.ServerError) iş sayfa sayfa sürmez: hata çağırana gider."""
-    job = DocJob("k", [SourcePage(source(tmp_path), 1), SourcePage(source(tmp_path), 2)])
+def test_server_error_is_not_a_page_error(tmp_path, monkeypatch):
+    """Sunucu açılamadıysa (engines.ServerError) iş sayfa sayfa sürmez: hata çağırana gider, yeni sayfa başlamaz."""
+    monkeypatch.setattr(pipeline, "_workers", lambda opts: 1)
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (1, 2, 3)])
     calls = []
 
     def run(img, mode):
@@ -421,7 +422,8 @@ def test_first_page_with_gap(tmp_path):
     assert [p.book_page for p in pages] == ["100", "101", "104"]
 
 
-def test_merged_pdfs_keep_own_numbers_and_prefix(tmp_path):
+def test_merged_pdfs_keep_own_numbers_and_prefix(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "_workers", lambda opts: 1)   # cevaplar çağrı sırasıyla verilir: sayfalar tek tek okunmalı
     a, b = source(tmp_path, "a.pdf"), source(tmp_path, "b.pdf", b"%PDF-baska")
     job = DocJob("a_birlesik", [SourcePage(a, i) for i in (1, 2)] + [SourcePage(b, i) for i in (1, 2)])
     replies = [with_footer(n) for n in (10, 11, 1, None)]   # sahte render iki PDF'te de syf1.png verir: sırayla
@@ -539,3 +541,55 @@ def test_old_format_cache_is_miss(tmp_path):
         process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
         assert len(calls) == 1
         assert json.loads(target.read_text(encoding="utf-8"))["engine"] == "dots.mocr"
+
+
+def test_uncached_pages_are_read_concurrently_and_reported_in_order(tmp_path):
+    """VLM sayfaları aynı anda okunur (sunucu toplu işler): iki sayfa birbirini beklemeden okunamazsa bariyer kırılır.
+    İlerleme ve sonuç yine sayfa sırasıyla."""
+    import threading
+    barrier = threading.Barrier(2, timeout=5)
+
+    def run(img, mode):
+        barrier.wait()
+        return json.dumps([{"bbox": [0, 0, 10, 10], "category": "Text", "text": img.stem}])
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (1, 2)])
+    msgs: list[str] = []
+    pages = process_job(job, Options(), run, lambda img: "", progress=msgs.append)
+    assert [p.failed for p in pages] == [False, False]
+    assert [p.blocks[0].text for p in pages] == ["syf1", "syf2"]
+    assert msgs == ["k: s. 1 (1/2) okunuyor…", "k: s. 2 (2/2) okunuyor…"]
+
+
+def test_only_parallel_engines_read_concurrently(tmp_path):
+    import threading
+    lock, active, peak = threading.Lock(), [0], [0]
+
+    def run(img, mode):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        import time
+        time.sleep(0.02)
+        with lock:
+            active[0] -= 1
+        return "metin"
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (1, 2, 3)])
+    process_job(job, Options(engine="tesseract", mode="duz"), run, lambda img: "", progress=lambda m: None)
+    assert peak[0] == 1
+    peak[0] = 0                                       # ölçülmemiş VLM motoru da tek tek (yalnız dots.mocr paralel)
+    process_job(job, Options(engine="glm-ocr", mode="duz"), run, lambda img: "", progress=lambda m: None)
+    assert peak[0] == 1
+
+
+def test_interrupt_stops_queued_pages(tmp_path, monkeypatch):
+    """Ctrl-C (ocr-gui'de İptal) bekleyen sayfaları başlatmaz."""
+    monkeypatch.setattr(pipeline, "_workers", lambda opts: 1)
+    calls = []
+
+    def run(img, mode):
+        calls.append(img.name)
+        raise KeyboardInterrupt
+    job = DocJob("k", [SourcePage(source(tmp_path), i) for i in (1, 2, 3)])
+    with pytest.raises(KeyboardInterrupt):
+        process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
+    assert calls == ["syf1.png"]

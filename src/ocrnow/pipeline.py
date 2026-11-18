@@ -8,6 +8,7 @@ import json
 import os
 import re
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -165,24 +166,35 @@ def _error_text(error: Exception) -> str:
     return str(error) or type(error).__name__  # iz kaydı (traceback) değil, yalnız ileti
 
 
-def _job_page(src: SourcePage, opts: Options, run, tsv, words, say: Callable[[str], None]) -> tuple[Page, str | None]:
-    """(sayfa, önbellek yazma hatası). OCR çıktısı önbellekte varsa ne render ne tesseract ne model çağrılır; yoksa
-    okunup önbelleğe yazılır. Sayfa yapısı her iki durumda da OCR çıktısından kurulur (R27).
-
-    Uyarılar tek kaynaklı kimlikle (page_id) kurulur; birleşik işin öneki çağıran tarafta eklenir.
-    """
-    path = cache_path(src, opts)
-    if (ocr := _load(path, opts)) is not None:
-        say("önbellekten")
-        return build_page(ocr, src, opts, words=words), None
-    say("okunuyor…")
+def _read(src: SourcePage, path: Path, opts: Options, run, tsv) -> tuple[RawPage, str | None]:
+    """(OCR çıktısı, önbellek yazma hatası): sayfa okunup önbelleğe yazılır. İş parçacığında çalışır."""
     ocr = ocr_page(render(src, dpi=opts.dpi), opts, run, tsv)
     save_error = None
     try:
         _save(path, ocr, opts)
     except OSError as e:
         save_error = str(e)
-    return build_page(ocr, src, opts, words=words), save_error
+    return ocr, save_error
+
+
+def _workers(opts: Options) -> int:
+    return engines.ENGINES[opts.engine].parallel
+
+
+def _schedule(src: SourcePage, opts: Options, run, tsv,
+              pool: ThreadPoolExecutor) -> tuple[str | None, Callable[[], tuple[RawPage, str | None]]]:
+    """(ilerleme durumu, OCR çıktısını veren çağrı). Önbellekteyse çıktı oradan gelir (R27: ne render ne tesseract
+    ne model çağrılır); değilse sayfa havuzda okunmaya başlar. Hata (ör. dosya okunamadı) çağrı anında fırlatılır."""
+    try:
+        path = cache_path(src, opts)
+        ocr = _load(path, opts)
+    except InputError as e:          # cache_path: kaynak dosya okunamadı (_load kendi hatalarını yutar)
+        def failed(error: Exception = e):
+            raise error
+        return None, failed
+    if ocr is not None:
+        return "önbellekten", lambda: (ocr, None)
+    return "okunuyor…", pool.submit(_read, src, path, opts, run, tsv).result
 
 
 def _runs(job_pages: list[SourcePage]) -> list[list[int]]:
@@ -277,22 +289,40 @@ def _job_id(src: SourcePage, multi: bool) -> str:
 
 def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | None = None,
                 progress: Callable[[str], None] = print) -> list[Page]:
-    """Belgenin sayfalarını sırayla işler; hatalı sayfa uyarıyla boş geçilir, sonunda kitap numaraları tahmin edilir.
+    """Belgenin sayfalarını işler; hatalı sayfa uyarıyla boş geçilir, sonunda kitap numaraları tahmin edilir.
 
+    Önbellekte olmayan sayfalardan motorun `parallel` kadarı aynı anda okunur (dots.mocr: 8, sunucu toplu işler);
+    öteki motorlarda tek tek. İlerleme, sayfa yapısı ve uyarılar yine sayfa sırasıyla: "(i/n) okunuyor…" satırı
+    i'den önceki sayfalar bitince yazılır.
     Uyarı ve ilerleme kimliği page_id; birden fazla PDF'li işte PDF sayfasının önüne dosya adı gelir ("k.pdf s. 3").
     """
     words = _word_list() if opts.apostrophes else None
     multi = len({p.source for p in job.pages if _is_pdf(p)}) > 1
+    pool = ThreadPoolExecutor(_workers(opts), thread_name_prefix="ocr")
+    try:
+        pages, read, sides, headers = _collect(job, opts, run, tsv, words, multi, pool, progress)
+    finally:            # hata ya da Ctrl-C: sıradaki sayfalar başlamaz, sürenler beklenmez (sunucu kapanınca düşer)
+        pool.shutdown(wait=False, cancel_futures=True)
+    return _finish(job, opts, multi, pages, read, sides, headers)
+
+
+def _collect(job: DocJob, opts: Options, run, tsv, words, multi: bool, pool: ThreadPoolExecutor,
+             progress: Callable[[str], None]) -> tuple[list[Page], list, list, list]:
+    """Sayfaları sırayla toplar ve kurar: (sayfalar, okunan numaralar, taraflar, başlıklar)."""
     pages: list[Page] = []
     read: list[str | None] = []
     sides: list[str | None] = []
     headers: list[str | None] = []
     n = len(job.pages)
-    for i, src in enumerate(job.pages, 1):
+    scheduled = [_schedule(src, opts, run, tsv, pool) for src in job.pages]    # okumalar burada başlar
+    for i, (src, (state, get)) in enumerate(zip(job.pages, scheduled), 1):
         pid = _job_id(src, multi)
         head = f"{job.name}: {pid} ({i}/{n})"
         try:
-            page, save_error = _job_page(src, opts, run, tsv, words, lambda state: progress(f"{head} {state}"))
+            if state:
+                progress(f"{head} {state}")
+            ocr, save_error = get()           # i'den önceki sayfalar bitti; i bitene kadar beklenir
+            page = build_page(ocr, src, opts, words=words)
         except engines.ServerError:
             raise                 # sunucu açılamadı: sonraki sayfalar da okunamaz, koşu durur
         except Exception as e:  # sayfa düzeyinde hata: iş devam eder
@@ -312,6 +342,12 @@ def process_job(job: DocJob, opts: Options, run, tsv: Callable[[Path], str] | No
             sides.append(page.book_page_side)
             headers.append(_header_text(page))
         pages.append(page)
+    return pages, read, sides, headers
+
+
+def _finish(job: DocJob, opts: Options, multi: bool, pages: list[Page], read: list, sides: list,
+            headers: list) -> list[Page]:
+    """Kitap sayfa numaraları ve numara uyarıları (bütün sayfalar okunduktan sonra)."""
     labels = _book_pages(job.pages, read, sides, headers, opts.first_page)
     duplicates = _duplicates(job.pages, read, labels, opts.first_page)
     for pos, (page, src, value, (label, inferred)) in enumerate(zip(pages, job.pages, read, labels)):

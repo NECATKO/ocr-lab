@@ -46,6 +46,12 @@ Her sayfa için şu adımlar sırayla yapılır:
 7. **Dışa aktarılır.** Yazılan biçimler `.docx` ve `.txt`'dir. Adım 1–2'nin çıktısı önbelleğe yazılır; sonraki
    adımlar her çalıştırmada yeniden yapılır (bkz. Önbellek).
 
+dots.mocr'da adım 1–2 sayfalar arasında paralel yürür: modele en çok 8 sayfa aynı anda gönderilir, sunucu (vLLM)
+onları toplu işler. 8 GB'lık bir GPU'da 22 sayfalık tarama 8 dk 25 sn yerine 3 dk 9 sn'de okundu. Sunucu
+`VLLM_BATCH_INVARIANT=1` ile açılır: bir sayfa, yanında kaç sayfa okunursa okunsun aynı metni verir (bu ayar
+olmadan toplu okuma metni değiştiriyordu: Çince karakter, düz tırnak). Sonraki adımlar ve ilerleme satırları yine
+sayfa sırasıyla gelir. Öteki motorlar sayfaları tek tek okur.
+
 Örnek sayfada (2800 karakter) sonuçlar şöyle:
 - **Doğruluk:** dots.mocr düzen modunun normalize CER'i **%0.32**.
 - **Satır yapısı:** 39 satır kırılımının **39'u** kitaptaki yerinde.

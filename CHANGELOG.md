@@ -51,6 +51,15 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   `.docx`'te italik/kalın yazılıyor, `.txt`'de düz metin oluyor. Tek başına duran yıldıza dokunulmuyor.
 
 ### Değişti
+- dots.mocr'da önbellekte olmayan sayfalar modele 8'er 8'er aynı anda gönderilir; vLLM onları toplu işler.
+  tarama1'in 22 sayfası önbelleksiz 8 dk 25 sn yerine 3 dk 9 sn'de okundu. tesseract da modeli beklerken çalışır.
+  - Sunucu `VLLM_BATCH_INVARIANT=1` ile açılır. Bu ayar olmadan toplu okuma metni değiştiriyordu (22 sayfanın
+    ikisinde Çince karakter, birinde “ ” yerine düz tırnak). Ayarla 1'li ve 8'li okuma birebir aynı. Eski tek tek
+    okumaya göre 8 sayfada 6 kelime farkı çıktı; görüntüyle karşılaştırınca 4'ünde yeni okuma doğru, 1'inde eski.
+    Önbellekteki eski okumalar geçerli kalır.
+  - Öteki motorlar ölçülmediği için sayfaları tek tek okur.
+  - İlerleme satırları ve uyarılar yine sayfa sırasıyla gelir. İptal bekleyen sayfaları başlatmaz; model sunucusu
+    10 sn içinde kapanmazsa zorla kapatılır (paralel istekler bağlantıyı açık tuttuğu için 60 sn bekleniyordu).
 - Önbellek artık işlenmiş sayfayı değil, OCR çıktısını (ham model cevabı, tesseract TSV, görüntü boyutu) saklıyor.
   Sayfa yapısı her çalıştırmada bundan yeniden kuruluyor; kod, `ayarlar/kesme.txt` ve `--kesme-yok` değişiklikleri
   önbellekteki sayfalara GPU'suz uygulanıyor. `.kesmesiz` önbellek dosyaları artık kullanılmıyor. Eski önbellek

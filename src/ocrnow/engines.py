@@ -12,17 +12,19 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ocrnow import paths
 
 TESS_LANG = os.environ.get("TESS_LANG", "tur")
 MAX_TOKENS = 4096
+STOP_GRACE = 10   # sn: sunucu SIGTERM'den sonra bu kadar beklenir, sonra öldürülür
 VLLM_FLAGS = "--max-model-len 8192 --gpu-memory-utilization 0.85 --mm-processor-cache-gb 0 --no-enable-prefix-caching"  # 8 GB GPU için
 
 # dots.mocr'un yerleşim (bbox + kategori + metin) istemi; ekler/layout_try.py'deki PROMPT, kelimesi kelimesine
@@ -74,6 +76,8 @@ class Engine:
     recommended: bool = False
     vram_gb: float | None = None  # tahmini asgari GPU belleği (GB); None → işlemci (aşağıdaki nota bkz.)
     disk_gb: float | None = None  # motora özgü diskte yer (GB); ortak .venv-vllm (~8 GB) dahil değil
+    parallel: int = 1  # aynı anda okunan sayfa sayısı (yalnız ölçülmüş motorlarda > 1)
+    env: dict[str, str] = field(default_factory=dict)  # sunucu sürecine eklenen ortam değişkenleri
 
 
 def _duz(prompt: str | None) -> dict[str, Mode]:
@@ -107,6 +111,10 @@ ENGINES: dict[str, Engine] = {e.name: e for e in [
     Engine("dots.mocr", "vlm",
            {"duz": Mode("Extract the text content from this image.", False), "duzen": Mode(LAYOUT_PROMPT, True)},
            port=8005, recommended=True, vram_gb=4.9, disk_gb=5.7,  # 6 GB → fp8
+           # 8 sayfa aynı anda (KV önbelleği ~8 isteğe yetiyor): tarama1'de sayfa başı 17,7 sn → 6,1 sn. Toplu işte
+           # metnin değişmemesi için vLLM'in toplu-iş-bağımsız kipi açık (1'li ve 8'li okuma birebir aynı; kapalıyken
+           # Çince karakter ve düz tırnak çıktı)
+           parallel=8, env={"VLLM_BATCH_INVARIANT": "1"},
            serve="""vllm serve dots-studio/dots.mocr --port 8005 --trust-remote-code --chat-template-content-format string --quantization fp8 --enforce-eager --mm-processor-kwargs '{"max_pixels": 4000000}' $VLLM"""),
 ]}
 DEFAULT_ENGINE = "dots.mocr"
@@ -199,7 +207,7 @@ def _start_server(eng: Engine):
         with open(paths.LOGS / f"{eng.name}.server.log", "w") as log:
             print(f"[{eng.name}] sunucu başlatılıyor (log: {log.name})")
             proc = subprocess.Popen(_serve_cmd(eng), stdout=log, stderr=subprocess.STDOUT,
-                                    start_new_session=True, env=paths.subprocess_env())
+                                    start_new_session=True, env={**paths.subprocess_env(), **eng.env})
         try:
             deadline = time.time() + 1200
             while not served_model(base):
@@ -233,12 +241,16 @@ def gpu_lock() -> Iterator[None]:
 
 
 def _stop_server(proc) -> None:
+    """SIGTERM, STOP_GRACE saniye içinde kapanmazsa SIGKILL. vLLM motoru (GPU belleği) SIGTERM'de hemen kapanır;
+    iptalde paralel istekler bağlantıyı açık tuttuğu için HTTP sunucusu onları sonsuza dek bekler (ikinci sinyali de
+    yok sayar), bu yüzden uzun beklenmez. Normal kapanış bir saniyeden kısa sürer."""
     if proc and proc.poll() is None:
         os.killpg(proc.pid, signal.SIGTERM)
         try:
-            proc.wait(60)
+            proc.wait(STOP_GRACE)
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
 
 
 def _vlm(img: Path, base: str, model: str, prompt: str | None) -> str:
@@ -282,18 +294,21 @@ def lazy_server(name: str) -> Iterator[Callable[[Path, str], str]]:
     """server() gibi, ama motor ilk run çağrısında açılır: bütün sayfalar önbellekteyse GPU hiç kullanılmaz.
 
     Açılış hata verirse ServerError fırlatılır; sonraki çağrılarda da aynısı (her sayfada yeniden beklenmez).
+    run birden fazla iş parçacığından aynı anda çağrılabilir: sunucu bir kez açılır, ötekiler açılışı bekler.
     """
     with ExitStack() as stack:
         state: dict = {}
+        lock = threading.Lock()
 
         def run(img: Path, mode: str) -> str:
-            if "error" in state:
-                raise state["error"]
-            if "run" not in state:
-                try:
-                    state["run"] = stack.enter_context(server(name))
-                except Exception as e:
-                    state["error"] = ServerError(f"'{name}' modeli başlatılamadı: {e}")
-                    raise state["error"] from e
+            with lock:
+                if "error" in state:
+                    raise state["error"]
+                if "run" not in state:
+                    try:
+                        state["run"] = stack.enter_context(server(name))
+                    except Exception as e:
+                        state["error"] = ServerError(f"'{name}' modeli başlatılamadı: {e}")
+                        raise state["error"] from e
             return state["run"](img, mode)
         yield run

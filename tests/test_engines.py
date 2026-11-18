@@ -2,6 +2,8 @@ import ast
 import io
 import json
 import shutil
+import signal
+import subprocess
 
 import pytest
 
@@ -267,3 +269,59 @@ def test_lazy_server_busy_gpu_is_server_error(monkeypatch, tmp_path):
         with engines.lazy_server("dots.mocr") as run:
             with pytest.raises(engines.ServerError, match="'dots.mocr' modeli başlatılamadı: GPU başka bir"):
                 run(tmp_path / "x.png", "duzen")
+
+
+def test_lazy_server_concurrent_first_calls_start_once(monkeypatch, tmp_path):
+    """Sayfalar aynı anda okunurken ilk çağrılar birlikte gelir: sunucu bir kez açılır, ötekiler onu bekler."""
+    import threading
+    import time
+    starts = []
+
+    def start(eng):
+        starts.append(eng.name)
+        time.sleep(0.1)
+        return "http://x/v1", "mdl", "P"
+    monkeypatch.setattr(engines, "_start_server", start)
+    monkeypatch.setattr(engines, "_stop_server", lambda proc: None)
+    monkeypatch.setattr(engines, "_vlm", lambda img, base, model, prompt: "ham")
+    out = []
+    with engines.lazy_server("dots.mocr") as run:
+        threads = [threading.Thread(target=lambda: out.append(run(tmp_path / "x.png", "duzen"))) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert starts == ["dots.mocr"] and out == ["ham"] * 4
+
+
+@pytest.mark.parametrize("name,invariant", [("dots.mocr", "1"), ("glm-ocr", None)])
+def test_parallel_engine_server_is_batch_invariant(monkeypatch, tmp_path, name, invariant):
+    """Aynı anda okunan sayfalar tek tek okunmuş gibi aynı sonucu vermeli: paralel motorun vLLM sunucusu
+    VLLM_BATCH_INVARIANT=1 ile açılır (yoksa toplu işte metin değişiyor: tarama1'de Çince karakter, düz tırnak)."""
+    envs = []
+    monkeypatch.setattr(paths, "LOGS", tmp_path)
+    monkeypatch.setattr(engines, "served_model", lambda base: "mdl" if envs else None)
+
+    def popen(cmd, stdout, env, **k):
+        envs.append(env)
+        return _FakeProc()
+    monkeypatch.setattr(engines.subprocess, "Popen", popen)
+    engines._start_server(ENGINES[name])
+    assert envs[0].get("VLLM_BATCH_INVARIANT") == invariant
+    assert envs[0]["PATH"] == paths.subprocess_env()["PATH"]
+    assert (ENGINES[name].parallel > 1) == (invariant is not None)
+
+
+def test_stop_server_does_not_wait_long_for_open_connections(monkeypatch):
+    """İptalde paralel istekler bağlantıyı açık tutar; vLLM motoru ilk SIGTERM'de kapanır ama HTTP sunucusu
+    bağlantıların kapanmasını sonsuza dek bekler (ikinci sinyali de yok sayar). Kısa bir süre sonra öldürülür."""
+    import sys
+    import time
+    monkeypatch.setattr(engines, "STOP_GRACE", 0.5)
+    proc = subprocess.Popen([sys.executable, "-c", "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                             "print('hazır', flush=True)\ntime.sleep(60)"],
+                            stdout=subprocess.PIPE, text=True, start_new_session=True)
+    assert proc.stdout.readline().strip() == "hazır"
+    t = time.monotonic()
+    engines._stop_server(proc)
+    assert proc.poll() == -signal.SIGKILL and time.monotonic() - t < 5

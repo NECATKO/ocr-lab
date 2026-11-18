@@ -1,5 +1,6 @@
 """Girdi toplama, sayfa seçimi, belge gruplama ve sayfaları PNG'ye çevirme."""
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from PIL import Image, ImageOps
 from pypdfium2 import PdfiumError
 
 from ocrnow import paths
+
+_PDFIUM_LOCK = threading.Lock()   # pdfium iş parçacığı güvenli değil (pypdfium2 belgeleri): her çağrı sıraya girer
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 DEFAULT_DPI = 200
@@ -66,14 +69,15 @@ def _natural_key(path: Path) -> list:
 
 
 def pdf_page_count(path: Path) -> int:
-    try:
-        pdf = pdfium.PdfDocument(str(path))
-    except (PdfiumError, OSError) as e:
-        raise InputError(f"PDF açılamadı: {path} ({e})") from e
-    try:
-        n = len(pdf)
-    finally:
-        pdf.close()
+    with _PDFIUM_LOCK:
+        try:
+            pdf = pdfium.PdfDocument(str(path))
+        except (PdfiumError, OSError) as e:
+            raise InputError(f"PDF açılamadı: {path} ({e})") from e
+        try:
+            n = len(pdf)
+        finally:
+            pdf.close()
     if n == 0:
         raise InputError(f"PDF'te hiç sayfa yok: {path}")
     return n
@@ -211,16 +215,17 @@ def render(page: SourcePage, dpi: int = DEFAULT_DPI) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.stem + ".tmp.png")  # yarım yazılmış PNG yeniden kullanılmasın
     if is_pdf:
-        try:
-            pdf = pdfium.PdfDocument(str(src))
-        except (PdfiumError, OSError) as e:
-            raise InputError(f"PDF açılamadı: {src} ({e})") from e
-        try:
-            if not 1 <= page.index <= len(pdf):
-                raise InputError(f"{src.name}: sayfa {page.index} yok; belgede {len(pdf)} sayfa var.")
-            img = pdf[page.index - 1].render(scale=dpi / 72).to_pil()
-        finally:
-            pdf.close()
+        with _PDFIUM_LOCK:          # pdfium iş parçacığı güvenli değil; sayfalar aynı anda okunurken sıraya girer
+            try:
+                pdf = pdfium.PdfDocument(str(src))
+            except (PdfiumError, OSError) as e:
+                raise InputError(f"PDF açılamadı: {src} ({e})") from e
+            try:
+                if not 1 <= page.index <= len(pdf):
+                    raise InputError(f"{src.name}: sayfa {page.index} yok; belgede {len(pdf)} sayfa var.")
+                img = pdf[page.index - 1].render(scale=dpi / 72).to_pil()
+            finally:
+                pdf.close()
     else:
         try:
             with Image.open(src) as im:
