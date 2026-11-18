@@ -58,7 +58,7 @@ sayfa sırasıyla gelir. Öteki motorlar sayfaları tek tek okur.
 
 ## ocr-gui: terminalsiz kullanım
 
-Windows masaüstündeki **OCR-Now** simgesine çift tıklayın. Tarayıcıda arayüz açılır, görev çubuğunda küçültülmüş
+Windows masaüstündeki **ocr-now-windows** klasöründe üç kısayol durur: **OCR-Now** arayüzü açar, **Belgeler** Word/metin çıktılarının, **Taramalar** eklenen taramaların klasörünü Gezgin'de açar. **OCR-Now**'a çift tıklayın. Tarayıcıda arayüz açılır, görev çubuğunda küçültülmüş
 bir pencere belirir. Arayüzde sırasıyla:
 
 1. **Tarama:** PDF'i sürükleyip bırakın ya da `input/`'taki taramalardan birini seçin. Eklenen dosya `input/`'a
@@ -76,7 +76,7 @@ Kapatmak için sayfadaki **Kapat** düğmesi ya da görev çubuğundaki pencere;
 
 ```bash
 ./ocr-gui --tarayici              # elle başlatma (http://localhost:8765)
-./ocr-gui --masaustu-kisayolu     # masaüstü simgesini (yeniden) oluşturur; kurulum.sh da yapar
+./ocr-gui --masaustu-kisayolu     # masaüstündeki ocr-now-windows klasörünü (yeniden) kurar; kurulum.sh da yapar
 ```
 
 ## ocr-now: belge üretme

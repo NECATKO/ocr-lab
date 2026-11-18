@@ -35,7 +35,18 @@ def test_port_used_by_another_program_is_an_error(monkeypatch, capsys):
 
 
 def test_shortcut_script_starts_gui_in_this_distro_minimized():
-    script = gui_main.shortcut_script("Ubuntu", paths.ROOT)
+    script = gui_main.shortcut_script("Ubuntu", paths.ROOT, r"\\wsl.localhost\Ubuntu\b", r"\\wsl.localhost\Ubuntu\t")
     assert r"C:\Windows\System32\wsl.exe" in script
     assert f"-d Ubuntu --cd {paths.ROOT} -e {paths.ROOT / 'ocr-gui'} --tarayici" in script
     assert "WindowStyle = 7" in script and "OCR-Now.lnk" in script
+
+
+def test_shortcut_script_puts_everything_in_one_desktop_folder():
+    # masaüstünde tek klasör: programı açan simge + belgeler ve taramalar klasörlerinin kısayolları
+    script = gui_main.shortcut_script("Ubuntu", paths.ROOT, r"\\wsl.localhost\Ubuntu\o'b", r"\\wsl.localhost\Ubuntu\t")
+    assert "ocr-now-windows" in script
+    for name in ("OCR-Now.lnk", "Belgeler.lnk", "Taramalar.lnk"):
+        assert f'"$f\\{name}"' in script, name
+    assert "'\"" + r"\\wsl.localhost\Ubuntu\o''b" + "\"'" in script     # yol tırnakta; PowerShell ' ikilenir
+    assert "'\"" + r"\\wsl.localhost\Ubuntu\t" + "\"'" in script
+    assert "Remove-Item" in script and '"$d\\OCR-Now.lnk"' in script   # eski masaüstü simgesi kalkar

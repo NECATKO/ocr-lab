@@ -7,8 +7,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 ## [Yayımlanmadı]
 
 ### Eklendi
-- `ocr-gui`: `ocr-now`'ı terminalsiz kullanmak için tarayıcıda açılan arayüz. Windows masaüstündeki **OCR-Now**
-  simgesiyle başlar. Tarama sürükleyip bırakılır, ayarlar formdan verilir, okuma sayfa sayfa ve kalan süreyle
+- `ocr-gui`: `ocr-now`'ı terminalsiz kullanmak için tarayıcıda açılan arayüz. Windows masaüstündeki
+  **ocr-now-windows** klasöründen başlar; klasörde belgelerin ve taramaların kısayolları da durur. Tarama sürükleyip bırakılır, ayarlar formdan verilir, okuma sayfa sayfa ve kalan süreyle
   izlenir, iptal edilebilir. Bitince belgeler indirilir ya da Gezgin'de gösterilir; sayfa numaraları ve uyarılar
   listelenir. Yeni bağımlılık yoktur, yalnız `127.0.0.1`'den erişilir.
 - `ocr-now --rapor DOSYA`: iş sonu özetini JSON olarak da yazar.
