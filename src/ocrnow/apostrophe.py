@@ -9,11 +9,15 @@ AIN, HAMZA = "‘", "’"
 
 # kural 2: hemze alan ekler (kelimenin işaretten sonraki kısmı bunlardan biri olmalı); ikinci satır günümüz
 # Türkçesi sayfaları için (R28: Kahire’ye, İstanbul’daki). Ayınlı özel adlar (Ka‘be, Sa‘d) listeye girmez.
-SUFFIXES = frozenset("de da te ta e a ı i u ü in ın un ün nin nın den dan ten tan le la".split()
+SUFFIXES = frozenset("de da te ta e a ı i u ü in ın un ün nin nın nun nün den dan ten tan le la".split()
                      + "ye ya yi yı yu yü yle yla yse ysa deki daki teki taki dir dır dur dür tir tır tur tür "
                        "na ne nı ni nu nü nda nde ndan nden ler lar".split())
 VOWELS = frozenset("aeıioöuüâîûêôAEIİOÖUÜÂÎÛÊÔ")
+BACK, ROUND = frozenset("aıouâûAIOUÂÛ"), frozenset("oöuüôûOÖUÜÔÛ")
+HIGH = frozenset("ıiuü")
 WORD_OPENERS = frozenset('-([{"«“„')  # boşluk ve metin başı dışında "kelime başı" sayılan öncüller
+NUMBER_ENDS = frozenset(").]")   # rakam ya da bunlardan sonra gelen kesme + küçük harf: ek (1979’da, (s.a.s)’in)
+ELISIONS = frozenset("lLdD")      # Batı dillerinde kelime başı tek harf + kesme: l’Islam, d’Alembert
 MIN_STEM = 3
 
 # kelime: harf, kesme işareti ve tireden oluşan en uzun dizi
@@ -70,20 +74,50 @@ def build_word_list(gt_dir: Path, user_file: Path, *, exclude: Path | None = Non
     return words
 
 
+def _harmonizes(stem: str, suffix: str) -> bool:
+    """Kısa kökte ekin Türkçe olup olmadığı: ünlü ünlüye çarpmaz, ekin ilk ünlüsü kökün son ünlüsüyle kalınlık
+    (dar ünlüde düzlük-yuvarlaklık da) uyumundadır. Ay+ın, O+dur evet; Ba+de, Ya+ni, Ma+a hayır."""
+    vowels = [c for c in stem if c in VOWELS]
+    if not vowels or (stem[-1] in VOWELS and suffix[0] in VOWELS):
+        return False
+    first = next((c for c in suffix if c in VOWELS), None)
+    if first is None:
+        return True
+    last = vowels[-1]
+    if (last in BACK) != (first in BACK):
+        return False
+    return first not in HIGH or (last in ROUND) == (first in ROUND)
+
+
 def _decide(text: str, i: int) -> str | None:
     """Kurallar 1-3; karar yoksa None."""
     n = len(text)
-    # 1. ardından l- geliyorsa hemze (Bi’l-âhır)
-    if text[i + 1:i + 3].lower() == "l-":
-        return HAMZA
-    # 2. büyük harfle başlayan, işaretten önce en az 3 harfli kelime + ek → hemze (Haleb’de)
-    j = i
-    while j > 0 and text[j - 1].isalpha():
-        j -= 1
     k = i + 1
     while k < n and text[k].isalpha():
         k += 1
-    if i - j >= MIN_STEM and text[j].isupper() and text[i + 1:k].lower() in SUFFIXES:
+    suffix = text[i + 1:k].lower()
+    # 1. ardından harf-i tarif geliyorsa hemze: l- (Bi’l-âhır) ya da tireden sonra tekrarlanan ünsüz (bi’t-Tevbîh,
+    # Nûru’d-dîn); Sa‘d-ı gibi izafette ünsüz tekrarlanmaz
+    article = text[i + 1:i + 4].lower()
+    if article[:2] == "l-" or (len(article) == 3 and article[1] == "-" and article[0] == article[2]
+                               and article[0].isalpha() and article[0] not in VOWELS):
+        return HAMZA
+    # 1b. rakamdan, kapanan ayraçtan ya da kısaltma noktasından sonra küçük harfli ek: hemze (1979’da, (s.a.s)’in)
+    if i > 0 and (text[i - 1].isdigit() or text[i - 1] in NUMBER_ENDS) and k > i + 1 and text[i + 1].islower():
+        return HAMZA
+    # 1c. kelime başında tek harf l/d + kesme + harf: Batı dillerinde ses düşmesi (l’Islam, d’Alembert)
+    if (i > 0 and text[i - 1] in ELISIONS and k > i + 1
+            and (i == 1 or text[i - 2].isspace() or text[i - 2] in WORD_OPENERS)):
+        return HAMZA
+    # 2. büyük harfle başlayan kelime + ek → hemze (Haleb’de). Kök, iç kesme işaretlerini de kapsar (Şa‘ban’dır);
+    # en az 3 harfli olmalı, 1-2 harfli kökte (Ay’ın, O’dur) ek ünlü uyumuna da uymalı (Ba‘de, Ma‘a ayınlı kalır)
+    j = i
+    while j > 0 and (text[j - 1].isalpha() or (text[j - 1] in APOS and j > 1 and text[j - 2].isalpha())):
+        j -= 1
+    stem = text[j:i]
+    letters = sum(c.isalpha() for c in stem)
+    if stem and text[j].isupper() and suffix in SUFFIXES and (
+            letters >= MIN_STEM or (stem.isalpha() and _harmonizes(stem, suffix))):
         return HAMZA
     # 3. kelime başında, ünlüden önce → ayın (‘illet)
     at_start = i == 0 or text[i - 1].isspace() or text[i - 1] in WORD_OPENERS
@@ -107,13 +141,19 @@ def _segment(text: str, start: int, end: int, words: dict[str, str]) -> dict[int
 
 
 def _decide_listed(text: str, m: re.Match, words: dict[str, str]) -> dict[int, str]:
-    """Önce bütün dizi, bulunamazsa tireyle ayrılmış her parça listede aranır."""
+    """Önce bütün dizi, bulunamazsa tireyle ayrılmış her parça listede aranır; parça yine bulunamazsa kesmeli ekten
+    önceki kısmı (Kur'an'a → Kur'an) aranır, ekin işaretine kurallar karar verir."""
     decided = _segment(text, m.start(), m.end(), words)
-    if decided or "-" not in m.group():
+    if decided:
         return decided
     s = m.start()
     for part in m.group().split("-"):
-        decided.update(_segment(text, s, s + len(part), words))
+        found = _segment(text, s, s + len(part), words)
+        for cut in (s + p for p in range(len(part) - 1, 0, -1) if part[p] in APOS):
+            if found:
+                break
+            found = _segment(text, s, cut, words)
+        decided.update(found)
         s += len(part) + 1
     return decided
 

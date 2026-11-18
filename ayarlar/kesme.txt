@@ -1,1 +1,11 @@
 # Her satıra bir kelime, doğru kesme işaretiyle: mes’ele, bâ‘is
+# Kurallarla ayrılamayan sık kelimeler (kesmeli ekleri de bulunur: Kur’an’ın)
+Kur’an
+Kur’ân
+hey’et
+te’rih
+te’rîh
+mü’min
+Şa‘ban
+Şa‘bân
+vak‘a

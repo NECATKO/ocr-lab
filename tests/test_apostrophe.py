@@ -149,3 +149,32 @@ def test_gt_built_list_decides_word_final_marks(tmp_path):
     assert out == "‘mes’ele’" and marks == []
     out, marks = restore("mes'ele'", words)      # tam anahtar yok: çekirdek, sondaki belirsiz
     assert out == "mes’ele‘" and [m.start for m in marks] == [7]
+
+
+@pytest.mark.parametrize("src", [
+    "(s.a.s)'in", "(r.a.)'ın", "(a.s)'dan", "[1]'de", "(1979'da", "14-15'inde", "s. 12'de", "vs.'lerin",
+    "Ay'ın", "Ay'a", "Ay'ı", "O'dur.", "O'nun", "O'na", "Tokyo'nun", "Konya'nın",
+    "bi't-Tevbîh", "İlmi't-Târih", "fi's-sene", "Nûru'd-dîn", "Bi'l-âhır", "l'Islam", "d'Alembert", "L'Orient"])
+def test_hamza_after_number_parenthesis_short_name_article_and_elision(src):
+    out, marks = restore(src, {})
+    assert out == src.replace("'", "’") and marks == [], src
+
+
+@pytest.mark.parametrize("src", ["Ba'de", "Ma'a", "Ya'ni", "Ka'be", "Sa'd", "Şa'ban", "Sa'd-ı"])
+def test_short_ain_words_are_not_turkish_suffixes(src):
+    # kısa kökte ek ünlü uyumuna uymuyorsa (Ba+de, Ya+ni) ya da ünlü ünlüye çarpıyorsa (Ma+a) Arapça kelimedir
+    out, marks = restore(src, {})
+    assert out == src.replace("'", "‘") and [m.start for m in marks] == [src.index("'")], src
+
+
+def test_suffix_mark_after_inner_mark_counts_whole_stem():
+    # ikinci işaretin kökü bütün kelimedir (Şa'ban), yalnız son iki harf (an) değil
+    assert restore("Şa'ban'dır el-Eş'arî'nin", {})[0] == "Şa‘ban’dır el-Eş‘arî’nin"
+    assert restore("'Ali'nin", {})[0] == "‘Ali’nin"                 # baştaki tırnak kökü bozmaz
+
+
+def test_list_word_with_suffix_after_mark():
+    # listedeki kelime + kesmeli ek: liste önek için, ek kural 2 ile karar verir
+    words = {"kur'an": "Kur’an"}
+    out, marks = restore("Kur'an'a Kur'an'ın, Kur'an-ı Kur'an", words)
+    assert out == "Kur’an’a Kur’an’ın, Kur’an-ı Kur’an" and marks == []

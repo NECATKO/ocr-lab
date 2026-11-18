@@ -78,12 +78,19 @@ def smart_resize(h: int, w: int, factor: int = 28, min_pixels: int = 3136,
     return h_bar, w_bar
 
 
-def _norm(text: object) -> str:
-    """Boşlukları sadeleştirir; metin listesi boşlukla birleştirilir, başka türler boş sayılır."""
+# satır başındaki Markdown başlık işareti ("# ", "## "): dots.mocr Title/Section-header'ı böyle yazar
+_HEADING = re.compile(r"(?m)^[ \t]*#{1,6}[ \t]+")
+
+
+def _norm(text: object, *, headings: bool = True) -> str:
+    """Boşlukları sadeleştirir; metin listesi boşlukla birleştirilir, başka türler boş sayılır.
+    headings: satır başındaki Markdown başlık işaretleri kaldırılır (Table'da kapalı: HTML'e dokunulmaz)."""
     if isinstance(text, list):
-        text = " ".join(t for t in text if isinstance(t, str))
+        text = "\n".join(t for t in text if isinstance(t, str))
     if not isinstance(text, str):
         return ""
+    if headings:
+        text = _HEADING.sub("", text)
     return " ".join(text.split())
 
 
@@ -156,12 +163,29 @@ def _block_from_item(item: object, size: tuple[int, int]) -> tuple[Block | None,
     bad = bbox is None or bad_category
     if category == "Picture":
         return Block(category, bbox, PICTURE_TEXT), bad
+    headings = category != "Table"
     if "text" in item:
-        text = _norm(item["text"])
+        text = _norm(item["text"], headings=headings)
     else:  # "text" yoksa ve kategori dışında tek bir başka metin alanı varsa (ör. "content") o kullanılır
         others = [v for k, v in item.items() if k not in ("bbox", "category") and isinstance(v, str)]
-        text = _norm(others[0]) if len(others) == 1 else ""
+        text = _norm(others[0], headings=headings) if len(others) == 1 else ""
+    if category == "Page-footer" and _is_footnote(text):
+        category = "Footnote"
     return _text_block(category, bbox, text), bad
+
+
+# numarayla başlayan, harfle süren cümle: "15 Bk. Âyet 30.", "3) Aynı eser, s. 12"
+_FOOTNOTE = re.compile(r"\d{1,3}[.)]?\s+([^\W\d_].*)")
+
+
+def _is_footnote(text: str) -> bool:
+    """Page-footer bloğu aslında dipnot mu: numara + küçük harf içeren cümle (nokta ile biter ya da virgül/noktalı
+    virgül içerir). "412 TEZKİRE", "56 / Yazar Adı", "56 Yazar Adı" gibi sayfa altlıkları dipnot sayılmaz."""
+    m = _FOOTNOTE.fullmatch(text)
+    if not m or not any(c.islower() for c in m.group(1)):
+        return False
+    rest = m.group(1)
+    return rest.endswith((".", "!", "?", "…", ")")) or any(c in rest for c in ",;:")
 
 
 _TEXT_KEY = re.compile(r'"text"\s*:\s*"')

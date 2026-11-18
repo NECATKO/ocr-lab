@@ -14,6 +14,22 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 - `ocr-now --rapor DOSYA`: iş sonu özetini JSON olarak da yazar.
 
 ### Düzeltildi
+- Günümüz Türkçesiyle basılmış bir kitabın telefonla çekilmiş 22 sayfasında bulunan metin hataları:
+  - Model, numarayla başlayan dipnotu ("15 Bk. Âyet 30.") sayfa altlığı sanabiliyordu. Dipnot metni belgeye
+    girmiyor, numarası sayfa numarası okunuyordu. Numara + küçük harfli cümle olan altlık artık dipnot sayılır;
+    "412 TEZKİRE", "56 / Yazar Adı" gibi altlıklar etkilenmez.
+  - Başlıklardaki Markdown işaretleri (`# `, `## `) metne girmiyor.
+  - Kesme işareti (ayın/hemze):
+    - Rakamdan, kapanan ayraçtan ya da kısaltma noktasından sonraki ek hemze alır: `1979’da`, `(s.a.s)’in`,
+      `vs.’lerin`.
+    - 1-2 harfli özel adlarda ek, ünlü uyumuna uyuyorsa hemze alır: `Ay’ın`, `O’dur`. `Ba‘de`, `Ya‘ni`, `Ma‘a`
+      ayınlı kalır.
+    - Kelimedeki ikinci işaretin kökü bütün kelimedir: `Şa‘ban’dır`, `el-Eş‘arî’nin`.
+    - Harf-i tarifin bütün biçimleri hemze alır: `bi’t-Tevbîh`, `Nûru’d-dîn` (`Sa‘d-ı` ayınlı kalır).
+    - Batı dillerindeki ses düşmesi hemze alır: `l’Islam`, `d’Alembert`.
+    - `-nun/-nün` eki listeye eklendi (`Tokyo’nun`).
+    - Kelime listesindeki kelimenin kesmeli eki de bulunur (`Kur’an` → `Kur’an’ın`).
+    - `ayarlar/kesme.txt`'ye kurallarla ayrılamayan sık kelimeler eklendi (`Kur’an`, `hey’et`, `te’rîh`…).
 - Kitap sayfa numarası (gerçek bir 24 sayfalık, kitabın farklı yerlerinden ters sırayla taranmış belgeyle
   denendi):
   - Sayfadan okunan numaraya güvenilir; komşularıyla tutmadığı için köşeli paranteze alınmaz.

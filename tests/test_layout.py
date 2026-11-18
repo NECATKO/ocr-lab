@@ -226,3 +226,36 @@ def test_footnote_star_pairs_and_tables_are_not_emphasis():
     raw = json.dumps([{"bbox": [0, 0, 10, 10], "category": "Table", "text": "<td>*</td><td>*a*</td><td>*</td>"}])
     (b,), _ = parse_output(raw, True, (100, 100))
     assert b.text == "<td>*</td><td>*a*</td><td>*</td>" and b.marks == []
+
+
+def blocks_of(*items):
+    raw = json.dumps([{"bbox": [0, 0, 10, 10], "category": c, "text": t} for c, t in items])
+    blocks, _ = parse_output(raw, True, (100, 100))
+    return [(b.category, b.text) for b in blocks]
+
+
+def test_markdown_heading_marks_are_removed_at_line_start():
+    # dots.mocr başlıkları Markdown "#"/"##" ile yazar; işaret metne girmez, satır ortasındaki # kalır
+    assert blocks_of(("Section-header", "## Târihin Tanımı"), ("Title", "I. Bölüm\n# Târih Nedir?"),
+                     ("Text", "### bir\nsatır #3 ve C# dili"), ("Page-header", "#KİTAP")) == [
+        ("Section-header", "Târihin Tanımı"), ("Title", "I. Bölüm Târih Nedir?"),
+        ("Text", "bir satır #3 ve C# dili"), ("Page-header", "#KİTAP")]
+    assert emphasis("## Başlık\nmetin", layout=False) == ("Başlık metin", [])          # düz mod da
+
+
+def test_heading_marks_kept_in_tables():
+    assert blocks_of(("Table", "<td>\n# 1</td>")) == [("Table", "<td>\n# 1</td>".replace("\n", " "))]
+
+
+def test_footer_that_is_a_footnote_becomes_footnote():
+    # model numarayla başlayan cümleyi (dipnotu) sayfa altlığı sanabiliyor: metin kaybolur, numara sayfa no olurdu
+    assert blocks_of(("Page-footer", "15 Bk. Âyet 30."), ("Page-footer", "9 İstanbul, Üsküdar'da bir mezarlık."),
+                     ("Page-footer", "3) Aynı eser, s. 12")) == [
+        ("Footnote", "15 Bk. Âyet 30."), ("Footnote", "9 İstanbul, Üsküdar'da bir mezarlık."),
+        ("Footnote", "3) Aynı eser, s. 12")]
+
+
+def test_real_page_footers_stay_footers():
+    for text in ("412", "— 412 —", "412 TEZKİRE", "TEZKİRE 413", "56 / İhsan Süreyya Sırma",
+                 "56 İhsan Süreyya Sırma", "Müslümanların Târihi / 57", "xii", "57 | Bölüm"):
+        assert blocks_of(("Page-footer", text)) == [("Page-footer", text)], text
