@@ -455,3 +455,29 @@ def test_summary_lists_side_flagged_readings_separately(fake_env, capsys):
     out = capsys.readouterr().out
     assert "tahmin edilen sayfa numaraları:\n  [413]\n" in out
     assert "kontrol edilmesi gereken okunan numaralar:\n  [416]\n" in out
+
+
+def test_report_json_has_documents_labels_and_warnings(fake_env, tmp_path):
+    """GUI için: --rapor iş sonu özetini (belgeler, numaralar, uyarılar, okunamayan) JSON olarak yazar."""
+    import json
+    fake_env.pages = [fake_page(1, ["s. 1: uyarı-bir"], "413", True), fake_page(2, [], "416", True, check=True),
+                      fake_page(3, [f"s. 3: {pipeline.READ_FAILED}: boom"], "PDF s. 3", False, failed=True)]
+    fake_env.export_warning = "docx uyarısı"
+    report = tmp_path / "rapor.json"
+    assert main(["k.pdf", "-f", "docx", "txt", "--rapor", str(report)]) == 1
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["belgeler"] == [str(paths.DOCS_OUT / "k.docx"), str(paths.DOCS_OUT / "k.txt")]
+    assert data["okunamayan"] is True
+    [job] = data["isler"]
+    assert job["ad"] == "k" and job["yazildi"] is True
+    assert job["tahmin"] == ["[413]"] and job["kontrol"] == ["[416]"]
+    assert job["uyarilar"] == ["s. 1: uyarı-bir", f"s. 3: {pipeline.READ_FAILED}: boom", "docx uyarısı"]
+
+
+def test_report_json_marks_unwritten_job(fake_env, tmp_path):
+    import json
+    fake_env.pages = [failed_page(1)]
+    report = tmp_path / "rapor.json"
+    main(["k.pdf", "-f", "txt", "--rapor", str(report)])
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["belgeler"] == [] and data["isler"][0]["yazildi"] is False

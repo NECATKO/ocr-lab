@@ -16,9 +16,13 @@ dev = ["pytest"]
 [project.scripts]
 ocr-now = "ocrnow.cli:main"
 ocr-lab = "ocrnow.lab.cli:main"
+ocr-gui = "ocrnow.gui.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"ocrnow.gui" = ["index.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

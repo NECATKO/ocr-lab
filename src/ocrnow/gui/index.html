@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR-Now</title>
+<style>
+:root {
+  --paper: #EDEFEB;
+  --sheet: #FAFBF8;
+  --ink: #1E2A3A;
+  --ink-soft: #5A6675;
+  --rule: #CDD3CC;
+  --navy: #2D4F7C;
+  --navy-hover: #233F64;
+  --marker: #F5E04F;
+  --error: #A8322A;
+  --ok: #2E6A4C;
+  --tile-empty: #DDE2DB;
+  --serif: "Palatino Linotype", Palatino, "Book Antiqua", "Iowan Old Style", Georgia, serif;
+  --sans: "Segoe UI", system-ui, -apple-system, "Noto Sans", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #171C22; --sheet: #1F262E; --ink: #E4E8EC; --ink-soft: #9BA6B2; --rule: #36404B;
+    --navy: #7FA6D9; --navy-hover: #9BBBE4; --marker: #E8D23E; --error: #F08A80; --ok: #7BC4A0;
+    --tile-empty: #2E3742; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 16px/1.55 var(--sans);
+}
+main { max-width: 760px; margin: 0 auto; padding: 40px 16px 64px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 32px; }
+h1 { font: 600 2.1rem/1.15 var(--serif); margin: 0; letter-spacing: -0.01em; }
+h1 + p { margin: 6px 0 0; color: var(--ink-soft); }
+h2 { font: 600 1.3rem/1.3 var(--serif); margin: 0 0 14px; }
+section { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 24px; margin-bottom: 20px; }
+[hidden] { display: none !important; }
+
+button, .button {
+  font: 600 0.95rem var(--sans); border-radius: 5px; padding: 9px 16px; cursor: pointer;
+  border: 1px solid var(--rule); background: transparent; color: var(--ink); text-decoration: none; display: inline-block;
+}
+button:hover, .button:hover { border-color: var(--ink-soft); }
+button.primary { background: var(--navy); border-color: var(--navy); color: var(--sheet); padding: 12px 22px; font-size: 1rem; }
+button.primary:hover { background: var(--navy-hover); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.quiet { border: none; color: var(--ink-soft); padding: 6px 8px; font-weight: 500; }
+button.quiet:hover { color: var(--ink); }
+:focus-visible { outline: 3px solid var(--navy); outline-offset: 2px; }
+
+/* tarama seçimi */
+.drop {
+  border: 2px dashed var(--rule); border-radius: 6px; padding: 22px; text-align: center; color: var(--ink-soft);
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.drop:hover, .drop.over { border-color: var(--navy); color: var(--ink); }
+.drop strong { color: var(--ink); }
+.files { list-style: none; margin: 16px 0 0; padding: 0; }
+.files li + li { border-top: 1px solid var(--rule); }
+.files label { display: flex; align-items: center; gap: 12px; padding: 10px 4px; cursor: pointer; }
+.files .name { flex: 1; overflow-wrap: anywhere; }
+.files .count { color: var(--ink-soft); font-size: .9rem; white-space: nowrap; }
+.files input { accent-color: var(--navy); width: 18px; height: 18px; }
+.empty { color: var(--ink-soft); margin: 14px 0 0; }
+
+/* ayarlar */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; }
+.field label { display: block; font-weight: 600; margin-bottom: 4px; }
+.field small { display: block; color: var(--ink-soft); margin-top: 4px; font-size: .85rem; }
+input[type=text], input[type=number], select {
+  width: 100%; font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule);
+  border-radius: 5px; padding: 8px 10px;
+}
+.checks { margin-top: 18px; display: grid; gap: 8px; }
+.checks label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.checks input { accent-color: var(--navy); width: 18px; height: 18px; margin-top: 3px; flex: none; }
+mark { background: var(--marker); color: #1E2A3A; padding: 0 2px; border-radius: 2px; }
+details { margin-top: 18px; }
+summary { cursor: pointer; color: var(--ink-soft); font-weight: 600; }
+details .grid { margin-top: 14px; }
+.actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.form-error { color: var(--error); font-weight: 600; }
+.note { color: var(--ink-soft); font-size: .9rem; }
+
+/* ilerleme */
+.status-line { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; margin-bottom: 18px; }
+.phase { font: 600 1.15rem var(--serif); }
+.times { color: var(--ink-soft); }
+.pages { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 20px; }
+.pg {
+  width: 22px; height: 30px; border-radius: 2px; background: var(--tile-empty); position: relative;
+  transition: background .3s;
+}
+.pg.done { background: var(--navy); }
+.pg.done::before, .pg.done::after {   /* satır izleri: mürekkeplenmiş sayfa */
+  content: ""; position: absolute; left: 4px; right: 4px; height: 2px; background: var(--sheet); opacity: .45;
+}
+.pg.done::before { top: 9px; box-shadow: 0 5px 0 var(--sheet), 0 10px 0 var(--sheet); }
+.pg.done::after { top: 24px; right: 9px; }
+.pg.now { background: var(--marker); }
+@media (prefers-reduced-motion: no-preference) {
+  .pg.now { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .55; } }
+}
+.bar { height: 6px; background: var(--tile-empty); border-radius: 3px; overflow: hidden; margin-bottom: 20px; }
+.bar > div { height: 100%; width: 0; background: var(--navy); transition: width .4s; }
+pre.log {
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; padding: 12px; max-height: 260px;
+  overflow: auto; font-size: .82rem; line-height: 1.45; white-space: pre-wrap; margin: 10px 0 0;
+}
+
+/* sonuç */
+.result-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+.result-head.bad h2 { color: var(--error); }
+.docs { list-style: none; padding: 0; margin: 14px 0 0; }
+.docs li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 0; border-top: 1px solid var(--rule); }
+.docs .name { flex: 1; min-width: 200px; font-weight: 600; overflow-wrap: anywhere; }
+.docs .kind { color: var(--ink-soft); font-weight: 400; }
+.check h3 { font: 600 1.05rem var(--serif); margin: 22px 0 8px; }
+.check ul { margin: 0; padding-left: 20px; }
+.check li { margin: 3px 0; }
+.check .pid { font-weight: 600; }
+.nums { margin: 0; }
+.nums dt { font-weight: 600; }
+.nums dd { margin: 0 0 8px; }
+.ok-text { color: var(--ok); font-weight: 600; }
+.error-box { border-left: 4px solid var(--error); padding: 2px 0 2px 14px; margin: 10px 0; }
+.closed { text-align: center; padding: 80px 16px; }
+
+@media (max-width: 560px) {
+  .grid { grid-template-columns: 1fr; }
+  section { padding: 18px; }
+  h1 { font-size: 1.7rem; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>OCR-Now</h1>
+      <p>Taranmış kitap sayfalarını Word belgesine çevirir.</p>
+    </div>
+    <button class="quiet" id="close" type="button">Kapat</button>
+  </header>
+
+  <div id="form-view">
+    <section aria-labelledby="h-scan">
+      <h2 id="h-scan">Tarama</h2>
+      <div class="drop" id="drop" tabindex="0" role="button" aria-describedby="drop-help">
+        <strong>PDF'i buraya sürükleyin</strong> ya da tıklayıp seçin
+        <div id="drop-help" class="note">PDF, PNG, JPG ya da TIFF. Dosya bu bilgisayarda kalır.</div>
+      </div>
+      <input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff" hidden>
+      <p class="note" id="upload-status" aria-live="polite"></p>
+      <ul class="files" id="files"></ul>
+      <p class="empty" id="no-files" hidden>Henüz tarama yok. Yukarıdan bir PDF ekleyin.</p>
+    </section>
+
+    <section aria-labelledby="h-opts">
+      <h2 id="h-opts">Ayarlar</h2>
+      <div class="grid">
+        <div class="field">
+          <label for="pages">Okunacak sayfalar</label>
+          <input type="text" id="pages" placeholder="hepsi" autocomplete="off">
+          <small id="pages-help">Boş bırakırsanız hepsi. Örnek: 1-5, 8 ya da ilk10</small>
+        </div>
+        <div class="field">
+          <label for="first">İlk sayfanın kitaptaki numarası</label>
+          <input type="number" id="first" min="1" placeholder="sayfadan okunur">
+          <small>Yalnız numaralar okunamıyorsa verin.</small>
+        </div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="f-docx" checked> Word belgesi (.docx)</label>
+        <label><input type="checkbox" id="f-txt"> Düz metin (.txt)</label>
+        <label><input type="checkbox" id="mark" checked>
+          <span>Şüpheli kelimeleri Word'de <mark>sarıya boya</mark></span></label>
+      </div>
+      <details>
+        <summary>Gelişmiş ayarlar</summary>
+        <div class="grid">
+          <div class="field">
+            <label for="model">Model</label>
+            <select id="model"></select>
+            <small id="model-help"></small>
+          </div>
+          <div class="field">
+            <label for="mode">Okuma</label>
+            <select id="mode"></select>
+            <small>Düzen: başlık, dipnot ve sayfa numarasını ayırır.</small>
+          </div>
+          <div class="field">
+            <label for="dpi">Çözünürlük (DPI)</label>
+            <input type="number" id="dpi" min="72" max="600" step="10">
+            <small>Varsayılan 200. Daha yükseği yavaşlatır.</small>
+          </div>
+          <div class="field checks" style="margin-top:0">
+            <label><input type="checkbox" id="apos" checked>
+              <span>Ayın (‘) ve hemzeyi (’) ayır</span></label>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <div class="actions">
+      <button class="primary" id="start" type="button">Okumayı başlat</button>
+      <span class="form-error" id="form-error" role="alert"></span>
+    </div>
+  </div>
+
+  <section id="run-view" hidden aria-live="polite">
+    <h2 id="run-name"></h2>
+    <div class="status-line">
+      <span class="phase" id="phase"></span>
+      <span class="times" id="times"></span>
+    </div>
+    <div class="pages" id="tiles" aria-hidden="true"></div>
+    <div class="bar" id="bar" hidden><div></div></div>
+    <div class="actions">
+      <button id="cancel" type="button">İptal et</button>
+      <span class="note">Bu sekmeyi kapatsanız da okuma sürer; yeniden açınca kaldığı yerden görünür.</span>
+    </div>
+    <details>
+      <summary>Ayrıntılı kayıt</summary>
+      <pre class="log" id="log"></pre>
+    </details>
+  </section>
+
+  <div id="result-view" hidden>
+    <section>
+      <div class="result-head" id="result-head">
+        <h2 id="result-title"></h2>
+        <span class="times" id="result-time"></span>
+      </div>
+      <div id="result-error" class="error-box" hidden></div>
+      <ul class="docs" id="docs"></ul>
+      <div class="check" id="check"></div>
+      <details id="result-log-box">
+        <summary>Ayrıntılı kayıt</summary>
+        <pre class="log" id="result-log"></pre>
+      </details>
+    </section>
+    <button class="primary" id="again" type="button">Yeni okuma</button>
+  </div>
+
+  <div id="closed-view" class="closed" hidden>
+    <h2>Arayüz kapandı</h2>
+    <p class="note">Bu sekmeyi kapatabilirsiniz. Yeniden açmak için masaüstündeki OCR-Now simgesine çift tıklayın.</p>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let state = null;          // /api/durum
+let selected = null;       // seçili tarama adı
+let poll = null;
+let dismissed = false;
+
+async function api(path, body) {
+  const opt = body === undefined ? {} :
+    {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  const data = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((data && data.hata) || `Sunucu hatası (${r.status})`);
+  return data;
+}
+
+function minutes(sec) {
+  if (sec == null) return null;
+  if (sec < 60) return `${sec} sn`;
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m < 10 && s ? `${m} dk ${s} sn` : `${m} dk`;
+}
+
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) if (c != null) e.append(c);
+  return e;
+}
+
+function show(view) {
+  for (const v of ["form-view", "run-view", "result-view", "closed-view"]) $(v).hidden = v !== view;
+}
+
+/* ---- form ---- */
+
+function renderFiles() {
+  const list = $("files");
+  list.replaceChildren();
+  $("no-files").hidden = state.dosyalar.length > 0;
+  if (!state.dosyalar.some(f => f.ad === selected)) selected = state.dosyalar.length ? state.dosyalar[0].ad : null;
+  for (const f of state.dosyalar) {
+    const input = el("input", {type: "radio", name: "scan", value: f.ad});
+    input.checked = f.ad === selected;
+    input.addEventListener("change", () => { selected = f.ad; updatePagesHelp(); });
+    list.append(el("li", {}, el("label", {}, input, el("span", {class: "name"}, f.ad),
+      el("span", {class: "count"}, `${f.sayfa} sayfa`))));
+  }
+  updatePagesHelp();
+}
+
+function updatePagesHelp() {
+  const f = state.dosyalar.find(x => x.ad === selected);
+  $("pages-help").textContent = f
+    ? `Boş bırakırsanız ${f.sayfa} sayfanın hepsi. Örnek: 1-5, 8 ya da ilk10`
+    : "Boş bırakırsanız hepsi. Örnek: 1-5, 8 ya da ilk10";
+}
+
+function renderModels() {
+  const sel = $("model");
+  sel.replaceChildren();
+  for (const m of state.modeller) {
+    const o = el("option", {value: m.ad}, m.hazir ? m.ad : `${m.ad} (kurulu değil)`);
+    o.disabled = !m.hazir;
+    sel.append(o);
+  }
+  sel.value = state.varsayilan.model;
+  const def = state.modeller.find(m => m.ad === state.varsayilan.model);
+  $("model-help").textContent = def && !def.hazir ? `Varsayılan model hazır değil: ${def.neden}` : "";
+  renderModes();
+}
+
+function renderModes() {
+  const m = state.modeller.find(x => x.ad === $("model").value);
+  const names = {duzen: "Düzen", duz: "Düz metin"};
+  $("mode").replaceChildren(...(m ? m.modlar : []).map(x => el("option", {value: x}, names[x] || x)));
+  if (m && m.modlar.includes(state.varsayilan.okuma)) $("mode").value = state.varsayilan.okuma;
+}
+
+async function upload(file) {
+  const status = $("upload-status");
+  status.textContent = `${file.name} ekleniyor…`;
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/yukle");
+  xhr.setRequestHeader("X-Dosya-Adi", encodeURIComponent(file.name));
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) status.textContent = `${file.name} ekleniyor… %${Math.round(100 * e.loaded / e.total)}`;
+  };
+  xhr.onload = async () => {
+    let data = null;
+    try { data = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status !== 200) { status.textContent = (data && data.hata) || "Dosya eklenemedi."; return; }
+    status.textContent = `${data.ad} eklendi (${data.sayfa} sayfa).`;
+    selected = data.ad;
+    state = await api("/api/durum");
+    renderFiles();
+  };
+  xhr.onerror = () => { status.textContent = "Dosya eklenemedi: arayüz sunucusuna ulaşılamıyor."; };
+  xhr.send(file);
+}
+
+function formData() {
+  const formats = [];
+  if ($("f-docx").checked) formats.push("docx");
+  if ($("f-txt").checked) formats.push("txt");
+  return {dosya: selected, sayfalar: $("pages").value, ilk_sayfa: $("first").value, formatlar: formats,
+          isaretle: $("mark").checked, model: $("model").value, okuma: $("mode").value,
+          kesme: $("apos").checked, dpi: Number($("dpi").value || 200)};
+}
+
+async function start() {
+  $("form-error").textContent = "";
+  if (!selected) { $("form-error").textContent = "Önce bir tarama ekleyin ya da seçin."; return; }
+  $("start").disabled = true;
+  try {
+    const job = await api("/api/baslat", formData());
+    dismissed = false;
+    renderJob(job);
+    startPolling();
+  } catch (e) {
+    $("form-error").textContent = e.message;
+  } finally {
+    $("start").disabled = false;
+  }
+}
+
+/* ---- ilerleme ---- */
+
+function renderTiles(progress) {
+  const box = $("tiles"), bar = $("bar");
+  const total = progress ? progress.toplam : 0;
+  if (total > 120) {                      // çok sayfada kutucuk yerine çubuk
+    box.hidden = true; bar.hidden = false;
+    bar.firstElementChild.style.width = `${100 * (progress.sayfa - 1) / total}%`;
+    return;
+  }
+  box.hidden = false; bar.hidden = true;
+  if (box.children.length !== total) box.replaceChildren(...Array.from({length: total}, () => el("div", {class: "pg"})));
+  [...box.children].forEach((t, i) => {
+    t.className = "pg" + (i < progress.sayfa - 1 ? " done" : i === progress.sayfa - 1 ? " now" : "");
+  });
+}
+
+function renderJob(job) {
+  if (job.durum === "calisiyor" || job.durum === "bekliyor") {
+    show("run-view");
+    $("run-name").textContent = job.ad;
+    $("phase").textContent = job.asama;
+    const parts = [`geçen ${minutes(job.gecen)}`];
+    if (job.kalan != null) parts.push(`kalan yaklaşık ${minutes(job.kalan)}`);
+    else if (job.ilerleme) parts.push("kalan süre hesaplanıyor");
+    $("times").textContent = parts.join(", ");
+    if (job.ilerleme) renderTiles(job.ilerleme); else { $("tiles").replaceChildren(); $("bar").hidden = true; }
+    $("log").textContent = job.satirlar.join("\n");
+    $("cancel").disabled = job.asama.startsWith("İptal");
+    return;
+  }
+  stopPolling();
+  if (dismissed) return;
+  renderResult(job);
+}
+
+function startPolling() {
+  stopPolling();
+  poll = setInterval(async () => {
+    try { const job = await api("/api/is"); if (job) renderJob(job); }
+    catch (_) { $("phase").textContent = "Arayüz sunucusuna ulaşılamıyor"; }
+  }, 1000);
+}
+function stopPolling() { if (poll) clearInterval(poll); poll = null; }
+
+/* ---- sonuç ---- */
+
+function docButtons(path) {
+  const name = path.split("/").pop();
+  return el("li", {},
+    el("span", {class: "name"}, name, " ", el("span", {class: "kind"}, name.endsWith(".docx") ? "Word" : "metin")),
+    el("a", {class: "button", href: `/belge/${encodeURIComponent(name)}`, download: name}, "İndir"),
+    el("button", {type: "button", onclick: () => reveal("belge", name)}, "Klasörde göster"));
+}
+
+async function reveal(where, name) {
+  try { await api("/api/goster", {yer: where, ad: name}); }
+  catch (e) { alert(e.message); }
+}
+
+function groupWarnings(warns) {
+  const ul = el("ul");
+  for (const w of warns) {
+    const m = w.match(/^([^:]+?):\s(.*)$/);
+    ul.append(m ? el("li", {}, el("span", {class: "pid"}, m[1]), ": ", m[2]) : el("li", {}, w));
+  }
+  return ul;
+}
+
+function renderResult(job) {
+  show("result-view");
+  const res = job.sonuc;
+  const head = $("result-head");
+  head.classList.toggle("bad", job.durum !== "bitti");
+  $("result-time").textContent = `${minutes(job.gecen)} sürdü`;
+  $("result-error").hidden = true;
+  $("docs").replaceChildren();
+  $("check").replaceChildren();
+  $("result-log").textContent = job.satirlar.join("\n");
+
+  if (job.durum === "iptal") {
+    $("result-title").textContent = "Okuma iptal edildi";
+    return;
+  }
+  if (job.durum === "hata" || !res) {
+    $("result-title").textContent = "Okuma tamamlanamadı";
+    const box = $("result-error");
+    box.hidden = false;
+    const tail = job.satirlar.filter(l => l.trim()).slice(-6).join("\n");
+    box.replaceChildren(el("p", {}, "ocr-now hata vererek durdu. Son satırlar:"), el("pre", {class: "log"}, tail));
+    $("result-log-box").open = true;
+    return;
+  }
+  $("result-title").textContent = res.belgeler.length ? "Belgeler hazır" : "Belge yazılmadı";
+  for (const p of res.belgeler) $("docs").append(docButtons(p));
+  $("docs").append(el("li", {},
+    el("span", {class: "name"}, job.ad, " ", el("span", {class: "kind"}, "taranmış PDF")),
+    el("button", {type: "button", onclick: () => reveal("tarama", job.ad)}, "Klasörde göster")));
+
+  const check = $("check");
+  for (const is of res.isler) {
+    if (!is.yazildi) check.append(el("p", {class: "form-error"}, `${is.ad}: hiçbir sayfa okunamadı, belge yazılmadı.`));
+    if (is.tahmin.length || is.kontrol.length) {
+      check.append(el("h3", {}, "Sayfa numaraları"));
+      const dl = el("dl", {class: "nums"});
+      if (is.kontrol.length) dl.append(el("dt", {}, "Okundu ama kontrol edilmeli"), el("dd", {}, is.kontrol.join(", ")));
+      if (is.tahmin.length) dl.append(el("dt", {}, "Tahmin edildi"), el("dd", {}, is.tahmin.join(", ")));
+      check.append(dl, el("p", {class: "note"}, "Köşeli parantezli numaralar belgede de köşeli parantezle yazılır."));
+    }
+    if (is.uyarilar.length) {
+      const d = el("details", {}, el("summary", {}, `Uyarılar (${is.uyarilar.length})`), groupWarnings(is.uyarilar));
+      d.open = is.uyarilar.length <= 8;
+      check.append(el("h3", {}, "Kontrol edilecekler"), d);
+    }
+  }
+  if (res.okunamayan) check.prepend(el("p", {class: "form-error"},
+    "Bazı sayfalar okunamadı; belgede “[Bu sayfa okunamadı]” olarak duruyor. Ayrıntı uyarılarda."));
+  if (!check.children.length) check.append(el("p", {class: "ok-text"}, "Kontrol edilecek bir şey çıkmadı."));
+}
+
+/* ---- olaylar ---- */
+
+$("drop").addEventListener("click", () => $("file").click());
+$("drop").addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } });
+$("file").addEventListener("change", e => { if (e.target.files[0]) upload(e.target.files[0]); e.target.value = ""; });
+for (const ev of ["dragenter", "dragover"]) $("drop").addEventListener(ev, e => { e.preventDefault(); $("drop").classList.add("over"); });
+for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, () => $("drop").classList.remove("over"));
+$("drop").addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); });
+window.addEventListener("dragover", e => e.preventDefault());   // sayfanın dışına bırakılan dosya açılmasın
+window.addEventListener("drop", e => e.preventDefault());
+
+$("model").addEventListener("change", renderModes);
+$("start").addEventListener("click", start);
+$("cancel").addEventListener("click", async () => {
+  $("cancel").disabled = true;
+  try { renderJob(await api("/api/iptal", {})); } catch (_) {}
+});
+$("again").addEventListener("click", async () => {
+  dismissed = true;
+  state = await api("/api/durum");
+  renderFiles();
+  show("form-view");
+});
+$("close").addEventListener("click", async () => {
+  const running = !$("run-view").hidden;
+  if (running && !confirm("Okuma sürüyor. Kapatırsanız iptal edilir. Kapatılsın mı?")) return;
+  try { await api("/api/kapat", {}); } catch (_) {}
+  stopPolling();
+  show("closed-view");
+});
+
+(async function init() {
+  try {
+    state = await api("/api/durum");
+  } catch (e) {
+    $("form-error").textContent = "Arayüz sunucusuna ulaşılamıyor.";
+    return;
+  }
+  $("dpi").value = state.varsayilan.dpi;
+  renderFiles();
+  renderModels();
+  if (!state.is) { show("form-view"); return; }
+  renderJob(state.is);                     // süren iş: ilerleme; biten iş: son sonuç
+  if (state.is.durum === "calisiyor" || state.is.durum === "bekliyor") startPolling();
+})();
+</script>
+</body>
+</html>

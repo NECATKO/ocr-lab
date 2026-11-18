@@ -7,6 +7,7 @@ Osmanlıca transkripsiyon işaretleri (â î û, ‘ ’, ğ ı ş) korunur.
 | Komut | Ne için |
 |---|---|
 | `./ocr-now` | Üretim: PDF girer, kitabın sayfasına benzeyen `.docx` ve/veya ham `.txt` çıkar |
+| `./ocr-gui` | `ocr-now`'ın tarayıcıda açılan arayüzü: terminalsiz kullanım |
 | `./ocr-lab` | Benchmark: OCR motorlarını ve okuma modlarını `gt/` altındaki doğru metinlerle karşılaştırır |
 
 İki komut aynı motor tanımlarını (`src/ocrnow/engines.py`) kullanır, yeni bir model bir kez eklenir. Her şey
@@ -49,6 +50,29 @@ Her sayfa için şu adımlar sırayla yapılır:
 - **Doğruluk:** dots.mocr düzen modunun normalize CER'i **%0.32**.
 - **Satır yapısı:** 39 satır kırılımının **39'u** kitaptaki yerinde.
 
+## ocr-gui: terminalsiz kullanım
+
+Windows masaüstündeki **OCR-Now** simgesine çift tıklayın. Tarayıcıda arayüz açılır, görev çubuğunda küçültülmüş
+bir pencere belirir. Arayüzde sırasıyla:
+
+1. **Tarama:** PDF'i sürükleyip bırakın ya da `input/`'taki taramalardan birini seçin. Eklenen dosya `input/`'a
+   kopyalanır; aynı dosya yeniden eklenirse kopyası çıkmaz, önbellek geçerli kalır.
+2. **Ayarlar:** sayfalar, ilk sayfanın kitap numarası, Word/metin, sarı işaretleme. Model, okuma modu, ayın/hemze ve
+   DPI "Gelişmiş ayarlar"dadır. Varsayılanlar `ocr-now`'ınkilerle aynıdır.
+3. **Okumayı başlat:** her sayfa bir kutucukla gösterilir, geçen ve kalan süre yazılır. Model açılışı (birkaç
+   dakika) kalan süre hesabına katılmaz. Sekme kapatılsa da okuma sürer; yeniden açınca kaldığı yerden görünür.
+4. **Sonuç:** belgeleri indirme ya da Windows Gezgini'nde gösterme, taranmış PDF'i gösterme, sayfa numarası
+   listeleri ve uyarılar.
+
+Arkada `ocr-now` komutu çalışır (`--rapor` ile iş sonu özetini JSON olarak verir); davranışı tamamen aynıdır.
+İptal, Ctrl-C ile aynı yoldan model sunucusunu kapatır. Arayüz yalnız bu bilgisayardan (`127.0.0.1`) erişilebilir.
+Kapatmak için sayfadaki **Kapat** düğmesi ya da görev çubuğundaki pencere; süren okuma iptal edilir.
+
+```bash
+./ocr-gui --tarayici              # elle başlatma (http://localhost:8765)
+./ocr-gui --masaustu-kisayolu     # masaüstü simgesini (yeniden) oluşturur; kurulum.sh da yapar
+```
+
 ## ocr-now: belge üretme
 
 ```bash
@@ -77,6 +101,7 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 | `--ilk-sayfa N` | İlk seçilen sayfanın kitaptaki numarası. Okunamayan numaralar buradan sayılır |
 | `--birlestir` | Bütün girdileri tek belgede birleştirir |
 | `--dpi N` | PDF görüntüleme çözünürlüğü (varsayılan 200) |
+| `--rapor DOSYA` | İş sonu özetini (belgeler, sayfa numaraları, uyarılar) JSON olarak da yazar; `ocr-gui` kullanır |
 
 ### Çıktı
 
@@ -208,9 +233,11 @@ hatayla durur. Bir motor çökerse `output/_logs/<motor>.server.log` dosyasına 
 ## Klasörler
 
 ```
-ocr-now, ocr-lab, kurulum.sh   giriş noktaları (her klasörden çalışır; göreli yollar bulunduğunuz yere göredir)
+ocr-now, ocr-lab, ocr-gui,
+kurulum.sh                     giriş noktaları (her klasörden çalışır; göreli yollar bulunduğunuz yere göredir)
 src/ocrnow/                    program; bütün yollar src/ocrnow/paths.py'de
 src/ocrnow/lab/                ocr-lab: ölçüler, benchmark, marimo notebook
+src/ocrnow/gui/                ocr-gui: yerel sunucu, iş yürütücü, arayüz sayfası (index.html)
 ayarlar/kesme.txt              kullanıcının ayın/hemze kelime listesi
 tests/                         testler: .venv/bin/pytest
 docs/                          tasarım belgesi ve uygulama planı

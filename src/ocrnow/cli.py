@@ -1,6 +1,7 @@
 """`ocr-now` komutu: taranmış sayfaları .docx/.txt'ye çevirir; argümansız açılınca soru sorar."""
 import argparse
 import importlib
+import json
 import re
 import sys
 import textwrap
@@ -75,6 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ilk-sayfa", type=_positive_int, help="ilk sayfanın kitap sayfa numarası")
     p.add_argument("--birlestir", action="store_true", help="bütün girdileri tek belgede birleştir")
     p.add_argument("--dpi", type=_positive_int, default=DEFAULT_DPI, help="PDF görüntüleme çözünürlüğü (varsayılan: %(default)s)")
+    p.add_argument("--rapor", type=Path, metavar="DOSYA", help="iş sonu özetini JSON olarak bu dosyaya da yaz (ocr-gui için)")
     p.set_defaults(okuma_verildi=False)
     return p
 
@@ -206,31 +208,41 @@ def _free_stem(name: str, formats: list[str]) -> str:
     return stem
 
 
-def _summary(results: list[tuple[pages.DocJob, list]], written: list[Path],
-             export_warnings: dict[str, list[str]]) -> bool:
-    """Bitiş özetini yazar (uyarılar: sayfalarınki, sonra dışa aktarmanınki); en az bir sayfa okunamadıysa True."""
-    print("\nYazılan belgeler:" if written else "\nYazılan belge yok.")
-    for path in written:
+def _report(results: list[tuple[pages.DocJob, list]], written: list[Path],
+            export_warnings: dict[str, list[str]]) -> dict:
+    """İş sonu özeti: yazılan belgeler; her iş için tahmin edilen ve kontrol edilmesi gereken numaralar, uyarılar
+    (sayfalarınki, sonra dışa aktarmanınki); en az bir sayfa okunamadıysa okunamayan=True."""
+    jobs = []
+    for job, doc_pages in results:
+        jobs.append({
+            "ad": job.name,
+            "yazildi": not all(p.failed for p in doc_pages),
+            "tahmin": [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred and not p.book_page_check],
+            "kontrol": [export_txt.page_label(p) for p in doc_pages if p.book_page_check],
+            "uyarilar": [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, []),
+        })
+    return {"belgeler": [str(path) for path in written], "isler": jobs,
+            "okunamayan": any(p.failed for _, doc_pages in results for p in doc_pages)}
+
+
+def _summary(report: dict) -> None:
+    """Bitiş özetini (_report) terminale yazar."""
+    print("\nYazılan belgeler:" if report["belgeler"] else "\nYazılan belge yok.")
+    for path in report["belgeler"]:
         print(f"  {path}")
-    for job, doc_pages in results:
-        if all(p.failed for p in doc_pages):
-            print(f"  {job.name}: hiçbir sayfa okunamadı, belge yazılmadı")
-    failed = False
-    for job, doc_pages in results:
-        guessed = [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred and not p.book_page_check]
-        checked = [export_txt.page_label(p) for p in doc_pages if p.book_page_check]
-        for title, labels in (("tahmin edilen sayfa numaraları", guessed),
-                              ("kontrol edilmesi gereken okunan numaralar", checked)):
+    for job in report["isler"]:
+        if not job["yazildi"]:
+            print(f"  {job['ad']}: hiçbir sayfa okunamadı, belge yazılmadı")
+    for job in report["isler"]:
+        for title, labels in (("tahmin edilen sayfa numaraları", job["tahmin"]),
+                              ("kontrol edilmesi gereken okunan numaralar", job["kontrol"])):
             if labels:
-                print(f"\n{job.name}: {title}:")
+                print(f"\n{job['ad']}: {title}:")
                 print(textwrap.fill(", ".join(labels), width=88, initial_indent="  ", subsequent_indent="  "))
-        warns = [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, [])
-        failed = failed or any(p.failed for p in doc_pages)
-        if warns:
-            print(f"\n{job.name}: uyarılar:")
-            for w in warns:
+        if job["uyarilar"]:
+            print(f"\n{job['ad']}: uyarılar:")
+            for w in job["uyarilar"]:
                 print(f"  - {w}")
-    return failed
 
 
 def _run(args: argparse.Namespace, ask_start: bool) -> int:
@@ -283,8 +295,15 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
                 write_failed = True
             else:
                 written.append(out)
-    read_failed = _summary(results, written, export_warnings)
-    return 1 if read_failed or write_failed else 0
+    report = _report(results, written, export_warnings)
+    _summary(report)
+    if args.rapor:
+        try:
+            args.rapor.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError as e:
+            _err(f"Hata: {args.rapor} yazılamadı ({e})")
+            write_failed = True
+    return 1 if report["okunamayan"] or write_failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -10,3 +10,7 @@ VIRTUAL_ENV=.venv uv pip install -q -e ".[dev,lab]"
 
 ./ocr-now models install --hepsi
 ./ocr-now models
+if [ -n "$WSL_DISTRO_NAME" ]; then
+    printf '\n== masaüstü kısayolu\n'
+    ./ocr-gui --masaustu-kisayolu || true
+fi
