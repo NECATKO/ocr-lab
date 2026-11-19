@@ -25,9 +25,10 @@ with app.setup:
 
     # (alan, başlık, yüksek olan iyi mi, yüzde mi)
     COLUMNS = [("seconds", "Süre (sn)", False, False),
-               ("cer_raw", "Ham CER", False, True), ("cer_norm", "Normalize CER", False, True),
+               ("cer_raw", "Model ham CER", False, True), ("cer_norm", "Model normalize CER", False, True),
                ("cer_body", "Gövde CER", False, True), ("cer_base", "Harf CER", False, True),
-               ("wer", "WER", False, True), ("line_end", "Satır sonu doğr.", True, True),
+               ("wer", "Model WER", False, True), ("cer_document", "Belge CER", False, True),
+               ("wer_document", "Belge WER", False, True), ("line_end", "Satır sonu doğr.", True, True),
                ("apostrophe", "Ayın/hemze doğr.", True, True)]
     AXES = {field: title for field, title, _, _ in COLUMNS}
 
@@ -78,7 +79,7 @@ def summarize(records: list[dict]) -> list[dict]:
     for key, group in sorted(groups.items()):
         ok = [r for r in group if not r.get("error")]
         row = {"key": key, "engine": group[0]["engine"], "mode": group[0]["mode"],
-               "n": len(ok), "errors": len(group) - len(ok)}
+               "n": len(ok), "errors": len(group) - len(ok), "review": sum(bool(r.get("needs_review")) for r in ok)}
         for field, *_ in COLUMNS:
             values = [r[field] for r in ok if r.get(field) is not None]
             row[field] = sum(values) / len(values) if values else None
@@ -91,7 +92,7 @@ def best_cells(rows: list[dict]) -> dict[str, set[str]]:
     """Her ölçü sütununun en iyi satır anahtarları (eşitlikte hepsi); ölçüsü olmayan sütun boş küme."""
     best: dict[str, set[str]] = {}
     for field, _, higher_better, _ in COLUMNS:
-        known = [(r[field], r["key"]) for r in rows if r[field] is not None]
+        known = [(r[field], r["key"]) for r in rows if r.get(field) is not None]
         top = (max if higher_better else min)((v for v, _ in known), default=None)
         best[field] = {k for v, k in known if v == top}
     return best
@@ -101,13 +102,14 @@ def best_cells(rows: list[dict]) -> dict[str, set[str]]:
 def metrics_table(rows: list[dict]) -> str:
     """Ölçü tablosu (HTML): en iyi hücre kalın ve yeşil zeminli. Açık/koyu temada okunur (renk devralınır)."""
     best = best_cells(rows)
-    head = "".join(f"<th>{html.escape(t)}</th>" for t in ["Motor/mod", "Sayfa", "Hata"] + [c[1] for c in COLUMNS])
+    head = "".join(f"<th>{html.escape(t)}</th>" for t in ["Motor/mod", "Sayfa", "Hata", "Kontrol"] + [c[1] for c in COLUMNS])
     body = []
     for r in rows:
-        cells = [f"<td>{html.escape(r['key'])}</td>", f"<td>{r['n']}</td>", f"<td>{r['errors'] or ''}</td>"]
+        cells = [f"<td>{html.escape(r['key'])}</td>", f"<td>{r['n']}</td>", f"<td>{r['errors'] or ''}</td>",
+                 f"<td>{r.get('review') or ''}</td>"]
         for field, _, _, percent in COLUMNS:
             mark = ' style="font-weight:700;background:rgba(34,160,90,.28)"' if r["key"] in best[field] else ""
-            cells.append(f"<td{mark}>{fmt(r[field], percent)}</td>")
+            cells.append(f"<td{mark}>{fmt(r.get(field), percent)}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
     return ('<table class="ocr-ozet" style="border-collapse:collapse;font-size:.9em;font-variant-numeric:tabular-nums">'
             f"<thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
@@ -120,7 +122,7 @@ def scatter_svg(rows: list[dict], field: str) -> str:
     """Süre (x) ve seçilen ölçü (y) dağılım grafiği, SVG metni; çizilecek nokta yoksa ''.
 
     Renk motoru, işaret (daire/kare/üçgen) modu gösterir; metin renkleri temadan gelir (currentColor)."""
-    points = [r for r in rows if r["seconds"] is not None and r[field] is not None]
+    points = [r for r in rows if r.get("seconds") is not None and r.get(field) is not None]
     if not points:
         return ""
     percent = dict((f, p) for f, _, _, p in COLUMNS)[field]
@@ -168,15 +170,22 @@ def image_html(path: Path, alt: str, width: int) -> str:
 
 @app.function
 def find_page_image(pdf: str, page: int) -> Path | None:
-    """paths.PAGES/<pdf>-<bayt>/syf<N>.png (dpi 200 dışında syf<N>_<dpi>dpi.png); birden çoksa en yenisi.
-
-    Kayıtlar kaynak yolunu tutmaz; klasör adı <pdf>-<sayı> kalıbıyla eşleşir (başka bir '<pdf>-2' PDF'i karışmaz)."""
+    """Yalnız eski kayıtlar için ad/byte tabanlı görüntü araması."""
     if not paths.PAGES.is_dir():
         return None
     folder = re.compile(re.escape(pdf) + r"-\d+")
     found = [f for d in paths.PAGES.iterdir() if d.is_dir() and folder.fullmatch(d.name)
              for f in d.glob(f"syf{page}*.png") if re.fullmatch(rf"syf{page}(_\d+dpi)?\.png", f.name)]
     return max(found, key=lambda f: f.stat().st_mtime, default=None)
+
+
+@app.function
+def record_image(rec: dict) -> Path | None:
+    """Yeni kayıtlar için yalnız o koşuda ölçülen görüntüyü göster."""
+    if "image_path" not in rec:
+        return find_page_image(rec["pdf"], rec["page"])
+    path = Path(rec["image_path"]) if rec["image_path"] else None
+    return path if path and path.is_file() else None
 
 
 @app.function
@@ -231,16 +240,18 @@ def _():
 def _(run_select, runs):
     selected = [r for r in runs if r["run"] in run_select.value]
     mo.stop(not selected, mo.md("Yukarıdan en az bir çalışma seçin."))
+    mo.stop(len({r.get("metrics_version", 1) for r in selected}) > 1,
+            mo.md("Eski ve yeni ölçüm yöntemleri aynı tabloda karşılaştırılamaz. Aynı sürümden koşuları seçin."))
     rows = summarize(selected)
     mo.vstack([mo.md("## Ölçüler\n\nMotor/mod başına sayfa ortalaması; en iyi değer vurgulu. "
-                     "Hatalı sayfalar ortalamaya girmez, 'Hata' sütununda sayılır."),
+                     "Hatalı sayfalar ortalamaya girmez. Boş OCR çıktıları 'Kontrol' sütununda ayrıca sayılır."),
                mo.Html(metrics_table(rows))])
     return rows, selected
 
 
 @app.cell
 def _(rows):
-    axis_select = mo.ui.dropdown(options={t: f for f, t in AXES.items() if f != "seconds"}, value="Normalize CER",
+    axis_select = mo.ui.dropdown(options={t: f for f, t in AXES.items() if f != "seconds"}, value="Model normalize CER",
                                  label="Dikey eksen")
     axis_select
     return (axis_select,)
@@ -274,7 +285,7 @@ def _(key_select, pages_of):
 def _(key_select, page_options, page_select, pages_of, selected):
     pdf, page = pages_of[key_select.value][page_options.index(page_select.value)]
     rec = pick_record(selected, key_select.value, pdf, page)
-    image_path = find_page_image(pdf, page)
+    image_path = record_image(rec)
     parts = [mo.Html(f"<p>Koşu: <code>{html.escape(rec['run'])}</code></p>")]
     if rec["error"]:
         parts.append(mo.callout(mo.Html(html.escape(f"Bu sayfa hata verdi: {rec['error']}")), kind="danger"))
@@ -296,7 +307,7 @@ def _(key_select, page_options, page_select, pages_of, selected):
             f'<pre style="white-space:pre-wrap;font-family:inherit">{html.escape(text)}</pre>')}))
     errors_view = mo.vstack(parts)
     image_view = (mo.Html(image_html(image_path, f"{pdf} sayfa {page}", 520)) if image_path else
-                  mo.Html(f"<p>Sayfa görüntüsü bulunamadı: <code>{html.escape(f'{paths.PAGES}/{pdf}-*/syf{page}.png')}</code></p>"))
+                   mo.md("Bu kayıt için sayfa görüntüsü bulunamadı."))
     return errors_view, image_view
 
 

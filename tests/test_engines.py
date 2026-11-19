@@ -74,7 +74,7 @@ def test_local_server_runs_without_http(monkeypatch, tmp_path):
 
 def test_vlm_server_uses_mode_prompt_and_always_stops(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(engines, "_start_server", lambda eng: ("http://x/v1", "mdl", "PROC"))
+    monkeypatch.setattr(engines, "_start_server", lambda eng, **k: ("http://x/v1", "mdl", "PROC"))
     monkeypatch.setattr(engines, "_stop_server", lambda proc: calls.append(("stop", proc)))
     monkeypatch.setattr(engines, "_vlm", lambda img, base, model, prompt: calls.append((base, model, prompt)) or "ham")
     with pytest.raises(RuntimeError):
@@ -174,7 +174,7 @@ def test_start_server_closes_log_and_stops_on_timeout(monkeypatch, tmp_path):
 
     monkeypatch.setattr(engines.subprocess, "Popen", popen)
     monkeypatch.setattr(engines, "_stop_server", stopped.append)
-    monkeypatch.setattr(engines.time, "time", iter([0, 10**6]).__next__)
+    monkeypatch.setattr(engines.time, "monotonic", iter([0, 10**6]).__next__)
     with pytest.raises(RuntimeError, match="ayağa kalkmadı"):
         engines._start_server(ENGINES["glm-ocr"])
     assert stopped == [proc] and logs[0].closed
@@ -182,7 +182,8 @@ def test_start_server_closes_log_and_stops_on_timeout(monkeypatch, tmp_path):
 
 def test_lazy_server_starts_on_first_call_only(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(engines, "_start_server", lambda eng: calls.append("start") or ("http://x/v1", "mdl", "P"))
+    monkeypatch.setattr(engines, "_start_server",
+                        lambda eng, **k: calls.append("start") or ("http://x/v1", "mdl", "P"))
     monkeypatch.setattr(engines, "_stop_server", lambda proc: calls.append(("stop", proc)))
     monkeypatch.setattr(engines, "_vlm", lambda img, base, model, prompt: calls.append("vlm") or "ham")
     with engines.lazy_server("dots.mocr") as run:
@@ -193,7 +194,7 @@ def test_lazy_server_starts_on_first_call_only(monkeypatch, tmp_path):
 
 
 def test_lazy_server_never_called_never_starts(monkeypatch):
-    monkeypatch.setattr(engines, "_start_server", lambda eng: pytest.fail("çağrı yokken sunucu açılmamalı"))
+    monkeypatch.setattr(engines, "_start_server", lambda eng, **k: pytest.fail("çağrı yokken sunucu açılmamalı"))
     with engines.lazy_server("dots.mocr"):
         pass
 
@@ -201,7 +202,7 @@ def test_lazy_server_never_called_never_starts(monkeypatch):
 def test_lazy_server_start_failure_not_retried(monkeypatch, tmp_path):
     starts = []
 
-    def start(eng):
+    def start(eng, **k):
         starts.append(eng.name)
         raise RuntimeError("sunucu ayağa kalkmadı")
     monkeypatch.setattr(engines, "_start_server", start)
@@ -213,7 +214,7 @@ def test_lazy_server_start_failure_not_retried(monkeypatch, tmp_path):
 
 
 def test_lazy_server_page_error_is_not_server_error(monkeypatch, tmp_path):
-    monkeypatch.setattr(engines, "_start_server", lambda eng: ("http://x/v1", "mdl", "P"))
+    monkeypatch.setattr(engines, "_start_server", lambda eng, **k: ("http://x/v1", "mdl", "P"))
     monkeypatch.setattr(engines, "_stop_server", lambda proc: None)
 
     def vlm(*a):
@@ -249,7 +250,7 @@ def test_gpu_lock_blocks_second_holder():
 
 
 def test_vlm_server_holds_gpu_lock_for_its_lifetime(monkeypatch, tmp_path):
-    monkeypatch.setattr(engines, "_start_server", lambda eng: ("http://x/v1", "mdl", "P"))
+    monkeypatch.setattr(engines, "_start_server", lambda eng, **k: ("http://x/v1", "mdl", "P"))
     monkeypatch.setattr(engines, "_stop_server", lambda proc: None)
     with server("dots.mocr"):
         with pytest.raises(engines.GpuBusy):
@@ -264,7 +265,7 @@ def test_vlm_server_holds_gpu_lock_for_its_lifetime(monkeypatch, tmp_path):
 
 
 def test_lazy_server_busy_gpu_is_server_error(monkeypatch, tmp_path):
-    monkeypatch.setattr(engines, "_start_server", lambda eng: pytest.fail("kilit alınamadan sunucu açılmamalı"))
+    monkeypatch.setattr(engines, "_start_server", lambda eng, **k: pytest.fail("kilit alınamadan sunucu açılmamalı"))
     with engines.gpu_lock():
         with engines.lazy_server("dots.mocr") as run:
             with pytest.raises(engines.ServerError, match="'dots.mocr' modeli başlatılamadı: GPU başka bir"):
@@ -277,7 +278,7 @@ def test_lazy_server_concurrent_first_calls_start_once(monkeypatch, tmp_path):
     import time
     starts = []
 
-    def start(eng):
+    def start(eng, **k):
         starts.append(eng.name)
         time.sleep(0.1)
         return "http://x/v1", "mdl", "P"
@@ -292,6 +293,93 @@ def test_lazy_server_concurrent_first_calls_start_once(monkeypatch, tmp_path):
         for t in threads:
             t.join()
     assert starts == ["dots.mocr"] and out == ["ham"] * 4
+
+
+def test_cancel_during_lazy_start_stops_process_and_releases_gpu_lock(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, stopped = Event(), []
+    proc = _FakeProc()
+
+    def popen(*a, **k):
+        entered.set()
+        return proc
+
+    monkeypatch.setattr(paths, "LOGS", tmp_path)
+    monkeypatch.setattr(engines, "served_model", lambda _: None)
+    monkeypatch.setattr(engines.subprocess, "Popen", popen)
+    monkeypatch.setattr(engines, "_stop_server", stopped.append)
+    monkeypatch.setattr(engines, "_vlm", lambda *a: pytest.fail("iptalden sonra OCR çağrılmaz"))
+    with ThreadPoolExecutor(2) as pool:
+        with pytest.raises(KeyboardInterrupt):
+            with engines.lazy_server("dots.mocr") as run:
+                requests = [pool.submit(run, tmp_path / "x.png", "duzen") for _ in range(2)]
+                assert entered.wait(5)
+                raise KeyboardInterrupt
+        for request in requests:
+            with pytest.raises(engines.ServerError, match="iptal"):
+                request.result(timeout=5)
+    assert stopped == [proc]
+    with engines.gpu_lock():
+        pass
+    with pytest.raises(engines.ServerError, match="iptal"):
+        run(tmp_path / "x.png", "duzen")
+
+
+def test_late_server_entry_still_closes_after_cancel(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Event
+
+    entered, closed = Event(), Event()
+
+    @contextmanager
+    def slow_server(name, *, cancel):
+        entered.set()
+        assert cancel.wait(5)
+        try:
+            yield lambda *_: pytest.fail("iptalden sonra OCR çağrılmaz")
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(engines, "server", slow_server)
+    with ThreadPoolExecutor(1) as pool:
+        with engines.lazy_server("dots.mocr") as run:
+            pending = pool.submit(run, tmp_path / "x.png", "duzen")
+            assert entered.wait(5)
+        assert closed.is_set()
+        with pytest.raises(engines.ServerError, match="iptal"):
+            pending.result(timeout=5)
+
+
+def test_cancel_terminates_real_child_while_waiting_for_health_check(monkeypatch, tmp_path):
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    started = Event()
+    procs = []
+    real_popen = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        procs.append(proc)
+        started.set()
+        return proc
+
+    monkeypatch.setattr(paths, "LOGS", tmp_path)
+    monkeypatch.setattr(engines, "served_model", lambda _: None)
+    monkeypatch.setattr(engines, "_serve_cmd", lambda _: [sys.executable, "-c", "import time; time.sleep(120)"])
+    monkeypatch.setattr(engines.subprocess, "Popen", popen)
+    monkeypatch.setattr(engines, "STOP_GRACE", 0.5)
+    with ThreadPoolExecutor(1) as pool:
+        with engines.lazy_server("dots.mocr") as run:
+            pending = pool.submit(run, tmp_path / "x.png", "duzen")
+            assert started.wait(5)
+        with pytest.raises(engines.ServerError, match="iptal"):
+            pending.result(timeout=5)
+    assert procs[0].poll() in (-signal.SIGTERM, -signal.SIGKILL)
 
 
 @pytest.mark.parametrize("name,invariant", [("dots.mocr", "1"), ("glm-ocr", None)])

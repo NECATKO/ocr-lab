@@ -120,10 +120,12 @@ def _num(value, digits: int = 3) -> str:
 
 def print_table(records: list[dict]) -> None:
     """Başarılı kayıtlar tablo olur (ölçü yoksa —); hatalılar tablonun altında tek satır."""
-    head = ["motor/mod", "sayfa", "süre", "kr", "cer", "norm", "gövde", "harf", "wer", "satır", "kesme", "sarı"]
+    head = ["motor/mod", "sayfa", "süre", "kr", "cer", "norm", "gövde", "harf", "wer", "satır", "kesme", "sarı",
+            "belge CER", "belge WER"]
     rows = [[f"{r['engine']}/{r['mode']}", f"{r['pdf']} s.{r['page']}", _num(r["seconds"], 1), str(r["chars"]),
              *(_num(r[k]) for k in ("cer_raw", "cer_norm", "cer_body", "cer_base", "wer", "line_end", "apostrophe")),
-             "—" if r["apostrophe_flagged"] is None else str(r["apostrophe_flagged"])]
+             "—" if r["apostrophe_flagged"] is None else str(r["apostrophe_flagged"]),
+             _num(r.get("cer_document")), _num(r.get("wer_document"))]
             for r in records if not r["error"]]
     widths = [max(len(row[i]) for row in [head, *rows]) for i in range(len(head))]
     print()
@@ -133,6 +135,8 @@ def print_table(records: list[dict]) -> None:
     for r in records:
         if r["error"]:
             print(f"  HATA  {r['engine']}/{r['mode']}  {r['pdf']} s.{r['page']}: {r['error']}")
+        elif r.get("needs_review"):
+            print(f"  KONTROL GEREKLİ  {r['engine']}/{r['mode']}  {r['pdf']} s.{r['page']}: metin bulunamadı")
 
 
 def _run(args: argparse.Namespace, ask_start: bool) -> int:
@@ -150,6 +154,7 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     for w in warnings:
         print(f"Uyarı: {w}")
     source_pages = [p for job in jobs for p in job.pages]
+    bench.check_sources(source_pages)
     print(f"\n▶ {', '.join(j.name for j in jobs)} · sayfa {args.sayfalar} · "
           f"{', '.join(f'{e}/{m}' for e, m in targets)}")
 
@@ -160,8 +165,8 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     print(f"\nSonuçlar: {results}")
     for md in sorted(out_dir.glob("*_karsilastirma.md")):
         print(f"Karşılaştırma: {md}")
-    print(f"Özet: {paths.LAB_OUT / 'summary.csv'}")
-    return 1 if any(r["error"] for r in records) else 0
+    print(f"Özet: {paths.LAB_OUT / bench.SUMMARY_FILE}")
+    return 1 if any(r["error"] or r.get("needs_review") for r in records) else 0
 
 
 def rapor(html: bool) -> int:

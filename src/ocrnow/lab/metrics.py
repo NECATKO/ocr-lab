@@ -8,10 +8,11 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from ocrnow.apostrophe import AIN, APOS, HAMZA
+from ocrnow.layout import strip_emphasis
 
 # Ayın/hemze türü: ʿ ‘ ile, ʾ ’ ile aynı sayılır; düz ' ` ´ ise tür bildirmez (referansta yoksa sayılmaz)
 _KIND = {AIN: AIN, "ʿ": AIN, HAMZA: HAMZA, "ʾ": HAMZA}
-_SUP_ETC = re.compile(r"</?sup>|\^|\*\*|^#+\s*|^---+$|\|", re.M)
+_SUP_ETC = re.compile(r"</?sup>|\^|^#{1,6}[ \t]+|^---+$|\|", re.M)
 _HYPHEN_BREAK = re.compile(r"(\w)[-¬]\s*\n\s*(\w)")
 _LETTER_DIGIT = re.compile(r"(?<=[^\W\d])(?=\d)")
 _TR = str.maketrans("ıİşŞğĞçÇöÖüÜ", "iIsSgGcCoOuU")
@@ -89,11 +90,15 @@ def _raw(t: str) -> str:
     return " ".join(t.split())
 
 
+def join_line_hyphens(t: str) -> str:
+    return _HYPHEN_BREAK.sub(r"\1\2", t)
+
+
 def _norm(t: str) -> str:
     """Markdown işaretleri atılır, kesme işaretleri ' olur, satır sonu tireleri birleşir, dipnot numarası ayrılır."""
     t = unicodedata.normalize("NFC", t)
-    t = _SUP_ETC.sub(" ", t)
-    t = _HYPHEN_BREAK.sub(r"\1\2", t)   # kraken satır sonu işareti ¬ de
+    t = _SUP_ETC.sub(" ", strip_emphasis(t))
+    t = join_line_hyphens(t)   # kraken satır sonu işareti ¬ de
     t = _LETTER_DIGIT.sub(" ", t)       # taştında724 -> taştında 724
     t = re.sub(f"[{re.escape(APOS)}“”\"]", "'", t)
     return " ".join(t.split())
@@ -147,15 +152,20 @@ def cer_base(ref: str, hyp: str) -> float:
     return _rate(_base(ref), _base(hyp))
 
 
-def word_errors(ref: str, hyp: str) -> list[tuple[str, str]]:
-    """Hatalı kelimeler (referans, çıktı); eksik kelimede çıktı '', fazla kelimede referans '' olur."""
+def word_error_metrics(ref: str, hyp: str) -> tuple[float, list[tuple[str, str]]]:
+    """WER ve (referans, çıktı) hata çiftleri: eksik/fazla kelimeler için boş dize kullanılır."""
     a, b = _words(_norm(ref)), _words(_norm(hyp))
-    return [(a[i] if i is not None else "", b[j] if j is not None else "")
-            for i, j in _align(a, b) if i is None or j is None or a[i] != b[j]]
+    errors = [(a[i] if i is not None else "", b[j] if j is not None else "")
+              for i, j in _align(a, b) if i is None or j is None or a[i] != b[j]]
+    return len(errors) / max(len(a), 1), errors
+
+
+def word_errors(ref: str, hyp: str) -> list[tuple[str, str]]:
+    return word_error_metrics(ref, hyp)[1]
 
 
 def wer(ref: str, hyp: str) -> float:
-    return len(word_errors(ref, hyp)) / max(len(_words(_norm(ref))), 1)
+    return word_error_metrics(ref, hyp)[0]
 
 
 # ---- doğruluklar ----

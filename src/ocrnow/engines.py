@@ -194,30 +194,47 @@ def served_model(base: str) -> str | None:
         return None
 
 
-def _start_server(eng: Engine):
+def _check_cancel(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise ServerError("model açılışı iptal edildi")
+
+
+def _start_server(eng: Engine, *, cancel: threading.Event | None = None):
     """(base, model, proc) döndürür; sunucu zaten açıksa proc None olur ve kapatılmaz.
 
     Beklerken hata ya da Ctrl-C gelirse açılan süreç kapatılıp istisna yeniden fırlatılır
     (sunucu ayrı oturumda çalıştığı için Ctrl-C ona ulaşmaz).
     """
     base = _base(eng)
+    _check_cancel(cancel)
+    model = served_model(base)
+    _check_cancel(cancel)
+    if model:
+        return base, model, None
     proc = None
-    if not served_model(base):
+    try:
         paths.LOGS.mkdir(parents=True, exist_ok=True)
         with open(paths.LOGS / f"{eng.name}.server.log", "w") as log:
             print(f"[{eng.name}] sunucu başlatılıyor (log: {log.name})")
+            _check_cancel(cancel)
             proc = subprocess.Popen(_serve_cmd(eng), stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True, env={**paths.subprocess_env(), **eng.env})
-        try:
-            deadline = time.time() + 1200
-            while not served_model(base):
-                if proc.poll() is not None or time.time() > deadline:
-                    raise RuntimeError(f"sunucu ayağa kalkmadı, bkz. {log.name}")
+        deadline = time.monotonic() + 1200
+        while True:
+            _check_cancel(cancel)
+            model = served_model(base)
+            _check_cancel(cancel)
+            if model:
+                return base, model, proc
+            if proc.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError(f"sunucu ayağa kalkmadı, bkz. {log.name}")
+            if cancel is None:
                 time.sleep(3)
-        except BaseException:
-            _stop_server(proc)
-            raise
-    return base, served_model(base), proc
+            else:
+                cancel.wait(3)
+    except BaseException:
+        _stop_server(proc)
+        raise
 
 
 @contextmanager
@@ -262,6 +279,10 @@ def _vlm(img: Path, base: str, model: str, prompt: str | None) -> str:
     with urllib.request.urlopen(req, timeout=900) as r:
         choice = json.load(r)["choices"][0]
     content = choice["message"]["content"]
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        raise ValueError("model yanıtı metin değil")
     return Truncated(content) if choice.get("finish_reason") == "length" else content
 
 
@@ -272,17 +293,18 @@ def _mode(eng: Engine, mode: str) -> Mode:
 
 
 @contextmanager
-def server(name: str) -> Iterator[Callable[[Path, str], str]]:
+def server(name: str, *, cancel: threading.Event | None = None) -> Iterator[Callable[[Path, str], str]]:
     """Motoru hazırlar ve run(img, mode) -> ham metin verir. VLM sunucusu çıkışta her durumda kapatılır.
 
     VLM için GPU kilidi (gpu_lock) sunucu açılmadan alınır, kapanınca bırakılır; alınamazsa GpuBusy.
     """
+    _check_cancel(cancel)
     eng = ENGINES[name]
     if eng.kind == "local":
         yield lambda img, mode: (_mode(eng, mode), _local_text(name, img))[1]
         return
     with gpu_lock():                # sunucu ömrü boyunca: ikinci koşu GPU'yu paylaşmaz
-        base, model, proc = _start_server(eng)
+        base, model, proc = _start_server(eng, cancel=cancel)
         try:
             yield lambda img, mode: _vlm(img, base, model, _mode(eng, mode).prompt)
         finally:
@@ -296,19 +318,31 @@ def lazy_server(name: str) -> Iterator[Callable[[Path, str], str]]:
     Açılış hata verirse ServerError fırlatılır; sonraki çağrılarda da aynısı (her sayfada yeniden beklenmez).
     run birden fazla iş parçacığından aynı anda çağrılabilir: sunucu bir kez açılır, ötekiler açılışı bekler.
     """
-    with ExitStack() as stack:
-        state: dict = {}
-        lock = threading.Lock()
+    stack = ExitStack()
+    cancel = threading.Event()
+    lock = threading.Lock()
+    read: Callable[[Path, str], str] | None = None
+    error: ServerError | None = None
 
-        def run(img: Path, mode: str) -> str:
-            with lock:
-                if "error" in state:
-                    raise state["error"]
-                if "run" not in state:
-                    try:
-                        state["run"] = stack.enter_context(server(name))
-                    except Exception as e:
-                        state["error"] = ServerError(f"'{name}' modeli başlatılamadı: {e}")
-                        raise state["error"] from e
-            return state["run"](img, mode)
+    def run(img: Path, mode: str) -> str:
+        nonlocal read, error
+        with lock:
+            _check_cancel(cancel)
+            if error is not None:
+                raise error
+            if read is None:
+                try:
+                    read = stack.enter_context(server(name, cancel=cancel))
+                except Exception as e:
+                    error = ServerError(f"'{name}' modeli başlatılamadı: {e}")
+                    raise error from e
+        _check_cancel(cancel)
+        return read(img, mode)
+
+    try:
         yield run
+    finally:
+        cancel.set()
+        # Önce açılışı uyandır. Açılış tamamlanmadan ExitStack kapanırsa sonradan eklenen temizlik atlanır.
+        with lock:
+            stack.close()

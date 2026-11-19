@@ -208,20 +208,23 @@ def _free_stem(name: str, formats: list[str]) -> str:
     return stem
 
 
-def _report(results: list[tuple[pages.DocJob, list]], written: list[Path],
-            export_warnings: dict[str, list[str]]) -> dict:
-    """İş sonu özeti: yazılan belgeler; her iş için tahmin edilen ve kontrol edilmesi gereken numaralar, uyarılar
-    (sayfalarınki, sonra dışa aktarmanınki); en az bir sayfa okunamadıysa okunamayan=True."""
+def _report(results: list[tuple[pages.DocJob, list[Page]]], written: dict[str, list[Path]],
+            export_warnings: dict[str, list[str]], export_errors: dict[str, list[str]]) -> dict:
+    """İş sonu özeti: gerçek çıktılar, sayfa denetimleri ve dışa aktarma hataları ayrı tutulur."""
     jobs = []
     for job, doc_pages in results:
+        multi = len({src.source for src in job.pages if src.source.suffix.lower() == ".pdf"}) > 1
         jobs.append({
             "ad": job.name,
-            "yazildi": not all(p.failed for p in doc_pages),
+            "yazildi": bool(written.get(job.name)),
             "tahmin": [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred and not p.book_page_check],
             "kontrol": [export_txt.page_label(p) for p in doc_pages if p.book_page_check],
+            "metin_kontrol": [pipeline.job_page_id(src, multi)
+                              for src, p in zip(job.pages, doc_pages) if p.needs_review],
+            "yazma_hatalari": export_errors.get(job.name, []),
             "uyarilar": [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, []),
         })
-    return {"belgeler": [str(path) for path in written], "isler": jobs,
+    return {"belgeler": [str(path) for files in written.values() for path in files], "isler": jobs,
             "okunamayan": any(p.failed for _, doc_pages in results for p in doc_pages)}
 
 
@@ -231,10 +234,11 @@ def _summary(report: dict) -> None:
     for path in report["belgeler"]:
         print(f"  {path}")
     for job in report["isler"]:
-        if not job["yazildi"]:
+        if not job["yazildi"] and not job["yazma_hatalari"]:
             print(f"  {job['ad']}: hiçbir sayfa okunamadı, belge yazılmadı")
     for job in report["isler"]:
-        for title, labels in (("tahmin edilen sayfa numaraları", job["tahmin"]),
+        for title, labels in (("metni kontrol edilmesi gereken sayfalar", job["metin_kontrol"]),
+                              ("tahmin edilen sayfa numaraları", job["tahmin"]),
                               ("kontrol edilmesi gereken okunan numaralar", job["kontrol"])):
             if labels:
                 print(f"\n{job['ad']}: {title}:")
@@ -281,9 +285,9 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
         highlight = _ask_highlight() if interactive and writable and "docx" in formats else True
     settings = {"highlight": highlight, "bold": args.kalin_kalip or None}   # boş kalıp kalın işaretlemeyi kapatır
 
-    written: list[Path] = []
+    written: dict[str, list[Path]] = {}
     export_warnings: dict[str, list[str]] = {}
-    write_failed = False
+    export_errors: dict[str, list[str]] = {}
     for job, doc_pages in writable:
         stem = _free_stem(job.name, formats)
         for fmt in formats:
@@ -291,19 +295,22 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
             try:
                 EXPORTERS[fmt](doc_pages, out, {**settings, "warnings": export_warnings.setdefault(job.name, [])})
             except OSError as e:
-                _err(f"Hata: {out} yazılamadı ({e})")
-                write_failed = True
+                message = f"{out.name} yazılamadı ({e})"
+                export_errors.setdefault(job.name, []).append(message)
+                _err(f"Hata: {message}")
             else:
-                written.append(out)
-    report = _report(results, written, export_warnings)
+                written.setdefault(job.name, []).append(out)
+    report = _report(results, written, export_warnings, export_errors)
     _summary(report)
+    incomplete = report["okunamayan"] or bool(export_errors) or any(j["metin_kontrol"] for j in report["isler"])
     if args.rapor:
         try:
-            args.rapor.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+            with paths.atomic_output(args.rapor) as tmp:
+                tmp.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
         except OSError as e:
             _err(f"Hata: {args.rapor} yazılamadı ({e})")
-            write_failed = True
-    return 1 if report["okunamayan"] or write_failed else 0
+            incomplete = True
+    return 1 if incomplete else 0
 
 
 def main(argv: list[str] | None = None) -> int:

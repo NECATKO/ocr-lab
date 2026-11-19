@@ -41,6 +41,9 @@ def test_cer_raw_empty_reference():
 
 def test_norm_ignores_markdown_and_apostrophes():
     assert cer_norm("bâ‘is ol", "**bâ'is** ol") == 0
+    assert cer_norm("metin metin metin", "*metin* **metin** ***metin***") == 0
+    assert cer_norm("senâkâr", "*senâ-\nkâr*") == 0
+    assert cer_norm("metin*", "*metin*") > 0
 
 
 def test_norm_joins_line_end_hyphens_and_footnote_digits():

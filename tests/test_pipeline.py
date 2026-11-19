@@ -1,4 +1,5 @@
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -20,9 +21,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "SETTINGS", tmp_path / "ayarlar")
     rendered = []
 
-    def fake_render(page, dpi=200):
+    def fake_render(page, dpi=200, *, fingerprint=None):
         rendered.append((page.index, dpi))
-        out = tmp_path / f"syf{page.index}.png"
+        out = Path(tempfile.mkdtemp(dir=tmp_path)) / f"syf{page.index}.png"
         Image.new("L", (1000, 1000), 255).save(out)
         return out
 
@@ -139,10 +140,25 @@ def test_truncated_model_output_warns():
     assert not any("kesildi" in w for w in plain.warnings)
 
 
-def test_blank_page():
-    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(),
-                     lambda img, m: "[]", lambda img: "", (100, 100))
-    assert p.blocks == [] and not any("Traceback" in w for w in p.warnings)
+@pytest.mark.parametrize("raw", ["", " ", "[]", "{}", "null", None, '[{"category":"Picture","bbox":[0,0,10,10]}]',
+                                 '[{"category":"Table","text":"<table></table>","bbox":[0,0,10,10]}]',
+                                 '[{"category":"Page-footer","text":"412","bbox":[0,0,10,10]}]'])
+def test_blank_page_needs_review_and_is_retried(tmp_path, raw):
+    job = DocJob("k", [SourcePage(source(tmp_path), 1)])
+    opts = Options()
+    run, calls = fake_run(raw)
+    for _ in range(2):
+        p, = process_job(job, opts, run, lambda img: "", progress=lambda _: None)
+        assert p.needs_review and not p.failed
+        assert f"s. 1: {pipeline.REVIEW_WARNING}" in p.warnings
+        assert not cache_path(job.pages[0], opts).exists()
+    assert len(calls) == 2
+
+
+def test_blank_plain_answer_needs_review():
+    page = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(mode="duz"),
+                        lambda *_: "  \n", lambda _: "", (100, 100))
+    assert page.needs_review and not page.failed
 
 
 def test_title_only_page_without_tesseract_lines():
@@ -156,7 +172,7 @@ def test_title_only_page_without_tesseract_lines():
 def test_parse_warning_gets_page_prefix():
     p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 4), Options(), lambda img, m: "",
                      lambda img: "", (100, 100))
-    assert p.warnings == ["s. 4: model boş yanıt verdi"]
+    assert p.warnings == ["s. 4: model boş yanıt verdi", f"s. 4: {pipeline.REVIEW_WARNING}"]
 
 
 def test_apostrophes_restored_and_switchable(tmp_path):
@@ -204,14 +220,48 @@ def test_size_read_from_image(tmp_path):
 
 
 def test_cache_path_naming(tmp_path):
+    from hashlib import sha256
     src = SourcePage(source(tmp_path, "Kitap.pdf", b"x" * 1234), 5)
-    base = paths.CACHE / "Kitap-1234"
+    base = paths.CACHE / f"pdf-{sha256(b'x' * 1234).hexdigest()}"
     assert cache_path(src, Options()) == base / "syf5.dots.mocr.duzen.json"
     assert cache_path(src, Options(apostrophes=False)) == base / "syf5.dots.mocr.duzen.json"   # R27: ek yok
     assert cache_path(src, Options(dpi=300)) == base / "syf5_300dpi.dots.mocr.duzen.json"
     assert cache_path(src, Options(engine="glm-ocr", mode="duz")) == base / "syf5.glm-ocr.duz.json"
     img = SourcePage(source(tmp_path, "tarama.png", b"y" * 10), 1)
-    assert cache_path(img, Options(dpi=300)) == paths.CACHE / "tarama-10" / "syf1.dots.mocr.duzen.json"
+    assert cache_path(img, Options(dpi=300)) == \
+        paths.CACHE / f"img-{sha256(b'y' * 10).hexdigest()}" / "syf1.dots.mocr.duzen.json"
+
+
+def test_source_content_is_hashed_once_per_job_and_equal_size_changes_miss(tmp_path, monkeypatch):
+    path = source(tmp_path, data=b"abc")
+    job = DocJob("k", [SourcePage(path, i) for i in (1, 2, 3)])
+    real_key = pipeline.fingerprint_source
+    hashes = []
+    monkeypatch.setattr(pipeline, "fingerprint_source", lambda p: hashes.append(p) or real_key(p))
+    run, calls = fake_run(with_footer(None))
+    quiet = dict(tsv=lambda _: "", progress=lambda _: None)
+    process_job(job, Options(), run, **quiet)
+    assert hashes == [path] and len(calls) == 3
+    process_job(job, Options(), run, **quiet)
+    assert hashes == [path] * 2 and len(calls) == 3
+    path.write_bytes(b"xyz")
+    process_job(job, Options(), run, **quiet)
+    assert hashes == [path] * 3 and len(calls) == 6
+
+
+def test_source_changed_during_ocr_is_not_cached(tmp_path):
+    path = source(tmp_path, data=b"abc")
+    job = DocJob("k", [SourcePage(path, 1)])
+    opts = Options()
+    original_cache = cache_path(job.pages[0], opts)
+
+    def run(*args):
+        path.write_bytes(b"xyz")
+        return with_footer(None)
+
+    page, = process_job(job, opts, run, lambda _: "", progress=lambda _: None)
+    assert page.failed and "Tarama çalışma sırasında değişti" in page.warnings[0]
+    assert not original_cache.exists() and not cache_path(job.pages[0], opts).exists()
 
 
 def test_unreadable_cache_is_miss(tmp_path):
@@ -219,14 +269,14 @@ def test_unreadable_cache_is_miss(tmp_path):
     target = cache_path(job.pages[0], Options())
     target.parent.mkdir(parents=True)
     target.write_text('{"eski": "şema"}', encoding="utf-8")
-    run, calls = fake_run("[]")
+    run, calls = fake_run(with_footer(None))
     pages = process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
-    assert len(calls) == 1 and pages[0].blocks == []
-    assert json.loads(target.read_text(encoding="utf-8"))["version"] == 2   # yeniden yazıldı
+    assert len(calls) == 1 and pages[0].blocks[0].text == "metin"
+    assert json.loads(target.read_text(encoding="utf-8"))["version"] == pipeline.CACHE_VERSION
 
 
 def test_job_passes_dpi_and_skips_render_on_hit(tmp_path, isolated):
-    run, _ = fake_run("[]")
+    run, _ = fake_run(with_footer(None))
     job = DocJob("k", [SourcePage(source(tmp_path), 1)])
     process_job(job, Options(dpi=300), run, lambda img: "", progress=lambda m: None)
     process_job(job, Options(dpi=300), run, lambda img: "", progress=lambda m: None)
@@ -235,7 +285,7 @@ def test_job_passes_dpi_and_skips_render_on_hit(tmp_path, isolated):
 
 def test_job_infers_book_pages_and_warns_pdf_order(tmp_path):
     footer = lambda n: blocks_json(("Text", [0, 0, 500, 500], "metin"), ("Page-footer", [100, 950, 200, 980], str(n)))
-    outputs = {"syf1.png": footer(412), "syf2.png": "[]", "syf3.png": footer(414)}
+    outputs = {"syf1.png": footer(412), "syf2.png": with_footer(None), "syf3.png": footer(414)}
     src = source(tmp_path)
     job = DocJob("k", [SourcePage(src, i) for i in (1, 2, 3)])
     pages = process_job(job, Options(), lambda img, m: outputs[img.name], lambda img: "", progress=lambda m: None)
@@ -253,7 +303,8 @@ def test_job_infers_book_pages_and_warns_pdf_order(tmp_path):
     imgs = [SourcePage(source(tmp_path, f"t{k}.png"), 1) for k in (1, 2)]
     shots = process_job(DocJob("t", imgs), Options(), lambda img, m: "[]", lambda img: "", progress=lambda m: None)
     assert [p.book_page for p in shots] == ["görsel 1", "görsel 2"]
-    assert shots[1].warnings == ["t2.png: kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"]
+    assert shots[1].warnings == ["t2.png: " + pipeline.REVIEW_WARNING,
+                                "t2.png: kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"]
 
 
 def test_job_first_page_option(tmp_path):
@@ -266,10 +317,10 @@ def test_job_first_page_option(tmp_path):
 def test_job_progress_messages(tmp_path):
     job = DocJob("kitap", [SourcePage(source(tmp_path), i) for i in (1, 2)])
     msgs: list[str] = []
-    process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=msgs.append)
+    process_job(job, Options(), lambda img, m: with_footer(None), lambda img: "", progress=msgs.append)
     assert msgs == ["kitap: s. 1 (1/2) okunuyor…", "kitap: s. 2 (2/2) okunuyor…"]
     msgs.clear()
-    process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=msgs.append)
+    process_job(job, Options(), lambda img, m: with_footer(None), lambda img: "", progress=msgs.append)
     assert len(msgs) == 2 and all("önbellek" in m for m in msgs)
 
 
@@ -301,7 +352,7 @@ def test_gapped_selection_uses_pdf_index(tmp_path):
     quiet = dict(tsv=lambda img: "", progress=lambda m: None)
     pages = process_job(job, Options(), footer_run({1: 412, 3: 414, 7: 418}), **quiet)
     assert book(pages) == [("412", False), ("414", False), ("418", False)]
-    other = DocJob("k", [SourcePage(source(tmp_path, "b.pdf"), i) for i in (1, 3, 7)])
+    other = DocJob("k", [SourcePage(source(tmp_path, "b.pdf", b"%PDF-baska"), i) for i in (1, 3, 7)])
     pages = process_job(other, Options(), footer_run({1: 412, 3: None, 7: None}), **quiet)
     assert book(pages) == [("412", False), ("414", True), ("418", True)]
 
@@ -314,7 +365,7 @@ def test_overridden_reading_warns_and_real_break_is_kept(tmp_path):
     assert "s. 2: okunan 431 → [413]" in pages[1].warnings      # R21: düzeltilen okuma görünür
     # C1: 412–415, sonra 418–425 (iki tarama sayfası yok): doğru okunan numaralar ezilmez
     numbers = dict(enumerate([*range(412, 416), *range(418, 426)], 1))
-    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf"), i) for i in numbers])
+    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf", b"%PDF-baska"), i) for i in numbers])
     pages = process_job(other, Options(), footer_run(numbers), **quiet)
     assert book(pages) == [(str(n), False) for n in numbers.values()]
     assert not any("okunan" in w for p in pages for w in p.warnings)
@@ -360,7 +411,7 @@ def test_guess_contradicting_header_is_not_made(tmp_path):
     assert book(pages) == [("412", False), ("411", False), ("410", False), ("PDF s. 4", True)]
     assert "s. 4: kitap sayfa numarası bulunamadı, PDF sırası kullanıldı" in pages[3].warnings
     replies[4] = numbered(None, header="KİTAP ADI")
-    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf"), i) for i in replies])
+    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf", b"%PDF-baska"), i) for i in replies])
     assert book(process_job(other, Options(), replies_run(replies), lambda img: "", progress=lambda m: None))[3] \
         == ("409", True)
 
@@ -395,7 +446,7 @@ def test_duplicate_warning_harmony_and_corrected_readings_ignored(tmp_path):
     assert "s. 1: 285 numarası s. 6'da da okundu (aynı sayfa iki kez taranmış olabilir)" in pages[0].warnings
     # s. 2'deki 431 koşudan 413'e düzeltildi: s. 4'teki 431 ile tekrar sayılmaz
     numbers = {1: 412, 2: 431, 3: 414, 4: 431}
-    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf"), i) for i in numbers])
+    other = DocJob("b", [SourcePage(source(tmp_path, "b.pdf", b"%PDF-baska"), i) for i in numbers])
     pages = process_job(other, Options(), footer_run(numbers), **quiet)
     assert book(pages)[1] == ("413", True) and not any("okundu" in w for p in pages for w in p.warnings)
 
@@ -470,7 +521,7 @@ def test_cache_write_failure_leaves_no_tmp(tmp_path, monkeypatch):
     def broken(self, *a, **k):
         raise OSError("disk dolu")
     monkeypatch.setattr(Path, "replace", broken)
-    pages = process_job(job, Options(), lambda img, m: "[]", lambda img: "", progress=lambda m: None)
+    pages = process_job(job, Options(), lambda img, m: with_footer(None), lambda img: "", progress=lambda m: None)
     assert "s. 1: önbelleğe yazılamadı (disk dolu)" in pages[0].warnings
     assert list(target.parent.iterdir()) == []
 
@@ -495,7 +546,7 @@ def test_cache_stores_raw_model_output_and_tsv(tmp_path):
     job = DocJob("k", [SourcePage(source(tmp_path), 1)])
     process_job(job, Options(), lambda img, m: raw, lambda img: tsv, progress=lambda m: None)
     cached = json.loads(cache_path(job.pages[0], Options()).read_text(encoding="utf-8"))
-    assert cached == {"version": 2, "engine": "dots.mocr", "mode": "duzen", "width": 1000, "height": 1000,
+    assert cached == {"version": pipeline.CACHE_VERSION, "engine": "dots.mocr", "mode": "duzen", "width": 1000, "height": 1000,
                       "truncated": False, "raw": raw, "tsv": tsv}
 
 
@@ -531,10 +582,12 @@ def test_old_format_cache_is_miss(tmp_path):
     job = DocJob("k", [SourcePage(source(tmp_path), 1)])
     target = cache_path(job.pages[0], Options())
     target.parent.mkdir(parents=True)
-    run, calls = fake_run("[]")
+    run, calls = fake_run(with_footer(None))
     old = process_page(Path("x.png"), job.pages[0], Options(), run, lambda img: "", (100, 100))
     for stale in (page_to_json(old),
-                  json.dumps({"version": 2, "engine": "glm-ocr", "mode": "duzen", "width": 1, "height": 1,
+                  json.dumps({"version": 2, "engine": "dots.mocr", "mode": "duzen", "width": 1, "height": 1,
+                              "truncated": False, "raw": with_footer(None), "tsv": ""}),
+                  json.dumps({"version": pipeline.CACHE_VERSION, "engine": "glm-ocr", "mode": "duzen", "width": 1, "height": 1,
                               "truncated": False, "raw": "[]", "tsv": ""})):
         target.write_text(stale, encoding="utf-8")
         calls.clear()

@@ -10,9 +10,12 @@ from contextlib import contextmanager
 import pypdfium2 as pdfium
 import pytest
 from docx import Document
+from PIL import Image
 
-from ocrnow import engines, paths
+from ocrnow import engines, paths, pipeline
 from ocrnow.cli import main
+from ocrnow.export_txt import REVIEW_TEXT
+from ocrnow.pages import SourcePage
 
 
 def make_pdf(path, n):
@@ -32,7 +35,7 @@ def world(tmp_path, monkeypatch):
         monkeypatch.setattr(paths, name, tmp_path / sub)
     monkeypatch.setattr(engines, "missing", lambda name: None)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    state = types.SimpleNamespace(footers={}, fail=set(), starts=0, start_error=None, tsv_calls=0)
+    state = types.SimpleNamespace(footers={}, fail=set(), blank=set(), starts=0, start_error=None, tsv_calls=0)
 
     def tsv(img):                     # satır yok: bloklar akan paragraf
         state.tsv_calls += 1
@@ -41,7 +44,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(engines, "tesseract_tsv", tsv)
 
     @contextmanager
-    def server(name):
+    def server(name, *, cancel=None):
         state.starts += 1
         if state.start_error:
             raise state.start_error
@@ -50,6 +53,8 @@ def world(tmp_path, monkeypatch):
             n = int(img.stem.removeprefix("syf"))                   # render: .../syf<N>.png
             if n in state.fail:
                 raise RuntimeError("model yanıt vermedi")
+            if n in state.blank:
+                return "[]"
             blocks = [{"category": "Text", "bbox": [50, 50, 500, 400], "text": f"metin {n}"}]
             if state.footers.get(n) is not None:
                 blocks.append({"category": "Page-footer", "bbox": [50, 760, 120, 790], "text": str(state.footers[n])})
@@ -111,3 +116,47 @@ def test_all_cached_rerun_end_to_end(world):
     again = paths.DOCS_OUT / "k_s2-3_2.docx"                    # eski belge ezilmedi
     assert [p.text for p in Document(again).paragraphs] == [p.text for p in Document(first).paragraphs]
     assert (paths.DOCS_OUT / "k_s2-3_2.txt").exists()
+
+
+def test_blank_page_marked_in_both_formats_and_only_it_is_retried(world, tmp_path):
+    world.blank = {2}
+    world.footers = {1: 412, 3: 414}
+    report = tmp_path / "is.json"
+    args = [str(world.pdf), "-f", "docx", "txt", "--rapor", str(report)]
+    assert main(args) == 1
+    docx = Document(paths.DOCS_OUT / "k.docx")
+    assert [p.text for p in docx.paragraphs] == ["metin 1", REVIEW_TEXT, "metin 3"]
+    assert REVIEW_TEXT in (paths.DOCS_OUT / "k.txt").read_text(encoding="utf-8")
+    assert footers(paths.DOCS_OUT / "k.docx") == ["412", "[413]", "414"]
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["isler"][0]["metin_kontrol"] == ["s. 2"] and not data["okunamayan"]
+    assert not pipeline.cache_path(SourcePage(world.pdf, 2), pipeline.Options()).exists()
+    world.blank.clear()
+    assert main(args) == 0
+    assert world.tsv_calls == 4  # ilk koşuda 3 sayfa; yeniden yalnız kontrol gerekli olan çalıştı
+    assert REVIEW_TEXT not in (paths.DOCS_OUT / "k_2.txt").read_text(encoding="utf-8")
+
+
+def test_equal_size_equal_name_scans_export_their_own_text(world, tmp_path, monkeypatch):
+    scans = [tmp_path / folder / "k.png" for folder in ("a", "b")]
+    for scan, color in zip(scans, ("red", "blue")):
+        scan.parent.mkdir()
+        Image.new("RGB", (24, 24), color).save(scan, compress_level=0)
+    assert scans[0].stat().st_size == scans[1].stat().st_size
+    reads = []
+
+    @contextmanager
+    def server(name, *, cancel=None):
+        def run(img, mode):
+            with Image.open(img) as im:
+                text = "kırmızı" if im.getpixel((0, 0))[0] else "mavi"
+            reads.append(text)
+            return json.dumps([{"category": "Text", "bbox": [0, 0, 10, 10], "text": text}])
+        yield run
+
+    monkeypatch.setattr(engines, "server", server)
+    for scan in [*scans, scans[1]]:
+        assert main([str(scan), "-f", "txt"]) == 0
+    assert reads == ["kırmızı", "mavi"]
+    assert [(paths.DOCS_OUT / f"{name}.txt").read_text(encoding="utf-8").splitlines()[-1]
+            for name in ("k", "k_2", "k_3")] == ["kırmızı", "mavi", "mavi"]

@@ -48,6 +48,7 @@ class Page:
     book_page_check: bool = False  # okunan numara kitabın taraf–çiftlik kuralına aykırı: kontrol edilmeli (R25)
     warnings: list[str] = field(default_factory=list)
     failed: bool = False  # sayfa okunamadı (önbelleğe girmez); belgede yer tutucu durur
+    needs_review: bool = False  # model okunabilir metin vermedi; gerçek boş sayfa da olabilir
 
 
 def page_to_json(p: Page) -> str:
@@ -97,7 +98,7 @@ def _norm(text: object, *, headings: bool = True) -> str:
 # eşli Markdown vurgusu: *italik*, **kalın**, ***ikisi***; içi boşlukla başlamaz/bitmez, ")"/"]" ile başlamaz,
 # "("/"[" ile bitmez ve harf ya da rakam içerir; işaretler bir harfe/rakama yapışık değil (kelime*, 3*4, metin(*)
 # gibi yıldızlar dipnot simgesi olabilir: dokunulmaz)
-_EMPHASIS = re.compile(r"(?<![\w*])(\*{1,3})(?=[^\s*)\]])(.+?)(?<=[^\s*(\[])\1(?![\w*])")
+_EMPHASIS = re.compile(r"(?<![\w*])(\*{1,3})(?=[^\s*)\]])((?:(?!\n[ \t]*\n).)+?)(?<=[^\s*(\[])\1(?![\w*])", re.S)
 _ALNUM = re.compile(r"[^\W_]")
 _EMPHASIS_KINDS = {1: ("italik",), 2: ("kalin",), 3: ("italik", "kalin")}
 
@@ -120,6 +121,11 @@ def _emphasis(text: str) -> tuple[str, list[Mark]]:
         pos = m.end()
     out.append(text[pos:])
     return "".join(out), sorted(marks, key=lambda x: (x.start, x.end, x.kind))
+
+
+def strip_emphasis(text: str) -> str:
+    """Ölçüm için eşli Markdown işaretlerini kaldırır; iç satır sonlarına ve tek yıldızlara dokunmaz."""
+    return _emphasis(text)[0]
 
 
 def _text_block(category: str, bbox: tuple[int, int, int, int] | None, text: str) -> Block:
@@ -293,7 +299,9 @@ def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Bl
     head = tail = ""
     try:
         data = json.loads(s)
-        if isinstance(data, dict):
+        if data is None:
+            data = []
+        elif isinstance(data, dict):
             data = [data]
         if not isinstance(data, list):
             raise ValueError("liste değil")

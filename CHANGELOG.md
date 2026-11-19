@@ -14,6 +14,14 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 - `ocr-now --rapor DOSYA`: iş sonu özetini JSON olarak da yazar.
 
 ### Düzeltildi
+- Görüntü ve OCR önbelleği dosya adı ve boyutu yerine SHA-256 içerik özetini kullanır; farklı taramalar
+  karışmaz. Eski önbellekler olduğu gibi kalır, yeni koşular bunları kullanmaz.
+- Metin bulunamayan sayfa Word ve TXT'de **Kontrol gerekli** olarak görünür ve sonraki koşuda yeniden okunur.
+- Model açılışı sırasında iptal, OCR başlamadan sunucuyu kapatır ve GPU kilidini bırakır.
+- Arayüz, bazı belgeler yazıldığı hâlde iş eksikse **Kısmen tamamlandı** gösterir; dışa aktarma hataları
+  sonuç ekranında dosya adıyla listelenir.
+- Benchmark, eşli Markdown vurgusunu normalize CER'de metin farkı saymaz; ayın/hemze sözlüğünden
+  benchmark yapılan kitabın tüm referans sayfalarını çıkarır.
 - Günümüz Türkçesiyle basılmış bir kitabın telefonla çekilmiş 22 sayfasında bulunan metin hataları:
   - Model, numarayla başlayan dipnotu ("15 Bk. Âyet 30.") sayfa altlığı sanabiliyordu. Dipnot metni belgeye
     girmiyor, numarası sayfa numarası okunuyordu. Numara + küçük harfli cümle olan altlık artık dipnot sayılır;
@@ -51,6 +59,8 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   `.docx`'te italik/kalın yazılıyor, `.txt`'de düz metin oluyor. Tek başına duran yıldıza dokunulmuyor.
 
 ### Değişti
+- Benchmark, işlenmiş belge metninin CER/WER değerlerini model metninden ayrı raporlar. Yeni CSV
+  `summary_v2.csv` olarak yazılır; eski ölçümler değiştirilmez.
 - dots.mocr'da önbellekte olmayan sayfalar modele 8'er 8'er aynı anda gönderilir; vLLM onları toplu işler.
   tarama1'in 22 sayfası önbelleksiz 8 dk 25 sn yerine 3 dk 9 sn'de okundu. tesseract da modeli beklerken çalışır.
   - Sunucu `VLLM_BATCH_INVARIANT=1` ile açılır. Bu ayar olmadan toplu okuma metni değiştiriyordu (22 sayfanın

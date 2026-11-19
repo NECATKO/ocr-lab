@@ -17,9 +17,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 LOG_LINES = 300
-_PAGE = re.compile(r"\((\d+)/(\d+)\) (okunuyor…|önbellekten|okunamadı)")
+_PAGE = re.compile(r"\((\d+)/(\d+)\) (okunuyor…|önbellekten|okunamadı|kontrol gerekli)")
 _SERVER = "sunucu başlatılıyor"
-_STATES = {"okunuyor…": "okunuyor", "önbellekten": "önbellekten alındı", "okunamadı": "okunamadı"}
+_STATES = {"okunuyor…": "okunuyor", "önbellekten": "önbellekten alındı", "okunamadı": "okunamadı",
+           "kontrol gerekli": "kontrol gerekli"}
 
 
 def default_cmd() -> list[str]:
@@ -27,7 +28,7 @@ def default_cmd() -> list[str]:
 
 
 class Job:
-    """durum: "bekliyor" → "calisiyor" → "bitti" | "hata" | "iptal"."""
+    """durum: "bekliyor" → "calisiyor" → "bitti" | "kismi" | "hata" | "iptal"."""
 
     def __init__(self, args: list[str], *, name: str = "", cmd: list[str] | None = None,
                  clock: Callable[[], float] = time.monotonic):
@@ -61,19 +62,23 @@ class Job:
         now = self.clock()
         with self._lock:
             self.lines.append(line)
+            if self._cancelled:
+                return  # geç gelen bir ilerleme satırı iptal durumunu gizlemesin
             if _SERVER in line:
                 self.phase = "Model açılıyor (ilk açılış birkaç dakika sürer)"
                 self._dirty = True
             elif m := _PAGE.search(line):
                 page, total = int(m.group(1)), int(m.group(2))
-                if self._last_page is not None and not self._dirty:
-                    self._intervals.append(now - self._last_page)
-                self._last_page, self._dirty = now, False
-                self.progress = {"sayfa": page, "toplam": total}
+                current = {"sayfa": page, "toplam": total}
+                if current != self.progress:
+                    if self._last_page is not None and not self._dirty:
+                        self._intervals.append(now - self._last_page)
+                    self._last_page, self._dirty = now, False
+                    self.progress = current
                 self.phase = f"Sayfa {page}/{total} {_STATES[m.group(3)]}"
 
     def _remaining(self) -> int | None:
-        if not self._intervals or not self.progress or self.state not in ("bekliyor", "calisiyor"):
+        if self._cancelled or not self._intervals or not self.progress or self.state not in ("bekliyor", "calisiyor"):
             return None
         avg = sum(self._intervals[-8:]) / len(self._intervals[-8:])    # son sayfalar: önbellek/okuma karışımı
         left = self.progress["toplam"] - self.progress["sayfa"]
@@ -105,7 +110,9 @@ class Job:
         result = None
         try:
             if self._report.stat().st_size:
-                result = json.loads(self._report.read_text(encoding="utf-8"))
+                data = json.loads(self._report.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and isinstance(data.get("belgeler"), list) and isinstance(data.get("isler"), list):
+                    result = data
         except (OSError, ValueError):
             result = None
         finally:
@@ -114,17 +121,20 @@ class Job:
             self.code, self.result, self.finished = code, result, self.clock()
             if self._cancelled:
                 self.state, self.phase = "iptal", "İptal edildi"
-            elif result is not None:
+            elif code == 0 and result is not None:
                 self.state, self.phase = "bitti", "Bitti"
+            elif result and result["belgeler"]:
+                self.state, self.phase = "kismi", "Kısmen tamamlandı"
             else:
                 self.state, self.phase = "hata", "Hata ile durdu"
         self._done.set()
 
     def cancel(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            self._cancelled = True
-            self.phase = "İptal ediliyor (model kapatılıyor)…"
-            self._proc.send_signal(signal.SIGINT)
+        with self._lock:
+            if not self._cancelled and self._proc and self._proc.poll() is None:
+                self._proc.send_signal(signal.SIGINT)
+                self._cancelled = True
+                self.phase = "İptal ediliyor (model kapatılıyor)…"
 
     def wait(self, timeout: float | None = None) -> bool:
         return self._done.wait(timeout)

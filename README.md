@@ -67,8 +67,9 @@ bir pencere belirir. Arayüzde sırasıyla:
    DPI "Gelişmiş ayarlar"dadır. Varsayılanlar `ocr-now`'ınkilerle aynıdır.
 3. **Okumayı başlat:** her sayfa bir kutucukla gösterilir, geçen ve kalan süre yazılır. Model açılışı (birkaç
    dakika) kalan süre hesabına katılmaz. Sekme kapatılsa da okuma sürer; yeniden açınca kaldığı yerden görünür.
-4. **Sonuç:** belgeleri indirme ya da Windows Gezgini'nde gösterme, taranmış PDF'i gösterme, sayfa numarası
-   listeleri ve uyarılar.
+4. **Sonuç:** belgeleri indirme ya da Windows Gezgini'nde gösterme, taramayı gösterme, sayfa numarası
+   listeleri ve uyarılar. Çıktı var ama bazı sayfalar kontrol gerektiriyorsa, okunamadıysa ya da bazı biçimler
+   yazılamadıysa **Kısmen tamamlandı** görünür; yazılan belgeler yine indirilebilir.
 
 Arkada `ocr-now` komutu çalışır (`--rapor` ile iş sonu özetini JSON olarak verir); davranışı tamamen aynıdır.
 İptal, Ctrl-C ile aynı yoldan model sunucusunu kapatır. Arayüz yalnız bu bilgisayardan (`127.0.0.1`) erişilebilir.
@@ -115,6 +116,7 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 - Her PDF kendi belgesini üretir.
 - Bütün sayfalar seçilmediyse ad seçimi taşır (`kitap_s11-20.docx`).
 - Aynı adlı belge varsa üzerine yazılmaz, `_2`, `_3` eklenir. Elle düzeltilmiş bir belge böylece kaybolmaz.
+- Word veya TXT yazımı yarıda kesilirse hedefte yarım belge kalmaz; yazma hatası özette dosya adıyla görünür.
 - Bir klasördeki görüntüler doğal sırayla (`2.jpg` → `10.jpg`) tek belgede birleşir.
 
 **`.docx`**
@@ -161,18 +163,25 @@ Aynı numara birden fazla sayfada okunduysa her birine uyarı eklenir
 - Belge yolları, tahmin edilen sayfa numaraları, tarafla çelişen (kontrol edilmesi gereken) okunan numaralar ve
   bütün uyarılar sayfa sayfa listelenir.
 - Okunamayan sayfa belgede `[Bu sayfa okunamadı]` olarak durur. Bu durumda çıkış kodu 1 olur.
+- Motor okunabilir metin vermezse sayfa silinmez: Word ve TXT çıktısında
+  `[Kontrol gerekli: Bu sayfada metin bulunamadı]` yazılır. Tarama gerçekten boş da olabilir; iş özeti bu
+  sayfaları ayrı listeler ve çıkış kodu 1 olur. Bu yanıt önbelleğe yazılmaz, sayfa sonraki koşuda yeniden okunur.
 - Hiçbir sayfası okunamayan belge yazılmaz.
 
 ### Önbellek
 
 Her sayfanın OCR çıktısı (modelin ham cevabı ve tesseract'ın satırları) `output/_cache/` altına sayfa başına bir
 kez yazılır.
-- Aynı sayfa aynı model/modla yeniden istenirse (ör. önce `-f docx`, sonra `-f txt`) OCR yeniden çalışmaz.
+- Kaynağın SHA-256 içerik özeti hem görüntü hem OCR önbelleğinde kullanılır. Aynı adlı ve eşit boyutlu farklı
+  taramalar birbirine karışmaz; adı değişen bir kopya, içeriği aynıysa aynı önbelleği kullanır.
+- Tarama OCR sırasında değiştirilirse etkilenen sayfalar hata olarak bildirilir; değişen kaynak eski anahtara yazılmaz.
+- Aynı sayfa aynı model/modla ve PDF için aynı DPI ile yeniden istenirse (ör. önce `-f docx`, sonra `-f txt`)
+  kullanılabilir bir sonuç varsa OCR yeniden çalışmaz.
 - Bütün sayfalar önbellekteyse model sunucusu hiç açılmaz.
 - Sayfa yapısı (satırlar, ayın/hemze, sarı işaretler) her çalıştırmada önbellekteki çıktıdan yeniden kurulur
   (sayfa başına ~0.3 sn). Bu yüzden `ayarlar/kesme.txt`'deki ya da programdaki değişiklikler, `--kesme-yok` dahil,
   GPU'suz ve yeniden OCR gerekmeden uygulanır.
-- Eski sürümün önbellek dosyaları tanınmaz; o sayfalar bir kez yeniden okunur.
+- Eski ad/boyut tabanlı görüntü ve OCR önbellekleri silinmez ama kullanılmaz; sayfalar bir kez yeniden okunur.
 
 ### Ayın/hemze kelime listesi
 
@@ -200,16 +209,23 @@ Doğru metin `gt/<pdf adı>_syf<N>.txt` olarak varsa şu ölçüler hesaplanır:
 
 | Ölçü | Ne ölçer |
 |---|---|
-| `cer_raw` | Ham karakter hata oranı |
-| `cer_norm` | Markdown, kesme türü ve satır sonu tireleri yok sayılarak |
-| `cer_body` | Başlık ve sayfa numarası hariç |
-| `cer_base` | İşaretler ve büyük/küçük harf hariç, yalnız temel harfler |
-| `wer` | Kelime hata oranı |
-| `line_end` | docx satır sonlarının kitaptakiyle eşleşmesi |
+| `cer_raw` | Model metninde ham karakter hata oranı (boşluklar sadeleştirilir) |
+| `cer_norm` | Model metninde Markdown vurgusu, kesme türü ve satır sonu tireleri yok sayılarak |
+| `cer_body` | Model metninde çalışan başlık ve sayfa numarası hariç |
+| `cer_base` | Model metninde işaretler ve büyük/küçük harf hariç, yalnız temel harfler |
+| `wer` | Model metninde kelime hata oranı |
+| `cer_document`, `wer_document` | Word'e giden işlenmiş metinde karakter ve kelime hata oranı |
+| `line_end` | İşlenmiş sayfa satırlarının son üç karakterinin referansla eşleşmesi |
 | `apostrophe`, `apostrophe_flagged` | Ayın/hemze türü doğruluğu, sarıya düşen işaret sayısı |
 
+Belge ölçümü üstlük, gövde, dipnot ve sayfadan okunan numarayı içerir; komşulardan numara tahminini ya da
+Word'ün otomatik satır kaydırmasını ölçmez. Benchmark, ayın/hemze kelime listesi için ölçülen PDF'in bütün
+`gt/` sayfalarını dışarıda bırakır. Kullanıcı sözlüğü (`ayarlar/kesme.txt`) etkin kalır. `gt/` adları PDF adına
+bağlı olduğundan aynı adlı farklı PDF'ler tek koşuda kabul edilmez.
+
 Koşular `output/lab/<YYYYmmdd-HHMM>/` altına yazılır. Her koşunun içinde `results.json`, ham model çıktıları ve bir
-karşılaştırma `.md`'si bulunur. `output/lab/summary.csv` bütün koşuları biriktirir.
+karşılaştırma `.md`'si bulunur. `output/lab/summary_v2.csv` yeni yöntemle yapılan koşuları biriktirir. Eski
+`summary.csv` ve koşular olduğu gibi kalır; eski ve yeni ölçüler doğrudan karşılaştırılmamalıdır.
 
 Benchmark'ta kazanan ayar, `engines.DEFAULT_ENGINE` ve `engines.DEFAULT_MODE` değiştirilerek ocr-now'ın varsayılanı yapılır.
 
@@ -251,7 +267,7 @@ input/                         taranacak PDF'ler (varsayılan girdi)
 gt/                            doğru metinler: gt/<pdf>_syf<N>.txt
 output/belgeler/               ocr-now belgeleri
 output/_cache/  output/_pages/ önbellek, sayfa görselleri
-output/lab/                    ocr-lab koşuları, summary.csv, rapor.html
+output/lab/                    ocr-lab koşuları, summary_v2.csv, rapor.html
 output/_logs/                  sunucu logları, gpu.lock
 models/  tools/                model dosyaları, llama.cpp
 .venv  .venv-vllm  .venv-kraken   ayrı ortamlar (vLLM ile kraken bağımlılıkları çakışıyor)

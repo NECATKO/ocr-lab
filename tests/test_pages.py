@@ -131,7 +131,8 @@ def test_render_pdf_page(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "PAGES", tmp_path / "pages")
     pdf = make_pdf(tmp_path / "kitap.pdf", 2, size=(72, 144))
     png = render(SourcePage(pdf, 2))
-    assert png == paths.PAGES / f"kitap-{pdf.stat().st_size}" / "syf2.png"
+    from hashlib import sha256
+    assert png == paths.PAGES / f"pdf-{sha256(pdf.read_bytes()).hexdigest()}" / "syf2.png"
     assert Image.open(png).size == (200, 400)  # 72 pt = 1 inç, 200 dpi
     mtime = png.stat().st_mtime_ns
     assert render(SourcePage(pdf, 2)) == png and png.stat().st_mtime_ns == mtime  # yeniden üretilmez
@@ -152,6 +153,29 @@ def test_render_same_name_different_files_do_not_collide(tmp_path, monkeypatch):
     a = make_pdf(tmp_path / "x" / "k.pdf", 1)
     b = make_pdf(tmp_path / "y" / "k.pdf", 3)
     assert render(SourcePage(a, 1)) != render(SourcePage(b, 1))
+
+
+def test_render_same_name_and_size_uses_content_and_ignores_legacy_png(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "PAGES", tmp_path / "pages")
+    a, b = [tmp_path / folder / "tarama.png" for folder in ("a", "b")]
+    for path, color in ((a, "red"), (b, "blue")):
+        path.parent.mkdir()
+        Image.new("RGB", (24, 24), color).save(path, compress_level=0)
+    assert a.stat().st_size == b.stat().st_size
+    old = paths.PAGES / f"tarama-{a.stat().st_size}" / "syf1.png"
+    old.parent.mkdir(parents=True)
+    Image.new("RGB", (24, 24), "black").save(old)
+    a_png, b_png = (render(SourcePage(p, 1)) for p in (a, b))
+    assert a_png != b_png and old.exists()
+    with Image.open(a_png) as im:
+        assert im.getpixel((0, 0)) == (255, 0, 0)
+    with Image.open(b_png) as im:
+        assert im.getpixel((0, 0)) == (0, 0, 255)
+    copy = a.with_name("kopya.png")
+    copy.write_bytes(b.read_bytes())
+    assert render(SourcePage(copy, 1)) == b_png
+    a.write_bytes(b.read_bytes())
+    assert render(SourcePage(a, 1)) == b_png
 
 
 def test_render_image_converted_to_png(tmp_path, monkeypatch):

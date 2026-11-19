@@ -71,7 +71,7 @@ def test_runs_given_pdf_pages_and_targets(tmp_path, env, capsys):
     assert call.out.parent == paths.LAB_OUT and call.out.is_dir()
     out = capsys.readouterr().out
     assert "glm-ocr/duz" in out and "k s.1" in out and "results.json" in out and "k_karsilastirma.md" in out
-    assert "summary.csv" in out
+    assert "summary_v2.csv" in out
 
 
 def test_defaults_to_input_pdfs_page_one_and_ready_engines(tmp_path, env, monkeypatch):

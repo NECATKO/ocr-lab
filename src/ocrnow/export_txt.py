@@ -3,10 +3,12 @@ import html
 import re
 from pathlib import Path
 
+from ocrnow import paths
 from ocrnow.layout import Block, Page
 
 SKIPPED = frozenset({"Page-header", "Page-footer"})   # .txt'ye yazılmaz (numara ayraçta)
 FAILED_TEXT = "[Bu sayfa okunamadı]"                 # okunamayan sayfanın yer tutucusu (docx ve txt)
+REVIEW_TEXT = "[Kontrol gerekli: Bu sayfada metin bulunamadı]"
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -38,8 +40,10 @@ def write_txt(pages: list[Page], out: Path) -> Path:
         label = page_label(page)
         _, body, footnotes = split_blocks(page)
         paragraphs = [FAILED_TEXT] if page.failed else [t for b in body + footnotes if (t := plain_text(b))]
+        if page.needs_review and not page.failed:
+            paragraphs.insert(0, REVIEW_TEXT)
         head = f"--- s. {label} ---" if label else "---"
         chunks.append("\n".join([head, "\n\n".join(paragraphs)]) if paragraphs else head)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n\n".join(chunks) + "\n", encoding="utf-8")
+    with paths.atomic_output(out) as tmp:
+        tmp.write_text("\n\n".join(chunks) + "\n", encoding="utf-8")
     return out

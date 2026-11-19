@@ -56,15 +56,17 @@ def _add_words(text: str, words: dict[str, str], *, override: bool) -> None:
                 words[k] = w
 
 
-def build_word_list(gt_dir: Path, user_file: Path, *, exclude: Path | None = None) -> dict[str, str]:
+def build_word_list(gt_dir: Path, user_file: Path, *, exclude: Path | None = None,
+                    exclude_book: str | None = None) -> dict[str, str]:
     """gt/*.txt içindeki ’/‘ geçen kelimeler + kullanıcı dosyası (satır başı # yorum; kullanıcı gt'yi ezer).
 
-    exclude: listeye alınmayacak gt dosyası (benchmark ölçtüğü sayfanın kendi cevabını görmesin).
+    exclude / exclude_book: dışarıda bırakılacak gt dosyası / kitap gövde adı.
     """
     words: dict[str, str] = {}
     skip = Path(exclude).resolve() if exclude else None
+    book = re.compile(rf"{re.escape(exclude_book)}_syf[0-9]+\.txt") if exclude_book is not None else None
     for f in sorted(Path(gt_dir).glob("*.txt")):
-        if skip and f.resolve() == skip:
+        if (skip and f.resolve() == skip) or (book and book.fullmatch(f.name)):
             continue
         _add_words(f.read_text(encoding="utf-8"), words, override=False)
     if Path(user_file).is_file():

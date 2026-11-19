@@ -49,7 +49,7 @@ def fake_env(tmp_path, monkeypatch):
         return list(env.jobs), []
 
     @contextmanager
-    def server(name):
+    def server(name, *, cancel=None):
         env.servers.append(("giriş", name))
         try:
             yield lambda img, mode: "anlamsız"
@@ -311,7 +311,7 @@ def test_server_start_failure_stops_whole_run(fake_env, monkeypatch, capsys):
     fake_env.jobs = [DocJob("a", [SourcePage(Path("a.pdf"), 1)]), DocJob("b", [SourcePage(Path("b.pdf"), 1)])]
 
     @contextmanager
-    def broken(name):
+    def broken(name, *, cancel=None):
         raise RuntimeError("sunucu ayağa kalkmadı, bkz. dots.mocr.server.log")
         yield
 
@@ -481,3 +481,22 @@ def test_report_json_marks_unwritten_job(fake_env, tmp_path):
     main(["k.pdf", "-f", "txt", "--rapor", str(report)])
     data = json.loads(report.read_text(encoding="utf-8"))
     assert data["belgeler"] == [] and data["isler"][0]["yazildi"] is False
+
+
+@pytest.mark.parametrize("formats,written", [(["docx"], []), (["docx", "txt"], ["k.txt"])])
+def test_report_tracks_actual_exports_and_write_errors(fake_env, tmp_path, monkeypatch, capsys, formats, written):
+    import json
+
+    def broken(*args, **kwargs):
+        raise OSError("disk dolu")
+
+    monkeypatch.setattr(export_docx, "write_docx", broken)
+    report = tmp_path / "rapor.json"
+    assert main(["k.pdf", "-f", *formats, "--rapor", str(report)]) == 1
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert [Path(p).name for p in data["belgeler"]] == written
+    assert data["isler"][0]["yazildi"] is bool(written)
+    assert data["isler"][0]["yazma_hatalari"] == ["k.docx yazılamadı (disk dolu)"]
+    assert not data["okunamayan"]
+    printed = capsys.readouterr()
+    assert "hiçbir sayfa okunamadı" not in printed.out and "disk dolu" in printed.err

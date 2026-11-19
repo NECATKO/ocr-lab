@@ -42,7 +42,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "LAB_OUT", tmp_path / "lab")
     monkeypatch.setattr(paths, "SETTINGS", tmp_path / "ayarlar")
 
-    def render(src, dpi=200):
+    def render(src, dpi=200, *, fingerprint=None):
         out = tmp_path / "pages" / f"{src.source.stem}_syf{src.index}.png"
         out.parent.mkdir(exist_ok=True)
         Image.new("L", (100, 100), 255).save(out)
@@ -76,7 +76,9 @@ def env(tmp_path, monkeypatch):
 
 
 def src(tmp_path, index=1, stem="kitap"):
-    return SourcePage(tmp_path / f"{stem}.pdf", index)
+    path = tmp_path / f"{stem}.pdf"
+    path.touch()
+    return SourcePage(path, index)
 
 
 def load(path):
@@ -93,12 +95,13 @@ def test_two_targets_without_gt(tmp_path, env):
     for r in recs:
         assert r["error"] is None and r["seconds"] >= 0 and r["chars"] > 0
         assert all(r[k] is None for k in
-                   ("cer_raw", "cer_norm", "cer_body", "cer_base", "wer", "line_end", "apostrophe", "apostrophe_n"))
+                   (*bench.METRICS, "apostrophe_n"))
         assert r["word_errors"] == []
         assert Path(r["raw_path"]).read_text(encoding="utf-8") == env.outputs[r["engine"], r["mode"]]
-    rows = list(csv.reader((paths.LAB_OUT / "summary.csv").open(encoding="utf-8")))
+        assert r["metrics_version"] == 2 and Path(r["image_path"]).is_file()
+    rows = list(csv.reader((paths.LAB_OUT / bench.SUMMARY_FILE).open(encoding="utf-8")))
     assert rows[0] == ["engine", "pdf", "page", "seconds", "chars", "cer", "mode", "cer_norm", "cer_body",
-                       "cer_base", "wer", "line_end", "apostrophe"]
+                       "cer_base", "wer", "line_end", "apostrophe", "cer_document", "wer_document"]
     assert len(rows) == 3 and rows[1][0] == "dots.mocr" and rows[1][5] == "" and rows[2][6] == "duz"
 
 
@@ -114,15 +117,16 @@ def test_metrics_with_gt(tmp_path, env):
     layout, plain = recs
     assert layout["cer_norm"] == 0 and layout["wer"] == 0 and layout["cer_body"] == 0 and layout["cer_base"] == 0
     assert layout["word_errors"] == [] and layout["line_end"] == 1.0
+    assert layout["cer_document"] == 0 and layout["wer_document"] == 0
     assert layout["lines"] == ["BAŞLIK", "bir iki üç", "dört beş", "12"]
     assert plain["cer_raw"] > 0 and plain["cer_body"] == 0     # başlık ve numara yok; gövde aynı
     assert plain["word_errors"] == [["BAŞLIK", ""], ["12", ""]]
     assert layout["apostrophe"] is None and layout["apostrophe_n"] == 0
-    row = list(csv.reader((paths.LAB_OUT / "summary.csv").open(encoding="utf-8")))[1]
+    row = list(csv.reader((paths.LAB_OUT / bench.SUMMARY_FILE).open(encoding="utf-8")))[1]
     assert row[5] == "0.0" and row[7] == "0.0" and row[11] == "1.0"
 
 
-def test_apostrophe_list_excludes_the_page_being_measured(tmp_path, env):
+def test_apostrophe_list_excludes_the_entire_book_being_measured(tmp_path, env):
     env.outputs["glm-ocr", "duz"] = "cür'et"
     gt = tmp_path / "gt"
     (gt / "kitap_syf1.txt").write_text("cür’et", encoding="utf-8")
@@ -130,7 +134,11 @@ def test_apostrophe_list_excludes_the_page_being_measured(tmp_path, env):
     assert rec["apostrophe"] == 0.0 and rec["apostrophe_n"] == 1   # kendi cevabı listede yok → varsayılan ‘
     (gt / "kitap_syf2.txt").write_text("cür’et", encoding="utf-8")
     rec = load(run_bench([src(tmp_path)], [("glm-ocr", "duz")], gt, tmp_path / "r2"))[0]
-    assert rec["apostrophe"] == 1.0                                # başka sayfadan öğrenilir
+    assert rec["apostrophe"] == 0.0                                # aynı kitabın başka sayfası da dışarıda
+    (gt / "kitap_2_syf1.txt").write_text("cür’et", encoding="utf-8")
+    rec = load(run_bench([src(tmp_path)], [("glm-ocr", "duz")], gt, tmp_path / "r3"))[0]
+    assert rec["apostrophe"] == 1.0                                # farklı kitaptan öğrenilir
+    assert rec["cer_raw"] > 0 and rec["cer_document"] == 0
 
 
 def test_engines_run_one_server_at_a_time_and_pages_in_each_mode(tmp_path, env):
@@ -151,7 +159,7 @@ def test_failed_server_start_marks_its_records_and_continues(tmp_path, env):
                           tmp_path / "run"))
     assert recs[0]["error"] == "sunucu ayağa kalkmadı" and recs[0]["seconds"] is None and recs[0]["cer_norm"] is None
     assert recs[1]["error"] is None
-    rows = list(csv.reader((paths.LAB_OUT / "summary.csv").open(encoding="utf-8")))
+    rows = list(csv.reader((paths.LAB_OUT / bench.SUMMARY_FILE).open(encoding="utf-8")))
     assert len(rows) == 2   # hatalı kayıt özet satırı almaz
 
 
@@ -165,7 +173,7 @@ def test_failed_page_marks_one_record_and_continues(tmp_path, env):
 
 
 def test_render_error_is_recorded(tmp_path, env, monkeypatch):
-    def broken(src, dpi=200):
+    def broken(src, dpi=200, *, fingerprint=None):
         raise pages.InputError("PDF açılamadı")
     monkeypatch.setattr(pages, "render", broken)
     rec = load(run_bench([src(tmp_path)], [("glm-ocr", "duz")], tmp_path / "gt", tmp_path / "run"))[0]
@@ -173,10 +181,14 @@ def test_render_error_is_recorded(tmp_path, env, monkeypatch):
 
 
 def test_summary_appends_across_runs_with_one_header(tmp_path, env):
+    paths.LAB_OUT.mkdir()
+    old = paths.LAB_OUT / "summary.csv"
+    old.write_text("eski ölçümler\n", encoding="utf-8")
     for name in ("r1", "r2"):
         run_bench([src(tmp_path)], [("glm-ocr", "duz")], tmp_path / "gt", tmp_path / name)
-    rows = list(csv.reader((paths.LAB_OUT / "summary.csv").open(encoding="utf-8")))
+    rows = list(csv.reader((paths.LAB_OUT / bench.SUMMARY_FILE).open(encoding="utf-8")))
     assert [r[0] for r in rows] == ["engine", "glm-ocr", "glm-ocr"]
+    assert old.read_text(encoding="utf-8") == "eski ölçümler\n"
 
 
 def test_comparison_markdown(tmp_path, env):
@@ -207,6 +219,38 @@ def test_unknown_target_fails_before_starting_anything(tmp_path, env):
     with pytest.raises(ValueError, match="modu yok"):
         run_bench([src(tmp_path)], [("glm-ocr", "duzen")], tmp_path / "gt", tmp_path / "run")
     assert env.log == []
+
+
+def test_same_stem_from_different_folders_is_ambiguous_for_gt(tmp_path, env):
+    sources = [SourcePage(tmp_path / folder / "kitap.pdf", 1) for folder in ("a", "b")]
+    with pytest.raises(pages.InputError, match="Aynı adlı iki PDF"):
+        run_bench(sources, [("glm-ocr", "duz")], tmp_path / "gt", tmp_path / "run")
+    assert env.log == [] and not (tmp_path / "run").exists()
+
+
+def test_blank_benchmark_output_is_flagged_and_still_measured(tmp_path, env):
+    env.outputs["dots.mocr", "duzen"] = "[]"
+    gt = tmp_path / "gt"
+    (gt / "kitap_syf1.txt").write_text("bir", encoding="utf-8")
+    out = tmp_path / "run"
+    [rec] = load(run_bench([src(tmp_path)], [("dots.mocr", "duzen")], gt, out))
+    assert rec["needs_review"] and rec["error"] is None
+    assert rec["cer_raw"] == rec["cer_document"] == 1
+    assert "Kontrol gerekli" in (out / "kitap_karsilastirma.md").read_text(encoding="utf-8")
+
+
+def test_document_text_follows_export_order_and_uses_read_page_number():
+    from ocrnow.layout import Block, Page
+
+    page = Page("k.pdf", 1, 100, 100, "dots.mocr", "duzen", [
+        Block("Page-footer", None, "13 ÇALIŞAN ALTLIK"),
+        Block("Footnote", None, "1 Dipnot"),
+        Block("Text", None, "Metin"),
+        Block("Picture", None, "[Görsel]"),
+        Block("Page-header", None, "BAŞLIK"),
+        Block("Table", None, "<table><tr><td>Hücre</td></tr></table>"),
+    ], book_page="13")
+    assert bench.document_text(page).split("\n\n") == ["BAŞLIK", "Metin", "Hücre", "1 Dipnot", "13"]
 
 
 def test_new_run_dir_adds_suffix_when_taken(tmp_path):

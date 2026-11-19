@@ -5,7 +5,6 @@ kurulur, böylece kod ve kelime listesi değişiklikleri GPU'suz uygulanır. Sar
 yazılır; açma/kapama yalnız dışa aktarmada yapılır. Kitap sayfa numarası tahmini (infer) her işte yeniden yapılır.
 """
 import json
-import os
 import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -18,21 +17,23 @@ from ocrnow import engines, paths
 from ocrnow.align import apply_line_structure
 from ocrnow.apostrophe import build_word_list, restore
 from ocrnow.engines import DEFAULT_ENGINE, DEFAULT_MODE
+from ocrnow.export_txt import plain_text
 from ocrnow.layout import Page, parse_output
 from ocrnow.pagenum import infer, read_book_page
-from ocrnow.pages import DEFAULT_DPI, DocJob, InputError, SourcePage, render
+from ocrnow.pages import DEFAULT_DPI, DocJob, InputError, SourceFingerprint, SourcePage, fingerprint_source, render
 from ocrnow.tesslines import lines_in, parse_tsv
 from ocrnow.uncertain import flag_uncertain
 
 TEXT_CATEGORIES = frozenset({"Text", "Title", "Section-header", "List-item", "Footnote"})   # tam işlem
 RESTORE_CATEGORIES = TEXT_CATEGORIES | {"Page-header", "Caption"}   # bunlara yalnız kesme geri getirme
 READ_FAILED = "okunamadı"
+REVIEW_WARNING = "kontrol gerekli: model okunabilir metin vermedi"
 PDF_ORDER_WARNING = "kitap sayfa numarası bulunamadı, PDF sırası kullanıldı"
 IMAGE_ORDER_WARNING = "kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"
 TRUNCATED_WARNING = "model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir"
 SIDE_WARNING = "sayfanın tarafıyla çelişiyor"
 DUPLICATE_WARNING = "aynı sayfa iki kez taranmış olabilir"
-CACHE_VERSION = 2   # 1: işlenmiş Page (eski; ıska sayılır), 2: ham OCR çıktısı (RawPage)
+CACHE_VERSION = 3   # içerikle anahtarlanan, okunabilir ham OCR çıktısı
 
 
 @dataclass
@@ -76,6 +77,10 @@ def ocr_page(img: Path, opts: Options, run: Callable[[Path, str], str], tsv: Cal
     if size is None:
         with Image.open(img) as im:
             size = im.size
+    if raw is None:                        # bazı OpenAI uyumlu sunucular boş yanıtı null döner
+        raw = ""
+    if not isinstance(raw, str):
+        raise ValueError("model yanıtı metin değil")
     return RawPage(str(raw), tsv_text, size[0], size[1], isinstance(raw, engines.Truncated))
 
 
@@ -86,13 +91,16 @@ def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str,
     blocks, parse_warnings = parse_output(ocr.raw, layout, size)
     pid = page_id(src)
     warnings = [f"{pid}: {w}" for w in parse_warnings]
+    needs_review = not any(b.category not in {"Picture", "Page-footer"} and plain_text(b).strip() for b in blocks)
+    if needs_review:
+        warnings.append(f"{pid}: {REVIEW_WARNING}")
     if ocr.truncated:    # yoğun sayfada son bloklar (çoğu kez dipnotlar) eksik kalır
         warnings.append(f"{pid}: {TRUNCATED_WARNING}")
     if opts.apostrophes and words is None:
         words = _word_list()
     tlines = parse_tsv(ocr.tsv)
     for k, block in enumerate(blocks, 1):
-        if block.category not in RESTORE_CATEGORIES:
+        if not block.text or block.category not in RESTORE_CATEGORIES:
             continue
         marks = list(block.marks)    # parse'ın biçim işaretleri (italik/kalin); kesme metnin uzunluğunu değiştirmez
         if opts.apostrophes:
@@ -109,7 +117,7 @@ def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str,
     book_page, side = read_book_page(blocks, size[0])
     return Page(source=str(src.source), index=src.index, width=size[0], height=size[1],
                 engine=opts.engine, mode=opts.mode, blocks=blocks, tess_tsv=ocr.tsv,
-                book_page=book_page, book_page_side=side, warnings=warnings)
+                book_page=book_page, book_page_side=side, warnings=warnings, needs_review=needs_review)
 
 
 def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path, str], str],
@@ -119,19 +127,11 @@ def process_page(img: Path, src: SourcePage, opts: Options, run: Callable[[Path,
     return build_page(ocr_page(img, opts, run, tsv, size), src, opts, words=words)
 
 
-def cache_path(src: SourcePage, opts: Options) -> Path:
-    """CACHE/<ad>-<boyut>/syf<N>[_<dpi>dpi].<motor>.<mod>.json
-
-    Klasör adı pages.render ile aynı mantıkta; dpi eki yalnız PDF'te ve 200 dışında (görüntüde dpi anlamsız).
-    Kesme adımı önbellekten sonra uygulandığı için --kesme-yok aynı dosyayı kullanır (R27).
-    """
-    s = src.source
-    try:
-        size = s.stat().st_size
-    except OSError as e:
-        raise InputError(f"Dosya okunamadı: {s} ({e})") from e
+def cache_path(src: SourcePage, opts: Options, *, source_key: str | None = None) -> Path:
+    """Ham OCR önbelleği: kaynak içeriği, sayfa, DPI (PDF), motor ve mod."""
     dpi = f"_{opts.dpi}dpi" if _is_pdf(src) and opts.dpi != DEFAULT_DPI else ""
-    return paths.CACHE / f"{s.stem}-{size}" / f"syf{src.index}{dpi}.{opts.engine}.{opts.mode}.json"
+    key = source_key or fingerprint_source(src.source).key
+    return paths.CACHE / key / f"syf{src.index}{dpi}.{opts.engine}.{opts.mode}.json"
 
 
 def _load(path: Path, opts: Options) -> RawPage | None:
@@ -144,57 +144,43 @@ def _load(path: Path, opts: Options) -> RawPage | None:
     except (OSError, ValueError, KeyError, TypeError):
         return None
     ok = (isinstance(ocr.raw, str) and isinstance(ocr.tsv, str) and isinstance(ocr.truncated, bool)
-          and all(isinstance(v, int) and not isinstance(v, bool) for v in (ocr.width, ocr.height)))
+           and all(type(v) is int and v > 0 for v in (ocr.width, ocr.height)))
     return ocr if ok else None
 
 
 def _save(path: Path, ocr: RawPage, opts: Options) -> None:
     """Yarım yazılmış dosya önbellekte kalmasın: geçici dosyaya yazılıp yeniden adlandırılır."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     record = {"version": CACHE_VERSION, "engine": opts.engine, "mode": opts.mode, "width": ocr.width,
               "height": ocr.height, "truncated": ocr.truncated, "raw": ocr.raw, "tsv": ocr.tsv}
-    try:
+    with paths.atomic_output(path) as tmp:
         tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _error_text(error: Exception) -> str:
     return str(error) or type(error).__name__  # iz kaydı (traceback) değil, yalnız ileti
 
 
-def _read(src: SourcePage, path: Path, opts: Options, run, tsv) -> tuple[RawPage, str | None]:
-    """(OCR çıktısı, önbellek yazma hatası): sayfa okunup önbelleğe yazılır. İş parçacığında çalışır."""
-    ocr = ocr_page(render(src, dpi=opts.dpi), opts, run, tsv)
-    save_error = None
-    try:
-        _save(path, ocr, opts)
-    except OSError as e:
-        save_error = str(e)
-    return ocr, save_error
+def _read(src: SourcePage, fingerprint: SourceFingerprint, opts: Options, run, tsv) -> RawPage:
+    return ocr_page(render(src, dpi=opts.dpi, fingerprint=fingerprint), opts, run, tsv)
 
 
 def _workers(opts: Options) -> int:
     return engines.ENGINES[opts.engine].parallel
 
 
-def _schedule(src: SourcePage, opts: Options, run, tsv,
-              pool: ThreadPoolExecutor) -> tuple[str | None, Callable[[], tuple[RawPage, str | None]]]:
-    """(ilerleme durumu, OCR çıktısını veren çağrı). Önbellekteyse çıktı oradan gelir (R27: ne render ne tesseract
-    ne model çağrılır); değilse sayfa havuzda okunmaya başlar. Hata (ör. dosya okunamadı) çağrı anında fırlatılır."""
-    try:
-        path = cache_path(src, opts)
-        ocr = _load(path, opts)
-    except InputError as e:          # cache_path: kaynak dosya okunamadı (_load kendi hatalarını yutar)
-        def failed(error: Exception = e):
-            raise error
-        return None, failed
+def _schedule(src: SourcePage, fingerprint: SourceFingerprint | InputError, opts: Options, run, tsv,
+              pool: ThreadPoolExecutor) -> tuple[str | None, Callable[[], RawPage], Path | None]:
+    """(ilerleme, OCR sonucu, yeni sonuç için önbellek yolu); kaynak hatası sayfa düzeyinde bildirilir."""
+    if isinstance(fingerprint, InputError):
+        def failed() -> RawPage:
+            # Aynı kaynak hatası farklı sayfalara ait ayrı izler taşısın.
+            raise InputError(str(fingerprint))
+        return None, failed, None
+    path = cache_path(src, opts, source_key=fingerprint.key)
+    ocr = _load(path, opts)
     if ocr is not None:
-        return "önbellekten", lambda: (ocr, None)
-    return "okunuyor…", pool.submit(_read, src, path, opts, run, tsv).result
+        return "önbellekten", lambda: ocr, None
+    return "okunuyor…", pool.submit(_read, src, fingerprint, opts, run, tsv).result, path
 
 
 def _runs(job_pages: list[SourcePage]) -> list[list[int]]:
@@ -283,7 +269,7 @@ def _header_text(page: Page) -> str | None:
     return " ".join(b.text for b in page.blocks if b.category == "Page-header") or None
 
 
-def _job_id(src: SourcePage, multi: bool) -> str:
+def job_page_id(src: SourcePage, multi: bool) -> str:
     return f"{src.source.name} {page_id(src)}" if multi and _is_pdf(src) else page_id(src)
 
 
@@ -314,14 +300,24 @@ def _collect(job: DocJob, opts: Options, run, tsv, words, multi: bool, pool: Thr
     sides: list[str | None] = []
     headers: list[str | None] = []
     n = len(job.pages)
-    scheduled = [_schedule(src, opts, run, tsv, pool) for src in job.pages]    # okumalar burada başlar
-    for i, (src, (state, get)) in enumerate(zip(job.pages, scheduled), 1):
-        pid = _job_id(src, multi)
+    sources: dict[Path, SourceFingerprint | InputError] = {}
+    for src in job.pages:
+        if src.source not in sources:  # kitabın tamamını sayfa başına değil, iş başına bir kez özetle
+            try:
+                sources[src.source] = fingerprint_source(src.source)
+            except InputError as e:
+                sources[src.source] = e
+    scheduled = [_schedule(src, sources[src.source], opts, run, tsv, pool) for src in job.pages]
+    for i, (src, (state, get, store)) in enumerate(zip(job.pages, scheduled), 1):
+        pid = job_page_id(src, multi)
         head = f"{job.name}: {pid} ({i}/{n})"
         try:
             if state:
                 progress(f"{head} {state}")
-            ocr, save_error = get()           # i'den önceki sayfalar bitti; i bitene kadar beklenir
+            ocr = get()                      # i bitene kadar beklenir
+            fingerprint = sources[src.source]
+            if isinstance(fingerprint, SourceFingerprint):
+                fingerprint.check(src.source)
             page = build_page(ocr, src, opts, words=words)
         except engines.ServerError:
             raise                 # sunucu açılamadı: sonraki sayfalar da okunamaz, koşu durur
@@ -336,8 +332,13 @@ def _collect(job: DocJob, opts: Options, run, tsv, words, multi: bool, pool: Thr
         else:
             if pid != page_id(src):
                 page.warnings = [f"{src.source.name} {w}" for w in page.warnings]
-            if save_error:
-                page.warnings.append(f"{pid}: önbelleğe yazılamadı ({save_error})")
+            if page.needs_review:
+                progress(f"{head} kontrol gerekli")
+            elif store is not None:
+                try:
+                    _save(store, ocr, opts)
+                except OSError as e:
+                    page.warnings.append(f"{pid}: önbelleğe yazılamadı ({e})")
             read.append(page.book_page)
             sides.append(page.book_page_side)
             headers.append(_header_text(page))
@@ -351,7 +352,7 @@ def _finish(job: DocJob, opts: Options, multi: bool, pages: list[Page], read: li
     labels = _book_pages(job.pages, read, sides, headers, opts.first_page)
     duplicates = _duplicates(job.pages, read, labels, opts.first_page)
     for pos, (page, src, value, (label, inferred)) in enumerate(zip(pages, job.pages, read, labels)):
-        pid = _job_id(src, multi)
+        pid = job_page_id(src, multi)
         if value is not None and value.isdigit() and label != value:   # okunan numara düzeltildi (R21)
             page.warnings.append(f"{pid}: okunan {value} → [{label}]")
         elif value is not None and value.isdigit() and inferred:
@@ -361,7 +362,7 @@ def _finish(job: DocJob, opts: Options, multi: bool, pages: list[Page], read: li
             page.warnings.append(f"{pid}: okunan {value} {SIDE_WARNING} ({side} sayfada {parity} numara), kontrol edin")
             page.book_page_check = True
         if pos in duplicates:
-            ids = [_job_id(job.pages[j], multi) for j in duplicates[pos]]
+            ids = [job_page_id(job.pages[j], multi) for j in duplicates[pos]]
             where = ", ".join(ids[:-1] + [_also_in(ids[-1])])
             page.warnings.append(f"{pid}: {value} numarası {where} okundu ({DUPLICATE_WARNING})")
         if label.startswith(("PDF s. ", "görsel ")):

@@ -475,9 +475,10 @@ function renderResult(job) {
     const tail = job.satirlar.filter(l => l.trim()).slice(-6).join("\n");
     box.replaceChildren(el("p", {}, "ocr-now hata vererek durdu. Son satırlar:"), el("pre", {class: "log"}, tail));
     $("result-log-box").open = true;
-    return;
+    if (!res) return;
   }
-  $("result-title").textContent = res.belgeler.length ? "Belgeler hazır" : "Belge yazılmadı";
+  if (job.durum === "kismi") $("result-title").textContent = "Kısmen tamamlandı";
+  else if (job.durum === "bitti") $("result-title").textContent = res.belgeler.length ? "Belgeler hazır" : "Belge yazılmadı";
   for (const p of res.belgeler) $("docs").append(docButtons(p));
   $("docs").append(el("li", {},
     el("span", {class: "name"}, job.ad, " ", el("span", {class: "kind"}, "taranmış PDF")),
@@ -485,7 +486,13 @@ function renderResult(job) {
 
   const check = $("check");
   for (const is of res.isler) {
-    if (!is.yazildi) check.append(el("p", {class: "form-error"}, `${is.ad}: hiçbir sayfa okunamadı, belge yazılmadı.`));
+    const writeErrors = is.yazma_hatalari ?? [];
+    const review = is.metin_kontrol ?? [];
+    if (!is.yazildi && !writeErrors.length) {
+      check.append(el("p", {class: "form-error"}, `${is.ad}: hiçbir sayfa okunamadı, belge yazılmadı.`));
+    }
+    for (const error of writeErrors) check.append(el("p", {class: "form-error"}, error));
+    if (review.length) check.append(el("p", {class: "form-error"}, `Metni kontrol gerekli: ${review.join(", ")}`));
     if (is.tahmin.length || is.kontrol.length) {
       check.append(el("h3", {}, "Sayfa numaraları"));
       const dl = el("dl", {class: "nums"});
@@ -499,7 +506,7 @@ function renderResult(job) {
       check.append(el("h3", {}, "Kontrol edilecekler"), d);
     }
   }
-  if (res.okunamayan) check.prepend(el("p", {class: "form-error"},
+  if (res.okunamayan && res.belgeler.length) check.prepend(el("p", {class: "form-error"},
     "Bazı sayfalar okunamadı; belgede “[Bu sayfa okunamadı]” olarak duruyor. Ayrıntı uyarılarda."));
   if (!check.children.length) check.append(el("p", {class: "ok-text"}, "Kontrol edilecek bir şey çıkmadı."));
 }

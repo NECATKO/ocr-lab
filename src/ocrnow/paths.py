@@ -3,6 +3,9 @@
 Kullanım: `from ocrnow import paths` ve `paths.X` çağrı anında okunur (`from ocrnow.paths import X` yok).
 """
 import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 # OCRNOW_ROOT ile değiştirilebilir (testler); yoksa depo kökü
@@ -21,6 +24,20 @@ TOOLS = ROOT / "tools"
 SETTINGS = ROOT / "ayarlar"
 VENV_VLLM = ROOT / ".venv-vllm"  # vllm ve kraken ayrı ortamlarda (bağımlılıkları çakışıyor)
 VENV_KRAKEN = ROOT / ".venv-kraken"
+
+
+@contextmanager
+def atomic_output(path: Path) -> Iterator[Path]:
+    """Alıcı yalnız tamamlanmış dosyayı görsün; eşzamanlı yazılar farklı geçici yollar kullanır."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".ocr-", suffix=path.suffix)
+    tmp = Path(name)
+    try:
+        os.close(fd)
+        yield tmp
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def subprocess_env() -> dict[str, str]:

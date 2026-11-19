@@ -14,7 +14,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
-from ocrnow.export_txt import FAILED_TEXT, page_label, plain_text, split_blocks
+from ocrnow import paths
+from ocrnow.export_txt import FAILED_TEXT, REVIEW_TEXT, page_label, plain_text, split_blocks
 from ocrnow.layout import Block, Page
 
 BOLD_DEFAULT = r"\[\d+[ab] [^\]]*\]"   # yazma nüsha işaretleri: [106b sayfanın sağ yanı]
@@ -224,6 +225,8 @@ def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_patter
         _footer(section, page)
         sup = _sup_pattern(page)
         last = None
+        if page.needs_review and not page.failed:
+            last = doc.add_paragraph(REVIEW_TEXT)
         for block in headers:
             last = _header(doc, block)
         for block in body:
@@ -245,6 +248,6 @@ def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_patter
             last = doc.add_paragraph()      # bloksuz (ya da yalnız numaralı) sayfa: boş paragraf
         if n < len(pages) - 1:
             _close_section(doc, last)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(out)
+    with paths.atomic_output(out) as tmp:
+        doc.save(tmp)
     return out

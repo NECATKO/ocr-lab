@@ -10,8 +10,8 @@ from PIL import Image
 
 from ocrnow import paths
 from ocrnow.lab import notebook
-from ocrnow.lab.notebook import (best_cells, find_page_image, image_html, metrics_table, nice_max, load_runs, record_text, rapor, scatter_svg,
-                                 summarize)
+from ocrnow.lab.notebook import (best_cells, find_page_image, image_html, load_runs, metrics_table, nice_max, rapor,
+                                 record_image, record_text, scatter_svg, summarize)
 
 
 def rec(**kw):
@@ -107,6 +107,20 @@ def test_find_page_image_picks_newest_and_ignores_other_pdfs(tmp_path, monkeypat
         os.utime(p, (t, t))
     assert find_page_image("k", 1) == new
     assert find_page_image("k", 2) is None
+
+
+def test_record_image_prefers_exact_path_and_never_falls_back_for_new_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "PAGES", tmp_path)
+    old = tmp_path / "k-100" / "syf1.png"
+    old.parent.mkdir()
+    old.touch()
+    exact = tmp_path / "exact.png"
+    exact.touch()
+    assert record_image(rec()) == old
+    assert record_image(rec(image_path=str(exact))) == exact
+    assert record_image(rec(image_path=None)) is None
+    exact.unlink()
+    assert record_image(rec(image_path=str(exact))) is None
 
 
 def test_record_text_plain_layout_and_missing(tmp_path):

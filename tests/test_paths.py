@@ -1,5 +1,7 @@
 import importlib
 
+import pytest
+
 from ocrnow import paths
 
 
@@ -18,3 +20,14 @@ def test_root_override(monkeypatch, tmp_path):
         # Sonraki testler geçici kökü görmesin
         monkeypatch.delenv("OCRNOW_ROOT", raising=False)
         importlib.reload(paths)
+
+
+def test_atomic_output_preserves_existing_file_on_failure(tmp_path):
+    target = tmp_path / "belge.txt"
+    target.write_text("eski belge")
+    with pytest.raises(OSError, match="disk dolu"):
+        with paths.atomic_output(target) as tmp:
+            tmp.write_text("yarım kaldı")
+            raise OSError("disk dolu")
+    assert target.read_text() == "eski belge"
+    assert list(tmp_path.iterdir()) == [target]

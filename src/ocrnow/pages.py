@@ -1,4 +1,6 @@
 """Girdi toplama, sayfa seçimi, belge gruplama ve sayfaları PNG'ye çevirme."""
+import hashlib
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -196,24 +198,49 @@ def _to_8bit(im: Image.Image) -> Image.Image:
     return im.convert("L" if im.mode == "L" else "RGB")
 
 
-def render(page: SourcePage, dpi: int = DEFAULT_DPI) -> Path:
-    """Sayfayı paths.PAGES altına PNG olarak yazar; varsa yeniden üretmez.
+def _file_stamp(stat: os.stat_result) -> tuple[int, ...]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
-    Klasör adına dosya boyutu girer: farklı klasörlerdeki aynı adlı iki dosya karışmaz.
-    Görüntü kaynağında dpi anlamsızdır, dosya adına girmez.
-    """
+
+@dataclass(frozen=True)
+class SourceFingerprint:
+    key: str
+    stamp: tuple[int, ...]
+
+    def check(self, src: Path) -> None:
+        """Özet alındıktan sonra değişen bir tarama eski anahtarla okunmasın."""
+        try:
+            current = _file_stamp(src.stat())
+        except OSError as e:
+            raise InputError(f"Dosya okunamadı: {src} ({e})") from e
+        if current != self.stamp:
+            raise InputError(f"Tarama çalışma sırasında değişti: {src}. Yeniden deneyin.")
+
+
+def fingerprint_source(src: Path) -> SourceFingerprint:
+    """Önbelleği dosya adına değil içeriğe bağla; okuma sırasında değişmediğini de kontrol et."""
+    try:
+        with src.open("rb") as f:
+            stamp = _file_stamp(os.fstat(f.fileno()))
+            digest = hashlib.file_digest(f, "sha256").hexdigest()
+    except OSError as e:
+        raise InputError(f"Dosya okunamadı: {src} ({e})") from e
+    kind = "pdf" if src.suffix.lower() == ".pdf" else "img"
+    fingerprint = SourceFingerprint(f"{kind}-{digest}", stamp)
+    fingerprint.check(src)
+    return fingerprint
+
+
+def render(page: SourcePage, dpi: int = DEFAULT_DPI, *, fingerprint: SourceFingerprint | None = None) -> Path:
+    """Sayfayı içerik anahtarıyla PNG'ye yazar; PDF'te DPI da anahtara girer."""
     src = page.source
     is_pdf = src.suffix.lower() == ".pdf"
     suffix = f"_{dpi}dpi" if is_pdf and dpi != DEFAULT_DPI else ""
-    try:
-        size = src.stat().st_size
-    except OSError as e:
-        raise InputError(f"Dosya okunamadı: {src} ({e})") from e
-    out = paths.PAGES / f"{src.stem}-{size}" / f"syf{page.index}{suffix}.png"
+    fingerprint = fingerprint or fingerprint_source(src)
+    fingerprint.check(src)
+    out = paths.PAGES / fingerprint.key / f"syf{page.index}{suffix}.png"
     if out.exists():
         return out
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.stem + ".tmp.png")  # yarım yazılmış PNG yeniden kullanılmasın
     if is_pdf:
         with _PDFIUM_LOCK:          # pdfium iş parçacığı güvenli değil; sayfalar aynı anda okunurken sıraya girer
             try:
@@ -223,7 +250,12 @@ def render(page: SourcePage, dpi: int = DEFAULT_DPI) -> Path:
             try:
                 if not 1 <= page.index <= len(pdf):
                     raise InputError(f"{src.name}: sayfa {page.index} yok; belgede {len(pdf)} sayfa var.")
-                img = pdf[page.index - 1].render(scale=dpi / 72).to_pil()
+                pdf_page = pdf[page.index - 1]
+                bitmap = pdf_page.render(scale=dpi / 72)
+                try:
+                    img = bitmap.to_pil().copy()
+                finally:
+                    bitmap.close()
             finally:
                 pdf.close()
     else:
@@ -232,6 +264,7 @@ def render(page: SourcePage, dpi: int = DEFAULT_DPI) -> Path:
                 img = _to_8bit(im)
         except OSError as e:
             raise InputError(f"Görüntü açılamadı: {src} ({e})") from e
-    img.save(tmp)
-    tmp.replace(out)
+    fingerprint.check(src)
+    with paths.atomic_output(out) as tmp:
+        img.save(tmp)
     return out

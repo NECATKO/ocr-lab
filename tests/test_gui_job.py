@@ -72,7 +72,10 @@ FAKE = textwrap.dedent('''
         print("Hata: model başlatılamadı", flush=True)
         sys.exit(1)
     print("k: s. 2 (2/2) okunuyor…", flush=True)
-    json.dump({"belgeler": ["/b/k.docx"], "isler": [], "okunamayan": False, "args": args}, open(rapor, "w"))
+    docs = [] if mode == "yazilamadi" else ["/b/k.docx"]
+    json.dump({"belgeler": docs, "isler": [], "okunamayan": False, "args": args}, open(rapor, "w"))
+    if mode in ("kismi", "yazilamadi"):
+        sys.exit(1)
 ''')
 
 
@@ -101,6 +104,24 @@ def test_failure_without_report_is_error(fake_cmd):
     snap = job.snapshot()
     assert snap["durum"] == "hata" and snap["sonuc"] is None
     assert "Hata: model başlatılamadı" in snap["satirlar"]
+
+
+@pytest.mark.parametrize("mode,state,docs", [("kismi", "kismi", ["/b/k.docx"]), ("yazilamadi", "hata", [])])
+def test_nonzero_exit_does_not_report_success_even_with_json(fake_cmd, mode, state, docs):
+    job = Job([mode], cmd=fake_cmd)
+    job.start()
+    assert job.wait(20)
+    snap = job.snapshot()
+    assert snap["durum"] == state and snap["cikis"] == 1
+    assert snap["sonuc"]["belgeler"] == docs
+
+
+def test_page_review_does_not_count_as_additional_page_for_eta():
+    job, _ = fed([(0, "k: s. 1 (1/3) okunuyor…"), (10, "k: s. 1 (1/3) kontrol gerekli")])
+    assert job.snapshot()["asama"] == "Sayfa 1/3 kontrol gerekli"
+    assert job.snapshot()["kalan"] is None
+    job.feed("k: s. 2 (2/3) okunuyor…")
+    assert job.snapshot()["kalan"] == 20
 
 
 def test_cancel_sends_interrupt(fake_cmd):
