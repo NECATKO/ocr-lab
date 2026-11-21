@@ -2,6 +2,7 @@
 
 Kullanım: `from ocrnow import paths` ve `paths.X` çağrı anında okunur (`from ocrnow.paths import X` yok).
 """
+import fcntl
 import os
 import tempfile
 from collections.abc import Iterator
@@ -24,6 +25,26 @@ TOOLS = ROOT / "tools"
 SETTINGS = ROOT / "ayarlar"
 VENV_VLLM = ROOT / ".venv-vllm"  # vllm ve kraken ayrı ortamlarda (bağımlılıkları çakışıyor)
 VENV_KRAKEN = ROOT / ".venv-kraken"
+
+
+def hf_cache() -> Path:
+    """Hugging Face'in yerel model deposu (ağa bağlanmaz)."""
+    if env := os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE"):
+        return Path(env)
+    return Path(os.environ.get("HF_HOME") or
+                Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "huggingface") / "hub"
+
+
+@contextmanager
+def export_lock(folder: Path) -> Iterator[None]:
+    """Ad seçiminden son biçimin yazımına kadar çıktı klasörünü diğer ocr-now koşularına kilitle."""
+    folder.mkdir(parents=True, exist_ok=True)
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)    # kapatılınca kilit bırakılır; disk üzerinde kilit dosyası gerekmez
 
 
 @contextmanager

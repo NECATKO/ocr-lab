@@ -1,5 +1,7 @@
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -39,7 +41,7 @@ class Env:
 
 
 @pytest.fixture
-def fake_env(tmp_path, monkeypatch):
+def fake_env(tmp_path, monkeypatch, known_ocr):
     env = Env()
     monkeypatch.setattr(paths, "DOCS_OUT", tmp_path / "belgeler")
     monkeypatch.setattr(paths, "INPUT", tmp_path / "input")
@@ -49,7 +51,7 @@ def fake_env(tmp_path, monkeypatch):
         return list(env.jobs), []
 
     @contextmanager
-    def server(name, *, cancel=None):
+    def server(name, **options):
         env.servers.append(("giriş", name))
         try:
             yield lambda img, mode: "anlamsız"
@@ -187,6 +189,55 @@ def test_existing_documents_are_not_overwritten(fake_env):
     assert (paths.DOCS_OUT / "k.docx").read_bytes() == b"eski"
 
 
+def test_concurrent_runs_keep_both_formats_and_existing_documents(fake_env, monkeypatch):
+    fake_env.cached = True
+    paths.DOCS_OUT.mkdir()
+    (paths.DOCS_OUT / "k.docx").write_bytes(b"eski")
+    first_writing = threading.Event()
+    second_writing = threading.Event()
+    release = threading.Event()
+
+    def write(out, label):
+        with paths.atomic_output(out) as tmp:
+            tmp.write_text(label)
+
+    def word(pages_, out, **kwargs):
+        label = threading.current_thread().name
+        if label == "ilk_0":
+            first_writing.set()
+            assert release.wait(10)
+        else:
+            second_writing.set()
+        write(out, label)
+
+    monkeypatch.setattr(export_docx, "write_docx", word)
+    monkeypatch.setattr(export_txt, "write_txt", lambda pages_, out: write(out, threading.current_thread().name))
+    args = ["k.pdf", "-f", "docx", "txt"]
+    with (ThreadPoolExecutor(1, thread_name_prefix="ilk") as first,
+          ThreadPoolExecutor(1, thread_name_prefix="ikinci") as second):
+        earliest = first.submit(main, args)
+        try:
+            assert first_writing.wait(10)
+            latest = second.submit(main, args)
+            second_writing.wait(0.5)  # kilit yoksa ikinci iş ilk işin ayırdığı boş adı da seçebilir
+        finally:
+            release.set()
+        assert earliest.result(10) == latest.result(10) == 0
+    assert (paths.DOCS_OUT / "k.docx").read_bytes() == b"eski"
+    for ext in ("docx", "txt"):
+        assert (paths.DOCS_OUT / f"k_2.{ext}").read_text() == "ilk_0"
+        assert (paths.DOCS_OUT / f"k_3.{ext}").read_text() == "ikinci_0"
+
+
+def test_existing_dangling_output_link_is_not_taken(fake_env):
+    paths.DOCS_OUT.mkdir()
+    link = paths.DOCS_OUT / "k.docx"
+    link.symlink_to("bulunmayan.docx")
+    assert main(["k.pdf", "-f", "docx"]) == 0
+    assert fake_env.written["docx"]["out"].name == "k_2.docx"
+    assert link.is_symlink()
+
+
 @pytest.mark.parametrize("answer,formats", [("1", {"docx"}), ("docx", {"docx"}), ("2", {"txt"}), ("txt", {"txt"}),
                                            ("3", {"docx", "txt"}), ("ikisi", {"docx", "txt"}), ("", {"docx"})])
 def test_format_answers(fake_env, monkeypatch, answer, formats):
@@ -311,7 +362,7 @@ def test_server_start_failure_stops_whole_run(fake_env, monkeypatch, capsys):
     fake_env.jobs = [DocJob("a", [SourcePage(Path("a.pdf"), 1)]), DocJob("b", [SourcePage(Path("b.pdf"), 1)])]
 
     @contextmanager
-    def broken(name, *, cancel=None):
+    def broken(name, **options):
         raise RuntimeError("sunucu ayağa kalkmadı, bkz. dots.mocr.server.log")
         yield
 
@@ -500,3 +551,16 @@ def test_report_tracks_actual_exports_and_write_errors(fake_env, tmp_path, monke
     assert not data["okunamayan"]
     printed = capsys.readouterr()
     assert "hiçbir sayfa okunamadı" not in printed.out and "disk dolu" in printed.err
+
+
+def test_report_is_written_if_output_directory_cannot_be_opened(fake_env, tmp_path):
+    import json
+
+    paths.DOCS_OUT.write_text("bu yol zaten dosya")
+    report = tmp_path / "rapor.json"
+    assert main(["k.pdf", "-f", "docx", "txt", "--rapor", str(report)]) == 1
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["belgeler"] == [] and not data["okunamayan"]
+    errors = data["isler"][0]["yazma_hatalari"]
+    assert [error.split()[0] for error in errors] == ["k.docx", "k.txt"]
+    assert paths.DOCS_OUT.read_text() == "bu yol zaten dosya"

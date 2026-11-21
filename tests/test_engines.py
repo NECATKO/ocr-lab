@@ -108,6 +108,10 @@ def test_tesseract_tsv_command(monkeypatch, tmp_path):
     assert engines.tesseract_tsv(tmp_path / "a.png") == "level\ttext\n"
     assert seen["cmd"] == ["tesseract", str(tmp_path / "a.png"), "stdout", "-l", "tur", "tsv"]
     assert seen["kw"]["env"]["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
+    assert seen["kw"]["env"]["OMP_THREAD_LIMIT"] == "1"
+    monkeypatch.setenv("OMP_THREAD_LIMIT", "2")
+    engines.tesseract_tsv(tmp_path / "a.png")
+    assert seen["kw"]["env"]["OMP_THREAD_LIMIT"] == "2"
 
 
 def test_serve_cmd_keeps_paths_with_spaces_in_one_token(monkeypatch, tmp_path):

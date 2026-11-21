@@ -1,11 +1,12 @@
 """Benchmark: seçili (motor, mod) çiftleri seçili sayfaları okur; ölçüler gt/<ad>_syf<N>.txt ile hesaplanır.
 
 Çıktılar (out_dir altında): results.json, <motor>/<ad>_syf<N>.<mod>.txt (ham model çıktısı), <ad>_karsilastirma.md.
-Ayrıca paths.LAB_OUT/summary_v2.csv'ye satır eklenir (koşular arasında birikir).
+Ayrıca paths.LAB_OUT/summary_v3.csv'ye satır eklenir (koşular arasında birikir).
 """
 import csv
 import json
 import dataclasses
+import hashlib
 import os
 import re
 import sys
@@ -14,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-from ocrnow import engines, pages, paths, pipeline
+from ocrnow import engines, identity, pages, paths, pipeline
 from ocrnow.apostrophe import build_word_list
 from ocrnow.export_txt import plain_text, split_blocks
 from ocrnow.lab import metrics
@@ -22,9 +23,10 @@ from ocrnow.layout import Page, parse_output
 from ocrnow.pages import DEFAULT_DPI, SourceFingerprint, SourcePage
 
 SUMMARY_HEADER = ["engine", "pdf", "page", "seconds", "chars", "cer", "mode",
-                   "cer_norm", "cer_body", "cer_base", "wer", "line_end", "apostrophe", "cer_document", "wer_document"]
-SUMMARY_FILE = "summary_v2.csv"
-METRICS_VERSION = 2
+                  "cer_norm", "cer_body", "cer_base", "wer", "line_end", "apostrophe", "cer_document", "wer_document",
+                  "status", "ocr_profile", "dpi", "source_key", "reference_sha256", "holdout"]
+SUMMARY_FILE = "summary_v3.csv"
+METRICS_VERSION = 3
 METRICS = ("cer_raw", "cer_norm", "cer_body", "cer_base", "wer", "line_end", "apostrophe", "cer_document", "wer_document")
 
 
@@ -82,9 +84,10 @@ def model_text(raw: str, engine: str, mode: str, size: tuple[int, int]) -> str:
     """Ölçülen metin: düz modda ham çıktı. Düzen modunda blok metinleri boş satırla ayrılır; Picture blokları
     ([Görsel] yer tutucusu modelin metni değil) atlanır, Table düz metne çevrilir, blok içi satır sonları
     mümkünse modelin ham JSON'undan alınır."""
-    if not engines.ENGINES[engine].modes[mode].layout:
+    eng = engines.ENGINES[engine]
+    if not eng.modes[mode].layout:
         return raw
-    blocks = parse_output(raw, True, size)[0]
+    blocks = parse_output(raw, True, size, resize=eng.resize)[0]
     texts = _raw_texts(raw, len(blocks)) or [None] * len(blocks)
     parts = []
     for block, text in zip(blocks, texts):
@@ -123,11 +126,32 @@ def document_text(page: Page) -> str:
     return "\n\n".join(parts)
 
 
+def _decided_document_text(page: Page) -> str:
+    """document_text ile aynı, ama sarıya düşen (kararsız) kesme işaretleri düz ' yapılır."""
+    parts = []
+    for group in split_blocks(page):
+        for b in group:
+            if b.category == "Picture":
+                continue
+            text = plain_text(b)
+            if not text:
+                continue
+            if b.category != "Table":
+                flagged = {m.start for m in b.marks if m.kind == "kesme"}
+                if flagged:
+                    text = "".join("'" if i in flagged else c for i, c in enumerate(text))
+            parts.append(text)
+    if page.book_page and not page.book_page_inferred:
+        parts.append(page.book_page)
+    return "\n\n".join(parts)
+
+
 def _measure(gt: str, text: str, lines: list[str], page: Page) -> dict:
     """Model ve belge metnini ayrı ölç; satır sonlarını işlenmiş sayfadan al."""
     doc = document_text(page)
     doc_gt = metrics.join_line_hyphens(gt)
     accuracy, n = metrics.apostrophe_accuracy(gt, doc)
+    decided_acc, decided_n = metrics.apostrophe_decided_accuracy(gt, _decided_document_text(page))
     model_wer, model_errors = metrics.word_error_metrics(gt, text)
     return {"cer_raw": metrics.cer_raw(gt, text), "cer_norm": metrics.cer_norm(gt, text),
             "cer_body": metrics.cer_body(gt, text), "cer_base": metrics.cer_base(gt, text),
@@ -136,25 +160,40 @@ def _measure(gt: str, text: str, lines: list[str], page: Page) -> dict:
             "wer_document": metrics.wer(doc_gt, doc),
             "line_end": metrics.line_end_accuracy(gt, lines),
             "apostrophe": accuracy if n else None, "apostrophe_n": n,
+            "apostrophe_decided": decided_acc if decided_n else None, "apostrophe_decided_n": decided_n,
             "word_errors": [list(e) for e in model_errors]}
 
 
-def _empty_record(src: SourcePage, engine: str, mode: str) -> dict:
+def _empty_record(src: SourcePage, engine: str, mode: str, profile: dict, dpi: int, metadata: dict) -> dict:
     return {"pdf": src.source.stem, "page": src.index, "engine": engine, "mode": mode, "seconds": None,
+             "ocr_profile": profile, "dpi": dpi, **metadata,
              "metrics_version": METRICS_VERSION, "chars": None, "raw_path": None, "image_path": None,
+             "dictionary_sha256": None,
              **dict.fromkeys(METRICS), "apostrophe_n": None, "apostrophe_flagged": None,
-             "needs_review": False,
-            "word_errors": [], "lines": [], "warnings": [], "error": None}
+             "apostrophe_decided": None, "apostrophe_decided_n": None,
+             "needs_review": False, "truncated": False,
+             "word_errors": [], "lines": [], "warnings": [], "error": None}
 
 
 def _fmt(value, digits: int = 4) -> str:
     return "" if value is None else str(round(value, digits))
 
 
+def status(record: dict) -> str:
+    if record.get("error") is not None:
+        return "error"
+    if record.get("truncated"):
+        return "truncated"
+    if record.get("needs_review"):
+        return "empty"
+    return "complete"
+
+
 def _summary_rows(records: list[dict]) -> list[list[str]]:
-    return [[r["engine"], r["pdf"], str(r["page"]), _fmt(r["seconds"], 2), str(r["chars"]), _fmt(r["cer_raw"]),
-              r["mode"], *(_fmt(r[k]) for k in METRICS if k != "cer_raw")]
-            for r in records if not r["error"]]
+    return [[r["engine"], r["pdf"], str(r["page"]), _fmt(r["seconds"], 2),
+             "" if r["chars"] is None else str(r["chars"]), _fmt(r["cer_raw"]), r["mode"],
+             *(_fmt(r[k]) for k in METRICS if k != "cer_raw"), status(r), r["ocr_profile"]["id"], str(r["dpi"]),
+             r["source_key"] or "", r["reference_sha256"] or "", str(r["holdout"]).lower()] for r in records]
 
 
 def _append_summary(records: list[dict]) -> Path:
@@ -200,7 +239,9 @@ def write_comparison(path: Path, stem: str, targets: list[tuple[str, str]], reco
         for r in rows:
             body = f"HATA: {r['error']}" if r["error"] else texts[stem, index, r["engine"], r["mode"]].strip()
             lines += ["", f"### {r['engine']}/{r['mode']}", ""]
-            if r["needs_review"]:
+            if r["truncated"]:
+                lines += ["**Kontrol gerekli: model çıktısı kesildi.**", ""]
+            elif r["needs_review"]:
                 lines += ["**Kontrol gerekli: model okunabilir metin vermedi.**", ""]
             lines += ["````text", body, "````"]
         lines.append("")
@@ -226,7 +267,7 @@ def check_sources(source_pages: list[SourcePage]) -> None:
 
 
 def run_bench(source_pages: list[SourcePage], targets: list[tuple[str, str]], gt_dir: Path, out_dir: Path,
-              *, dpi: int = DEFAULT_DPI) -> Path:
+              *, dpi: int = DEFAULT_DPI, holdout: bool = False) -> Path:
     """Her motor için tek sunucu açılır (sırayla, tek GPU işi); motorun seçili modları ve sayfaları sırayla okunur.
 
     Motor açılamazsa ya da bir sayfa hata verirse o kayıt `error` taşır ve iş sürer. results.json yolunu döndürür;
@@ -244,8 +285,9 @@ def run_bench(source_pages: list[SourcePage], targets: list[tuple[str, str]], gt
     records: list[dict] = []
     texts: dict = {}
     images: dict = {}
-    memo_words: dict[str, dict[str, str]] = {}
-    fingerprints: dict[Path, SourceFingerprint] = {}
+    memo_words: dict[str, tuple[dict[str, str], str]] = {}
+    fingerprints: dict[Path, SourceFingerprint | pages.InputError] = {}
+    refs: dict[tuple[Path, int], tuple[str | None, str | None, Exception | None]] = {}
     memo_tsv: dict = {}
 
     def tsv(img: Path) -> str:   # aynı sayfa her hedefte yeniden taranmasın
@@ -253,63 +295,96 @@ def run_bench(source_pages: list[SourcePage], targets: list[tuple[str, str]], gt
             memo_tsv[img] = engines.tesseract_tsv(img)
         return memo_tsv[img]
 
-    def one(run, engine: str, mode: str, src: SourcePage) -> None:
-        rec = _empty_record(src, engine, mode)
+    def record(src: SourcePage, engine: str, mode: str, profile: dict) -> dict:
+        fingerprint = fingerprints[src.source]
+        _, reference_sha, _ = refs[src.source, src.index]
+        return _empty_record(src, engine, mode, profile, dpi, {
+            "source_key": fingerprint.key if isinstance(fingerprint, SourceFingerprint) else None,
+            "reference_sha256": reference_sha, "holdout": holdout})
+
+    def one(run, engine: str, mode: str, src: SourcePage, profile: dict) -> None:
+        rec = record(src, engine, mode, profile)
         cap = _Capture(run)
         key = (src.source, src.index)
         try:
+            fingerprint = fingerprints[src.source]
+            if isinstance(fingerprint, pages.InputError):
+                raise fingerprint
             if key not in images:
-                if src.source not in fingerprints:
-                    fingerprints[src.source] = pages.fingerprint_source(src.source)
-                images[key] = pages.render(src, dpi, fingerprint=fingerprints[src.source])
+                images[key] = pages.render(src, dpi, fingerprint=fingerprint)
             img = images[key]
-            gt_path = gt_dir / f"{rec['pdf']}_syf{src.index}.txt"
             wkey = rec["pdf"]
             if wkey not in memo_words:
-                memo_words[wkey] = build_word_list(gt_dir, paths.SETTINGS / "kesme.txt", exclude_book=wkey)
+                words = {} if holdout else build_word_list(gt_dir, paths.SETTINGS / "kesme.txt", exclude_book=wkey)
+                words_sha = hashlib.sha256(json.dumps(words, sort_keys=True).encode()).hexdigest()
+                memo_words[wkey] = words, words_sha
+            words, rec["dictionary_sha256"] = memo_words[wkey]
             page = pipeline.process_page(img, src, pipeline.Options(engine, mode, True, dpi=dpi), cap, tsv,
-                                          words=memo_words[wkey])
-            fingerprints[src.source].check(src.source)
-            text = model_text(cap.raw, engine, mode, (page.width, page.height))
+                                           words=words)
+            fingerprint.check(src.source)
+            raw = cap.raw or ""
+            text = model_text(raw, engine, mode, (page.width, page.height))
             lines = _pipeline_lines(page)
             raw_path = out_dir / engine / f"{rec['pdf']}_syf{src.index}.{mode}.txt"
             raw_path.parent.mkdir(parents=True, exist_ok=True)
-            raw_path.write_text(cap.raw, encoding="utf-8")
+            raw_path.write_text(raw, encoding="utf-8")
             rec.update(seconds=cap.seconds, chars=len(text), raw_path=str(raw_path), lines=lines,
-                        image_path=str(img), warnings=page.warnings, needs_review=page.needs_review,
+                         image_path=str(img), warnings=page.warnings, needs_review=page.needs_review,
+                       truncated=page.truncated,
                        apostrophe_flagged=sum(m.kind == "kesme" for b in page.blocks for m in b.marks))
             texts[rec["pdf"], src.index, engine, mode] = text
-            if gt_path.exists():
-                rec.update(_measure(gt_path.read_text(encoding="utf-8"), text, lines, page))
+            ref, _, ref_error = refs[key]
+            if ref_error:
+                rec["warnings"].append(f"Doğru metin okunamadı: {_error_text(ref_error)}")
+            elif ref is not None:
+                rec.update(_measure(ref, text, lines, page))
         except Exception as e:
-            rec.clear()   # yarım dolmuş alan kalmasın
-            rec.update(_empty_record(src, engine, mode), seconds=cap.seconds, error=_error_text(e))
+            rec = {**record(src, engine, mode, profile), "seconds": cap.seconds, "error": _error_text(e)}
         records.append(rec)   # Ctrl-C ile yarıda kalan sayfa kayda girmez
         print(f"  {rec['pdf']} syf{src.index}  {engine}/{mode}  "
               + (f"HATA: {rec['error']}" if rec["error"] else
                   f"{rec['seconds']:.1f}s  {rec['chars']} kr  cer {_fmt(rec['cer_raw']) or '—'}"
-                  + ("  (kontrol gerekli)" if rec["needs_review"] else "")), flush=True)
+                   + ("  (kesildi)" if rec["truncated"] else "  (kontrol gerekli)" if rec["needs_review"] else "")), flush=True)
 
     try:
+        for src in source_pages:
+            if src.source not in fingerprints:
+                try:
+                    fingerprints[src.source] = pages.fingerprint_source(src.source)
+                except pages.InputError as e:
+                    fingerprints[src.source] = e
+            key = (src.source, src.index)
+            if key not in refs:
+                try:
+                    data = (gt_dir / f"{src.source.stem}_syf{src.index}.txt").read_bytes()
+                    refs[key] = (data.decode("utf-8"), hashlib.sha256(data).hexdigest(), None)
+                except FileNotFoundError:
+                    refs[key] = (None, None, None)
+                except (OSError, UnicodeError) as e:
+                    refs[key] = (None, None, e)
+        tess = identity.tesseract_profile()
         for engine, modes in by_engine.items():
             print(f"\n=== {engine} ===", flush=True)
+            runtime = identity.runtime(engine, tess=tess)
+            profiles = {mode: runtime.profile(mode) for mode in modes}
             try:
-                with engines.server(engine) as run:
+                with engines.server(engine, **runtime.server_options) as run:
                     for mode in modes:
                         for src in source_pages:
-                            one(run, engine, mode, src)
+                            one(run, engine, mode, src, profiles[mode])
             except Exception as e:   # sunucu açılamadı (ya da kapanırken hata): eksik kayıtlar hata taşır
                 print(f"[{engine}] HATA: {_error_text(e)}", file=sys.stderr)
                 done = {(r["engine"], r["mode"], r["pdf"], r["page"]) for r in records}
                 for mode in modes:
                     for src in source_pages:
                         if (engine, mode, src.source.stem, src.index) not in done:
-                            rec = _empty_record(src, engine, mode)
+                            rec = record(src, engine, mode, profiles[mode])
                             rec["error"] = _error_text(e)
                             records.append(rec)
     finally:
         results = out_dir / "results.json"
-        results.write_text(json.dumps(records, ensure_ascii=False, indent=1), encoding="utf-8")
+        with paths.atomic_output(results) as tmp:
+            tmp.write_text(json.dumps(records, ensure_ascii=False, indent=1), encoding="utf-8")
         _append_summary(records)
         for stem in dict.fromkeys(r["pdf"] for r in records):
             write_comparison(out_dir / f"{stem}_karsilastirma.md", stem, targets, records, texts,

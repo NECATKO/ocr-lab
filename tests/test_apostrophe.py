@@ -178,3 +178,15 @@ def test_list_word_with_suffix_after_mark():
     words = {"kur'an": "Kur’an"}
     out, marks = restore("Kur'an'a Kur'an'ın, Kur'an-ı Kur'an", words)
     assert out == "Kur’an’a Kur’an’ın, Kur’an-ı Kur’an" and marks == []
+
+
+def test_turkish_dotted_and_dotless_i_case_folding(tmp_path):
+    # Python'un 'İ'.lower() → 'i\u0307' ve 'I'.lower() → 'i' hatası sözlük ve kuralları bozmamalı
+    user = tmp_path / "kesme.txt"
+    user.write_text("i‘tibâr\nı‘zâm\n", encoding="utf-8")
+    words = build_word_list(tmp_path, user)
+    out, marks = restore("İ'tibâr ve I'zâm", words)
+    assert out == "İ‘tibâr ve I‘zâm" and marks == []
+    for src in ("HALEB'İN", "AY'IN", "KAHİRE'NİN", "ANKARA'NIN", "O'DUR", "Bİ'L-ÂHIR"):
+        got, got_marks = restore(src, {})
+        assert got == src.replace("'", "’") and got_marks == [], src

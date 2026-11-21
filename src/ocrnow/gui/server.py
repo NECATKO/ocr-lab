@@ -4,8 +4,12 @@ Güvenlik: yalnız localhost Host başlığı kabul edilir (DNS yeniden bağlama
 başlığı ister. İkisi de tarayıcıda ön kontrol (CORS preflight) gerektirir ve buna cevap verilmediği için başka
 sitelerin sayfaları iş başlatamaz, dosya yükleyemez.
 """
+import hashlib
+import io
 import json
+import os
 import subprocess
+import tempfile
 import threading
 import urllib.parse
 from collections.abc import Callable
@@ -21,8 +25,12 @@ from ocrnow.pages import DEFAULT_DPI, InputError
 
 INPUT_EXTS = {".pdf"} | pages.IMAGE_EXTS
 MAX_UPLOAD = 1024 ** 3          # 1 GB
+UPLOAD_CHUNK = 64 * 1024        # 64 KiB akış parçası
 DPI_RANGE = (72, 600)
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+_PAGE_CACHE_LOCK = threading.Lock()
+_PAGE_COUNT_CACHE: dict[tuple[str, int, int], int] = {}
 
 
 class FormError(ValueError):
@@ -39,7 +47,22 @@ def _input_file(name: str) -> Path:
 
 
 def _page_count(path: Path) -> int:
-    return pages.pdf_page_count(path) if path.suffix.lower() == ".pdf" else 1
+    if path.suffix.lower() != ".pdf":
+        return 1
+    try:
+        st = path.stat()
+    except OSError as e:
+        raise InputError(f"PDF açılamadı: {path} ({e})") from e
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    with _PAGE_CACHE_LOCK:
+        if key in _PAGE_COUNT_CACHE:
+            return _PAGE_COUNT_CACHE[key]
+    count = pages.pdf_page_count(path)
+    with _PAGE_CACHE_LOCK:
+        if len(_PAGE_COUNT_CACHE) > 512:
+            _PAGE_COUNT_CACHE.clear()
+        _PAGE_COUNT_CACHE[key] = count
+    return count
 
 
 def input_files() -> list[dict]:
@@ -55,21 +78,63 @@ def input_files() -> list[dict]:
     return out
 
 
-def save_upload(name: str, data: bytes) -> Path:
-    """Yüklenen dosyayı input/ altına yazar. Aynı adla aynı içerik varsa o dosya kullanılır (önbellek geçerli
-    kalır); farklıysa _2, _3 eklenir."""
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def save_upload_stream(name: str, stream, length: int, *, validate: bool = False) -> tuple[Path, int | None]:
+    """Yüklemeyi bellekte biriktirmeden geçici dosyaya akıtır, SHA-256 ile mevcut kopyayı arar, yoksa atomik taşır."""
     base = Path(str(name).replace("\\", "/")).name
     stem, suffix = Path(base).stem, Path(base).suffix.lower()
     if not stem or base.startswith(".") or suffix not in INPUT_EXTS:
         raise FormError(f"Yalnız PDF ya da görüntü (PNG, JPG, TIFF) yüklenebilir: {name}")
+    if length < 0:
+        raise FormError("Geçersiz dosya boyutu")
+    if length > MAX_UPLOAD:
+        raise FormError("Dosya çok büyük (en çok 1 GB)")
     paths.INPUT.mkdir(parents=True, exist_ok=True)
-    path, k = paths.INPUT / base, 2
-    while path.exists():
-        if path.read_bytes() == data:
-            return path
-        path, k = paths.INPUT / f"{stem}_{k}{Path(base).suffix}", k + 1
-    path.write_bytes(data)
-    return path
+    fd, tmp_name = tempfile.mkstemp(dir=paths.INPUT, prefix=".upload-", suffix=Path(base).suffix)
+    tmp = Path(tmp_name)
+    try:
+        hasher = hashlib.sha256()
+        remaining = length
+        written = 0
+        with os.fdopen(fd, "wb") as out:
+            while remaining > 0:
+                chunk = stream.read(min(UPLOAD_CHUNK, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                hasher.update(chunk)
+                written += len(chunk)
+                remaining -= len(chunk)
+        digest = hasher.hexdigest()
+        count: int | None = None
+        if validate:
+            try:
+                count = pages.pdf_page_count(tmp) if suffix == ".pdf" else 1
+            except InputError as e:
+                raise FormError(f"Dosya açılamadı: {e}") from None
+        with paths.export_lock(paths.INPUT):
+            path, k = paths.INPUT / base, 2
+            while path.exists():
+                try:
+                    if path.is_file() and path.stat().st_size == written and _sha256_file(path) == digest:
+                        return path, count
+                except OSError:
+                    pass
+                path, k = paths.INPUT / f"{stem}_{k}{Path(base).suffix}", k + 1
+            tmp.replace(path)
+            return path, count
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def save_upload(name: str, data: bytes) -> Path:
+    """Yüklenen dosyayı input/ altına yazar. Aynı adla aynı içerik varsa o dosya kullanılır (önbellek geçerli
+    kalır); farklıysa _2, _3 eklenir."""
+    return save_upload_stream(name, io.BytesIO(data), len(data))[0]
 
 
 # ---- form → ocr-now argümanları ----
@@ -137,9 +202,11 @@ class App:
         self._lock = threading.Lock()
 
     def state(self) -> dict:
-        models = [{"ad": e.name, "hazir": engines.missing(e.name) is None, "neden": engines.missing(e.name),
-                   "modlar": list(e.modes)}
-                  for e in engines.ENGINES.values() if e.recommended and e.name != "tesseract"]
+        models = []
+        for e in engines.ENGINES.values():
+            reason = engines.missing(e.name)
+            models.append({"ad": e.name, "hazir": reason is None, "neden": reason, "modlar": list(e.modes),
+                           "onerilen": e.recommended and e.name != "tesseract"})
         models.sort(key=lambda m: m["ad"] != engines.DEFAULT_ENGINE)    # varsayılan başta
         return {"dosyalar": input_files(), "modeller": models, "is": self.job.snapshot() if self.job else None,
                 "varsayilan": {"model": engines.DEFAULT_ENGINE, "okuma": engines.DEFAULT_MODE, "dpi": DEFAULT_DPI,
@@ -201,11 +268,20 @@ class Handler(BaseHTTPRequestHandler):
         self._error(HTTPStatus.FORBIDDEN, "yalnız bu bilgisayardan erişilebilir")
         return False
 
-    def _body(self) -> bytes:
-        length = int(self.headers.get("Content-Length") or 0)
+    def _content_length(self) -> int:
+        raw = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(raw)
+        except ValueError:
+            raise FormError("Geçersiz Content-Length başlığı") from None
+        if length < 0:
+            raise FormError("Geçersiz Content-Length başlığı")
         if length > MAX_UPLOAD:
             raise FormError("Dosya çok büyük (en çok 1 GB)")
-        return self.rfile.read(length)
+        return length
+
+    def _body(self) -> bytes:
+        return self.rfile.read(self._content_length())
 
     def do_GET(self):
         if not self._local():
@@ -240,12 +316,8 @@ class Handler(BaseHTTPRequestHandler):
                 name = self.headers.get("X-Dosya-Adi")
                 if not name:
                     return self._error(403, "X-Dosya-Adi başlığı gerekli")
-                saved = save_upload(urllib.parse.unquote(name), self._body())
-                try:
-                    count = _page_count(saved)
-                except InputError as e:
-                    saved.unlink(missing_ok=True)      # açılamayan dosya listede durmasın
-                    raise FormError(f"Dosya açılamadı: {e}") from None
+                length = self._content_length()
+                saved, count = save_upload_stream(urllib.parse.unquote(name), self.rfile, length, validate=True)
                 return self._json({"ad": saved.name, "sayfa": count})
             if not (self.headers.get("Content-Type") or "").startswith("application/json"):
                 return self._error(403, "JSON gövde gerekli")

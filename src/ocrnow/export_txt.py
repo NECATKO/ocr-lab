@@ -9,6 +9,7 @@ from ocrnow.layout import Block, Page
 SKIPPED = frozenset({"Page-header", "Page-footer"})   # .txt'ye yazılmaz (numara ayraçta)
 FAILED_TEXT = "[Bu sayfa okunamadı]"                 # okunamayan sayfanın yer tutucusu (docx ve txt)
 REVIEW_TEXT = "[Kontrol gerekli: Bu sayfada metin bulunamadı]"
+TRUNCATED_TEXT = "[Kontrol gerekli: Model çıktısı kesildi, sayfa sonu eksik olabilir]"
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -26,6 +27,16 @@ def plain_text(block: Block) -> str:
     return " ".join(html.unescape(_TAG.sub(" ", block.text)).split())
 
 
+def review_notice(page: Page) -> str | None:
+    """Eksik sayfa için ortak belge içi uyarı; okunamayan sayfanın kendi yer tutucusu var."""
+    if not page.failed:
+        if page.truncated:
+            return TRUNCATED_TEXT
+        if page.needs_review:
+            return REVIEW_TEXT
+    return None
+
+
 def split_blocks(page: Page) -> tuple[list[Block], list[Block], list[Block]]:
     """(Page-header'lar, gövde blokları, dipnotlar); Page-footer atılır. Her grup kendi sırasını korur."""
     headers = [b for b in page.blocks if b.category == "Page-header"]
@@ -40,8 +51,8 @@ def write_txt(pages: list[Page], out: Path) -> Path:
         label = page_label(page)
         _, body, footnotes = split_blocks(page)
         paragraphs = [FAILED_TEXT] if page.failed else [t for b in body + footnotes if (t := plain_text(b))]
-        if page.needs_review and not page.failed:
-            paragraphs.insert(0, REVIEW_TEXT)
+        if notice := review_notice(page):
+            paragraphs.insert(0, notice)
         head = f"--- s. {label} ---" if label else "---"
         chunks.append("\n".join([head, "\n\n".join(paragraphs)]) if paragraphs else head)
     with paths.atomic_output(out) as tmp:

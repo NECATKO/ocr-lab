@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from ocrnow import engines, paths, pipeline
+from ocrnow import engines, identity, paths, pipeline
 from ocrnow.layout import page_to_json
 from ocrnow.pages import DocJob, SourcePage
 from ocrnow.pipeline import Options, cache_path, process_job, process_page
@@ -14,7 +14,7 @@ SPIKE_SIZE = (1653, 2339)
 
 
 @pytest.fixture(autouse=True)
-def isolated(tmp_path, monkeypatch):
+def isolated(tmp_path, monkeypatch, known_ocr):
     """Önbellek ve kelime listesi geçici klasörde: gerçek gt/ ve ayarlar/ testlere sızmaz."""
     monkeypatch.setattr(paths, "CACHE", tmp_path / "cache")
     monkeypatch.setattr(paths, "GT", tmp_path / "gt")
@@ -134,10 +134,11 @@ def test_truncated_model_output_warns():
     raw = engines.Truncated(blocks_json(("Text", [0, 0, 500, 500], "metin")))
     p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 5), Options(mode="duz"), lambda img, m: raw,
                      lambda img: "", (1000, 1000))
+    assert p.truncated and not p.failed
     assert "s. 5: model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir" in p.warnings
     plain = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 5), Options(mode="duz"), lambda img, m: "metin",
                          lambda img: "", (1000, 1000))
-    assert not any("kesildi" in w for w in plain.warnings)
+    assert not plain.truncated and not any("kesildi" in w for w in plain.warnings)
 
 
 @pytest.mark.parametrize("raw", ["", " ", "[]", "{}", "null", None, '[{"category":"Picture","bbox":[0,0,10,10]}]',
@@ -223,13 +224,16 @@ def test_cache_path_naming(tmp_path):
     from hashlib import sha256
     src = SourcePage(source(tmp_path, "Kitap.pdf", b"x" * 1234), 5)
     base = paths.CACHE / f"pdf-{sha256(b'x' * 1234).hexdigest()}"
-    assert cache_path(src, Options()) == base / "syf5.dots.mocr.duzen.json"
-    assert cache_path(src, Options(apostrophes=False)) == base / "syf5.dots.mocr.duzen.json"   # R27: ek yok
-    assert cache_path(src, Options(dpi=300)) == base / "syf5_300dpi.dots.mocr.duzen.json"
-    assert cache_path(src, Options(engine="glm-ocr", mode="duz")) == base / "syf5.glm-ocr.duz.json"
+    profile = identity.runtime("dots.mocr").profile("duzen")
+    suffix = f"dots.mocr.duzen.{profile['id']}.json"
+    assert cache_path(src, Options()) == base / f"syf5.{suffix}"
+    assert cache_path(src, Options(apostrophes=False)) == base / f"syf5.{suffix}"
+    assert cache_path(src, Options(dpi=300)) == base / f"syf5_300dpi.{suffix}"
+    glm = identity.runtime("glm-ocr").profile("duz")
+    assert cache_path(src, Options(engine="glm-ocr", mode="duz")) == base / f"syf5.glm-ocr.duz.{glm['id']}.json"
     img = SourcePage(source(tmp_path, "tarama.png", b"y" * 10), 1)
     assert cache_path(img, Options(dpi=300)) == \
-        paths.CACHE / f"img-{sha256(b'y' * 10).hexdigest()}" / "syf1.dots.mocr.duzen.json"
+        paths.CACHE / f"img-{sha256(b'y' * 10).hexdigest()}" / f"syf1.{suffix}"
 
 
 def test_source_content_is_hashed_once_per_job_and_equal_size_changes_miss(tmp_path, monkeypatch):
@@ -546,8 +550,9 @@ def test_cache_stores_raw_model_output_and_tsv(tmp_path):
     job = DocJob("k", [SourcePage(source(tmp_path), 1)])
     process_job(job, Options(), lambda img, m: raw, lambda img: tsv, progress=lambda m: None)
     cached = json.loads(cache_path(job.pages[0], Options()).read_text(encoding="utf-8"))
-    assert cached == {"version": pipeline.CACHE_VERSION, "engine": "dots.mocr", "mode": "duzen", "width": 1000, "height": 1000,
-                      "truncated": False, "raw": raw, "tsv": tsv}
+    assert cached == {"version": pipeline.CACHE_VERSION, "engine": "dots.mocr", "mode": "duzen",
+                      "ocr_profile": identity.runtime("dots.mocr").profile("duzen")["id"],
+                      "width": 1000, "height": 1000, "truncated": False, "raw": raw, "tsv": tsv}
 
 
 def test_cache_hit_rebuilds_page_with_current_rules(tmp_path):
@@ -568,13 +573,21 @@ def test_cache_hit_rebuilds_page_with_current_rules(tmp_path):
     assert second[0].tess_tsv == tsv and (second[0].width, second[0].height) == (1000, 1000)
 
 
-def test_truncated_flag_survives_cache(tmp_path):
-    raw = engines.Truncated(blocks_json(("Text", [0, 0, 500, 500], "metin")))
+def test_existing_truncated_cache_is_replaced_by_complete_read(tmp_path):
     job = DocJob("k", [SourcePage(source(tmp_path), 5)])
-    process_job(job, Options(), lambda img, m: raw, lambda img: "", progress=lambda m: None)
-    again = process_job(job, Options(), lambda img, m: pytest.fail("önbellek"), lambda img: "",
-                        progress=lambda m: None)
-    assert "s. 5: model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir" in again[0].warnings
+    opts = Options()
+    target = cache_path(job.pages[0], opts)
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps({"version": pipeline.CACHE_VERSION, "engine": opts.engine, "mode": opts.mode,
+                                  "ocr_profile": identity.runtime(opts.engine).profile(opts.mode)["id"],
+                                  "truncated": True, "raw": with_footer(None), "tsv": "",
+                                  "width": 1000, "height": 1000}))
+    run, calls = fake_run(blocks_json(("Text", [0, 0, 500, 500], "tam metin")))
+    for _ in range(2):
+        p, = process_job(job, opts, run, lambda img: "", progress=lambda m: None)
+        assert p.blocks[0].text == "tam metin" and not p.truncated
+    assert len(calls) == 1
+    assert json.loads(target.read_text())["truncated"] is False
 
 
 def test_old_format_cache_is_miss(tmp_path):
@@ -594,6 +607,48 @@ def test_old_format_cache_is_miss(tmp_path):
         process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
         assert len(calls) == 1
         assert json.loads(target.read_text(encoding="utf-8"))["engine"] == "dots.mocr"
+
+
+def test_ocr_settings_invalidate_cache_without_deleting_old_entries(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    eng = engines.ENGINES["dots.mocr"]
+    job = DocJob("k", [SourcePage(source(tmp_path), 1)])
+    opts = Options()
+    run, calls = fake_run(with_footer(None))
+
+    def read():
+        process_job(job, opts, run, lambda _: "", progress=lambda _: None)
+        return cache_path(job.pages[0], opts)
+
+    original = read()
+    assert read() == original and len(calls) == 1
+    monkeypatch.setitem(engines.ENGINES, eng.name, replace(eng, modes={
+        **eng.modes, "duzen": replace(eng.modes["duzen"], prompt="yeni istem")}))
+    changed_prompt = read()
+    monkeypatch.setattr(engines, "TESS_LANG", "eng")
+    changed_lang = read()
+    monkeypatch.setattr(engines, "MAX_TOKENS", 1234)
+    changed_limit = read()
+    monkeypatch.setattr(identity, "_hf_revision", lambda _: "b" * 40)
+    changed_revision = read()
+    records = {original, changed_prompt, changed_lang, changed_limit, changed_revision}
+    assert len(records) == len(calls) == 5 and all(p.is_file() for p in records)
+    assert read() == changed_revision and len(calls) == 5
+
+
+@pytest.mark.parametrize("external", [None, "aynı uç noktada harici model"])
+def test_unverified_models_do_not_read_or_write_cache(tmp_path, monkeypatch, external):
+    monkeypatch.setattr(engines, "served_model", lambda _: external)
+    monkeypatch.setattr(identity, "_hf_revision", lambda _: None)
+    job = DocJob("k", [SourcePage(source(tmp_path), 1)])
+    opts = Options()
+    profile = identity.runtime(opts.engine).profile(opts.mode)
+    assert not profile["cacheable"] and profile["model_revision"] is None
+    run, calls = fake_run(with_footer(None))
+    for _ in range(2):
+        process_job(job, opts, run, lambda _: "", progress=lambda _: None)
+    assert len(calls) == 2 and not paths.CACHE.exists()
 
 
 def test_uncached_pages_are_read_concurrently_and_reported_in_order(tmp_path):
@@ -646,3 +701,18 @@ def test_interrupt_stops_queued_pages(tmp_path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         process_job(job, Options(), run, lambda img: "", progress=lambda m: None)
     assert calls == ["syf1.png"]
+
+
+def test_cjk_hallucination_warns_and_highlights_even_without_tesseract():
+    raw = blocks_json(("Text", [0, 0, 980, 980], "En sev常Ouriz şey atlardı."))
+    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(), lambda img, m: raw,
+                     lambda img: "", (1000, 1000), words={})
+    assert any(pipeline.UNEXPECTED_SCRIPT_WARNING in w and "常" in w for w in p.warnings)
+    yellow = [p.blocks[0].text[m.start:m.end] for m in p.blocks[0].marks if m.kind == "belirsiz"]
+    assert yellow == ["sev常Ouriz"]
+    # tesseract da farklı okuduğunda aynı kelime iki kez işaretlenmez
+    tsv = tsv_rows(((10, 10, 900, 40), "En sevdiğimiz şey atlardı."))
+    p2 = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(), lambda img, m: raw,
+                      lambda img: tsv, (1000, 1000), words={})
+    yellow2 = [p2.blocks[0].text[m.start:m.end] for m in p2.blocks[0].marks if m.kind == "belirsiz"]
+    assert yellow2 == ["sev常Ouriz"]

@@ -11,6 +11,19 @@ _DIGITS = re.compile(r"[0-9]{1,4}")
 SUPPORT_WINDOW = 2   # bir okuma, önceki/sonraki bu kadar okuma içinde aynı ofsetli okuma varsa destekli
 MAJORITY = 0.75      # taraf/başlık–çiftlik kuralı için açık çoğunluk oranı
 SIDE_MIN_VOTES = 2   # taraf–çiftlik kuralı en az bu kadar okumadan öğrenilir
+_CENTER_BAND = (0.38, 0.62)  # tek başına bu yatay bölgede duran numara ortalı sayılır ("orta")
+_SIDE_VOTES = frozenset({"sol", "sag"})
+_STRIP = ".,;:!?()[]{}<>«»\"'‘’“”—–-_*·•|/\\ "
+_ORDINAL_HEAD = re.compile(r"\d+\.")
+_NON_PAGE_PREV = frozenset({
+    "bölüm", "bolum", "cilt", "kısım", "kisim", "fasıl", "fasil", "bab", "bâb",
+    "madde", "sayı", "sayi", "yıl", "yil", "yüzyıl", "yuzyil", "asır", "asir",
+    "hicrî", "hicri", "mîlâdî", "miladi", "c", "m", "h",
+})
+
+
+def _tr_lower(text: str) -> str:
+    return text.replace("İ", "i").replace("I", "ı").lower()
 
 
 def _roman_value(token: str) -> int:
@@ -34,26 +47,47 @@ def _as_number(token: str, allow_upper_roman: bool) -> str | None:
     return None
 
 
-def _number_in(text: str, allow_upper_roman: bool) -> str | None:
-    """Metnin başındaki ya da sonundaki sayı belirteci ("— 412 —", "412 TEZKİRE", "TEZKİRE 413")."""
-    tokens = [t for t in (w.strip(".,;:!?()[]{}<>«»\"'‘’“”—–-_*·•|/\\ ") for w in text.split()) if t]
+def _number_in(text: str, allow_upper_roman: bool, *, header: bool = False) -> tuple[str | None, str | None]:
+    """Metnin başındaki ya da sonundaki sayı belirteci: (numara, çok-öğeli satırda uç 'sol'|'sag'|None).
+
+    Üstlükte (header=True) çok kelimeli metindeki sıra sayısı ("19. YÜZYIL") ve bölüm/cilt/tarih
+    etiketinin sonundaki sayı ("BÖLÜM 3", "HİCRÎ 1324") sayfa numarası sayılmaz.
+    """
+    raw_tokens = [w for w in text.split() if w.strip(_STRIP)]
+    tokens = [w.strip(_STRIP) for w in raw_tokens]
     if not tokens:
-        return None
-    for tok in (tokens[0], tokens[-1]):
-        found = _as_number(tok, allow_upper_roman)
-        if found:
-            return found
-    return None
+        return None, None
+    multi = len(tokens) > 1
+    if not (header and multi and _ORDINAL_HEAD.fullmatch(raw_tokens[0].lstrip(_STRIP))):
+        if found := _as_number(tokens[0], allow_upper_roman):
+            return found, ("sol" if multi else None)
+    if multi and not (header and _tr_lower(tokens[-2]) in _NON_PAGE_PREV):
+        if found := _as_number(tokens[-1], allow_upper_roman):
+            return found, "sag"
+    return None, None
 
 
-def _side(block: Block, width: int) -> str | None:
-    if block.bbox is None:
+def _side(block: Block, width: int, edge: str | None = None) -> str | None:
+    """Numaranın sayfadaki tarafı: "sol", "orta" ya da "sag"; kutu yoksa None.
+
+    Geniş bir başlık/altlıkta numara bloğun bir ucundaysa (edge), kutunun merkezi yerine numaranın ucu kullanılır;
+    tek başına ortada duran numara "orta" olur ve taraf–çiftlik kuralına oy vermez.
+    """
+    if block.bbox is None or width <= 0:
         return None
-    return "sol" if (block.bbox[0] + block.bbox[2]) / 2 < width / 2 else "sag"
+    x1, _, x2, _ = block.bbox
+    if edge is not None and x1 < width * 0.45 and x2 > width * 0.55:
+        return edge
+    rel = (x1 + x2) / (2 * width)
+    if rel < _CENTER_BAND[0]:
+        return "sol"
+    if rel > _CENTER_BAND[1]:
+        return "sag"
+    return edge or "orta"
 
 
 def read_book_page(blocks: list[Block], width: int) -> tuple[str | None, str | None]:
-    """(numara, "sol"|"sag"): önce Page-footer, yoksa Page-header; bulunamazsa (None, None).
+    """(numara, "sol"|"orta"|"sag"|None): önce Page-footer, yoksa Page-header; bulunamazsa (None, None).
 
     Roma rakamı altlıkta her iki harf türüyle, üstlükte yalnız küçük harfle kabul edilir.
     """
@@ -61,9 +95,9 @@ def read_book_page(blocks: list[Block], width: int) -> tuple[str | None, str | N
         for block in blocks:
             if block.category != category:
                 continue
-            number = _number_in(block.text, allow_upper)
+            number, edge = _number_in(block.text, allow_upper, header=category == "Page-header")
             if number:
-                return number, _side(block, width)
+                return number, _side(block, width, edge)
     return None, None
 
 
@@ -105,8 +139,8 @@ class _Clues:
     def __init__(self, readings: list[tuple[int, int]], sides: list[str | None], headers: list[str | None]):
         self.sides = sides
         self.headers = [_header_key(h) for h in headers]
-        self.even_left = _majority([(n % 2 == 0) == (sides[i] == "sol") for i, n in readings if sides[i]],
-                                   SIDE_MIN_VOTES)
+        self.even_left = _majority([(n % 2 == 0) == (sides[i] == "sol") for i, n in readings
+                                    if sides[i] in _SIDE_VOTES], SIDE_MIN_VOTES)
         by_header: dict[str, list[bool]] = {}
         for i, n in readings:
             if self.headers[i]:
@@ -115,7 +149,7 @@ class _Clues:
 
     def side_even(self, i: int) -> bool | None:
         """Sayfanın kendi tarafından beklenen çiftlik; taraf ya da kural yoksa None."""
-        if self.sides[i] is None or self.even_left is None:
+        if self.sides[i] not in _SIDE_VOTES or self.even_left is None:
             return None
         return (self.sides[i] == "sol") == self.even_left
 

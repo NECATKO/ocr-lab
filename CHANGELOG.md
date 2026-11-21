@@ -7,6 +7,10 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 ## [Yayımlanmadı]
 
 ### Eklendi
+- Web arayüzünde ana ayarlardan önerilen model ve okuma modu, gelişmiş ayarlardan terminaldeki tüm OCR
+  motorları seçilebilir. İki liste aynı seçimi paylaşır.
+- Benchmark için `--referans` ve `--kor-test` seçenekleri; kamu malı metinlerden altı görüntü sayfası üreten
+  [açık referans seti](benchmark/README.md).
 - `ocr-gui`: `ocr-now`'ı terminalsiz kullanmak için tarayıcıda açılan arayüz. Windows masaüstündeki
   **ocr-now-windows** klasöründen başlar; klasörde belgelerin ve taramaların kısayolları da durur. Tarama sürükleyip bırakılır, ayarlar formdan verilir, okuma sayfa sayfa ve kalan süreyle
   izlenir, iptal edilebilir. Bitince belgeler indirilir ya da Gezgin'de gösterilir; sayfa numaraları ve uyarılar
@@ -14,6 +18,28 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 - `ocr-now --rapor DOSYA`: iş sonu özetini JSON olarak da yazar.
 
 ### Düzeltildi
+- Türkçe büyük `İ`/`I` küçük harfe çevrilirken (`apostrophe.py`, `metrics.py`) sözlük ve kural ıskalamaları giderildi
+  (`İ‘tibâr`, `HALEB’İN`, `AY’IN`).
+- Ortalanmış sayfa numaraları `"orta"` olarak tanınır: Word altlığında ortalı yazılır ve sahte sol/sağ çiftlik
+  kuralı öğretmez. Geniş üstlük/altlıklarda numaranın ucu kullanılır; üstlükteki sıra sayıları (`19. YÜZYIL`) ve
+  bölüm/cilt/tarih etiketleri (`BÖLÜM 3`, `HİCRÎ 1324`) sayfa numarası sayılmaz.
+- Küçük puntolu ardışık dipnot bloklarında Tesseract satırları artık tek bloğa atanır (`assign_lines`); satır
+  yüksekliğine ölçekli pay/girinti ve kısa bloklar için `MIN_OVERLONG` eşiğiyle yanlış hizalama düşüşleri azaldı.
+- Beklenmedik CJK yazı karakteri sızıntıları sayfa uyarısı üretir ve Word'de sarı işaretlenir; paralel okumada
+  Tesseract alt süreçlerine `OMP_THREAD_LIMIT=1` uygulanır.
+- Modelin `<sup>…</sup>` etiketleri Word'de üst simge olur ve `.txt`'de temizlenir; `15.`/`3)` biçimli ve 4 haneli
+  dipnotlar desteklenir.
+- Üretim OCR önbellek anahtarı dosya `ctime_ns` ve mutlak depo/ikili yolundan ayrıldı; `smart_resize` parametreleri
+  motor tanımına taşındı; satır hizalama bantlı Ukkonen DP kullanır.
+- `ocr-gui`: dosya yükleme 64 KiB akışla ve SHA-256 karşılaştırmasıyla atomik yapılır, PDF sayfa sayıları
+  önbelleklenir, WSL kısayolunda boşluklu yollar tırnaklanır.
+- Benchmark `results.json` çıktısına kural/sözlük kararıyla model geri dönüşünü ayıran `apostrophe_decided` alanı
+  eklendi.
+- Uzunluk sınırında kesilen OCR çıktısı Word ve TXT'de işaretlenir, raporda ayrı listelenir ve sonraki koşuda
+  yeniden okunur. Kurtarılan metin korunur; belge yazıldıysa arayüz **Kısmen tamamlandı** gösterir.
+- Word'e yazılamayan karakterler `�` ile değiştirilir ve ilgili sayfa uyarılır. Bir biçimin yazım hatası
+  diğer biçimlerin ve iş raporunun yazılmasını engellemez.
+- Eşzamanlı ocr-now koşuları aynı çıktı adını kullanmaz; bir işte Word ve TXT aynı ad ekini paylaşır.
 - Görüntü ve OCR önbelleği dosya adı ve boyutu yerine SHA-256 içerik özetini kullanır; farklı taramalar
   karışmaz. Eski önbellekler olduğu gibi kalır, yeni koşular bunları kullanmaz.
 - Metin bulunamayan sayfa Word ve TXT'de **Kontrol gerekli** olarak görünür ve sonraki koşuda yeniden okunur.
@@ -59,6 +85,10 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   `.docx`'te italik/kalın yazılıyor, `.txt`'de düz metin oluyor. Tek başına duran yıldıza dokunulmuyor.
 
 ### Değişti
+- Ham OCR önbelleği ve benchmark kaydı aynı OCR ayar kimliğini kullanır. Bilinen vLLM model revizyonu
+  açılışta sabitlenir; doğrulanamayan VLM okumaları ham önbelleğe alınmaz. Eski önbellek dosyaları silinmez.
+- Benchmark ortak tamamlanan sayfalarda karşılaştırır. Tam, kesik, boş ve okunamayan denemeler ayrı
+  sayılır; eksik kapsamada kazanan vurgulanmaz. `summary_v3.csv` tüm denemeleri saklar.
 - Benchmark, işlenmiş belge metninin CER/WER değerlerini model metninden ayrı raporlar. Yeni CSV
   `summary_v2.csv` olarak yazılır; eski ölçümler değiştirilmez.
 - dots.mocr'da önbellekte olmayan sayfalar modele 8'er 8'er aynı anda gönderilir; vLLM onları toplu işler.

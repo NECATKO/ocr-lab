@@ -84,9 +84,7 @@ def _has_dist(venv: Path, name: str, version: str) -> bool:
 
 
 def _hf_cache() -> Path:
-    if env := os.environ.get("HF_HUB_CACHE"):
-        return Path(env)
-    return Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface") / "hub"
+    return paths.hf_cache()
 
 
 def _repo_dir(repo: str) -> Path:

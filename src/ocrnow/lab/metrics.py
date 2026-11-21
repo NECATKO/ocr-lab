@@ -175,7 +175,7 @@ def _tokens(t: str) -> list[str]:
 
 
 def _token_key(tok: str) -> str:
-    return "".join("'" if c in APOS else c for c in tok.lower())
+    return "".join("'" if c in APOS else c for c in tok.replace("İ", "i").replace("I", "ı").lower())
 
 
 def apostrophe_accuracy(ref: str, hyp: str) -> tuple[float, int]:
@@ -196,6 +196,27 @@ def apostrophe_accuracy(ref: str, hyp: str) -> tuple[float, int]:
         got = [_KIND.get(c) for c in b[j] if c in APOS]
         if len(got) == len(want):
             correct += sum(x == y for x, y in zip(want, got))
+    return (correct / total if total else 0.0), total
+
+
+def apostrophe_decided_accuracy(ref: str, hyp_marked: str) -> tuple[float, int]:
+    """Yalnız kuralların/sözlüğün karar verdiği işaretlerde (kararsızlar düz ' ile işaretli) (doğruluk, sayı)."""
+    a, b = _tokens(ref), _tokens(hyp_marked)
+    pair = {i: j for i, j in _align([_token_key(t) for t in a], [_token_key(t) for t in b]) if i is not None}
+    total = correct = 0
+    for i, tok in enumerate(a):
+        want = [_KIND[c] for c in tok if c in _KIND]
+        if not want:
+            continue
+        j = pair.get(i)
+        if j is None:
+            continue
+        got = [_KIND.get(c) for c in b[j] if c in APOS]
+        if len(got) == len(want):
+            for w, g in zip(want, got):
+                if g is not None:
+                    total += 1
+                    correct += w == g
     return (correct / total if total else 0.0), total
 
 

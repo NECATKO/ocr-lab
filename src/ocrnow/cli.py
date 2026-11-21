@@ -6,9 +6,10 @@ import re
 import sys
 import textwrap
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 
-from ocrnow import engines, export_docx, export_txt, pages, paths, pipeline, ui
+from ocrnow import engines, export_docx, export_txt, identity, pages, paths, pipeline, ui
 from ocrnow.layout import Page
 from ocrnow.pages import DEFAULT_DPI, InputError
 
@@ -203,9 +204,37 @@ def _free_stem(name: str, formats: list[str]) -> str:
     """Belgeler klasöründe bu biçimlerin hiçbiri yoksa name; varsa name_2, name_3 ... (eski belge ezilmez, biçimler
     aynı eki paylaşır)."""
     stem, k = name, 2
-    while any((paths.DOCS_OUT / f"{stem}.{fmt}").exists() for fmt in formats):
+    while any((paths.DOCS_OUT / f"{stem}.{fmt}").exists(follow_symlinks=False) for fmt in formats):
         stem, k = f"{name}_{k}", k + 1
     return stem
+
+
+def _write_job(name: str, doc_pages: list[Page], formats: list[str], settings: dict,
+               warnings: list[str]) -> tuple[list[Path], list[str]]:
+    written, errors = [], []
+
+    def error(filename: str, exc: Exception) -> None:
+        message = f"{filename} yazılamadı ({str(exc) or type(exc).__name__})"
+        errors.append(message)
+        _err(f"Hata: {message}")
+
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(paths.export_lock(paths.DOCS_OUT))
+            stem = _free_stem(name, formats)
+        except OSError as e:  # klasör açılamadı, kilit alınamadı veya ad seçilemedi
+            for fmt in formats:
+                error(f"{name}.{fmt}", e)
+            return written, errors
+        for fmt in formats:
+            out = paths.DOCS_OUT / f"{stem}.{fmt}"
+            try:
+                EXPORTERS[fmt](doc_pages, out, {**settings, "warnings": warnings})
+            except Exception as e:  # bir biçim ötekileri durdurmasın; Ctrl-C yine dışarı çıkar
+                error(out.name, e)
+            else:
+                written.append(out)
+    return written, errors
 
 
 def _report(results: list[tuple[pages.DocJob, list[Page]]], written: dict[str, list[Path]],
@@ -220,7 +249,9 @@ def _report(results: list[tuple[pages.DocJob, list[Page]]], written: dict[str, l
             "tahmin": [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred and not p.book_page_check],
             "kontrol": [export_txt.page_label(p) for p in doc_pages if p.book_page_check],
             "metin_kontrol": [pipeline.job_page_id(src, multi)
-                              for src, p in zip(job.pages, doc_pages) if p.needs_review],
+                              for src, p in zip(job.pages, doc_pages) if p.needs_review and not p.truncated],
+            "kesilen": [pipeline.job_page_id(src, multi)
+                        for src, p in zip(job.pages, doc_pages) if p.truncated],
             "yazma_hatalari": export_errors.get(job.name, []),
             "uyarilar": [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, []),
         })
@@ -238,6 +269,7 @@ def _summary(report: dict) -> None:
             print(f"  {job['ad']}: hiçbir sayfa okunamadı, belge yazılmadı")
     for job in report["isler"]:
         for title, labels in (("metni kontrol edilmesi gereken sayfalar", job["metin_kontrol"]),
+                              ("model çıktısı kesilen sayfalar", job["kesilen"]),
                               ("tahmin edilen sayfa numaraları", job["tahmin"]),
                               ("kontrol edilmesi gereken okunan numaralar", job["kontrol"])):
             if labels:
@@ -268,11 +300,15 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
 
     opts = pipeline.Options(engine=args.model, mode=args.okuma, apostrophes=not args.kesme_yok,
                             first_page=args.ilk_sayfa, dpi=args.dpi)
+    runtime = identity.runtime(args.model)
+    profile = runtime.profile(args.okuma)
+    if not profile["cacheable"]:
+        print("Uyarı: OCR ayar kimliği doğrulanamadı; ham OCR önbelleği kullanılmayacak.")
     results = []
     try:
-        with engines.lazy_server(args.model) as run:   # model ilk okunan sayfada bir kez açılır; hepsi önbellekteyse hiç
+        with engines.lazy_server(args.model, **runtime.server_options) as run:
             for job in jobs:
-                results.append((job, pipeline.process_job(job, opts, run, progress=print)))
+                results.append((job, pipeline.process_job(job, opts, run, progress=print, profile=profile)))
     except engines.ServerError as e:
         _err(f"Hata: {e}\nHiçbir belge yazılmadı.")
         return 1
@@ -289,20 +325,15 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     export_warnings: dict[str, list[str]] = {}
     export_errors: dict[str, list[str]] = {}
     for job, doc_pages in writable:
-        stem = _free_stem(job.name, formats)
-        for fmt in formats:
-            out = paths.DOCS_OUT / f"{stem}.{fmt}"
-            try:
-                EXPORTERS[fmt](doc_pages, out, {**settings, "warnings": export_warnings.setdefault(job.name, [])})
-            except OSError as e:
-                message = f"{out.name} yazılamadı ({e})"
-                export_errors.setdefault(job.name, []).append(message)
-                _err(f"Hata: {message}")
-            else:
-                written.setdefault(job.name, []).append(out)
+        files, errors = _write_job(job.name, doc_pages, formats, settings, export_warnings.setdefault(job.name, []))
+        if files:
+            written[job.name] = files
+        if errors:
+            export_errors[job.name] = errors
     report = _report(results, written, export_warnings, export_errors)
     _summary(report)
-    incomplete = report["okunamayan"] or bool(export_errors) or any(j["metin_kontrol"] for j in report["isler"])
+    incomplete = (report["okunamayan"] or bool(export_errors)
+                  or any(j["metin_kontrol"] or j["kesilen"] for j in report["isler"]))
     if args.rapor:
         try:
             with paths.atomic_output(args.rapor) as tmp:

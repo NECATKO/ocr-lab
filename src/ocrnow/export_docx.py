@@ -1,7 +1,8 @@
 """Word (.docx) dışa aktarıcı: kitabın sayfasına benzer çıktı (spec §2 Hedef 2, onaylanan spike `spike_docx.py`).
 
 Her taranmış sayfa bir Word bölümü; satırlar elle satır sonuyla (Shift+Enter) kırılır; kitap sayfa numarası bölümün
-altlığında. Harfler değişmez: yalnız satır sonuna tire eklenir ve dipnot numarası üst simge yapılır.
+altlığında. XML'e yazılamayan karakterler � ile işaretlenir. Satır sonuna tire eklenir ve dipnot numarası
+üst simge yapılır.
 """
 import math
 import re
@@ -15,7 +16,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
 from ocrnow import paths
-from ocrnow.export_txt import FAILED_TEXT, REVIEW_TEXT, page_label, plain_text, split_blocks
+from ocrnow.export_txt import FAILED_TEXT, page_label, plain_text, review_notice, split_blocks
 from ocrnow.layout import Block, Page
 
 BOLD_DEFAULT = r"\[\d+[ab] [^\]]*\]"   # yazma nüsha işaretleri: [106b sayfanın sağ yanı]
@@ -33,6 +34,7 @@ CHAR_EM = 0.42            # Times New Roman ortalama harf genişliği (punto ba�
 INDENT = Cm(0.9)          # paragrafın ilk satır girintisi
 WHOLE_BOLD = frozenset({"Title", "Section-header"})
 YELLOW_KINDS = frozenset({"belirsiz", "kesme"})   # sarı vurgu; "italik"/"kalin" işaretleri biçimdir (R26)
+_NOT_XML = re.compile(r"[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")  # XML 1.0 Char
 Ranges = list[tuple[int, int]]
 
 
@@ -111,17 +113,18 @@ def _spans_break(ranges: Ranges, end: int) -> bool:
 
 def _sup_pattern(page: Page) -> re.Pattern | None:
     """Sayfanın dipnot numaraları; gövdede bir harfin hemen ardından geldiklerinde (taştında724) üst simge olurlar."""
-    nums = {m.group(1) for b in page.blocks if b.category == "Footnote" and (m := re.match(r"(\d+)\s", b.text))}
+    nums = {m.group(1) for b in page.blocks if b.category == "Footnote" and (m := re.match(r"(\d+)[.)]?\s", b.text))}
     if not nums:
         return None
     return re.compile(r"(?<=[^\W\d_])(?:" + "|".join(sorted(nums, key=len, reverse=True)) + r")(?!\d)")
 
 
 def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern | None, highlight: bool,
-              size: float | None = None, spacing: int | None = None) -> None:
+              size: float | None = None, spacing: int | None = None) -> int:
     """Bloğu satır satır run'lara yazar: run'lar kalın, italik, üst simge ve sarı aralıklarının sınırlarından bölünür.
 
-    Table'ın işaretleri kullanılmaz (konumlar HTML'li metne göredir, yazılan düz metne değil)."""
+    Table'ın işaretleri kullanılmaz (konumlar HTML'li metne göredir, yazılan düz metne değil).
+    Word'de � ile değiştirilen XML uyumsuz karakter sayısını döndürür."""
     text = plain_text(block)
     own = [] if block.category == "Table" else block.marks
     if block.category in WHOLE_BOLD:
@@ -131,10 +134,12 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
     bold += [(m.start, m.end) for m in own if m.kind == "kalin"]
     italic: Ranges = [(m.start, m.end) for m in own if m.kind == "italik"]
     sup = [m.span() for m in page_sup.finditer(text)] if page_sup else []
-    if block.category == "Footnote" and (m := re.match(r"\d+(?=\s)", text)):
+    sup += [(m.start, m.end) for m in own if m.kind == "ust"]
+    if block.category == "Footnote" and (m := re.match(r"\d+(?=[.)]?\s)", text)):
         sup.append(m.span())
     marks = [(m.start, m.end) for m in own if m.kind in YELLOW_KINDS] if highlight else []
     spans = _spans(block, text)
+    replaced = 0
     for k, (start, end, hyphen) in enumerate(spans):
         cuts = sorted({start, end, *(x for r in bold + italic + sup + marks for x in r if start < x < end)})
         parts = [(text[a:b], (_covers(bold, a), _covers(italic, a), _covers(sup, a), _covers(marks, a)))
@@ -150,6 +155,8 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
                 merged.append([s, props])
         runs = []
         for s, (is_bold, is_italic, is_sup, is_yellow) in merged or [["", (False, False, False, False)]]:
+            s, n = _NOT_XML.subn("�", s)
+            replaced += n
             r = p.add_run(s)
             if spacing:     # harf aralığı; rPr'de ilk eklenir, python-docx sonrakileri şema sırasına yerleştirir
                 sp = OxmlElement("w:spacing")
@@ -168,6 +175,7 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
             runs.append(r)
         if k < len(spans) - 1:
             runs[-1].add_break(WD_BREAK.LINE)
+    return replaced
 
 
 def _setup_section(section) -> None:
@@ -178,13 +186,23 @@ def _setup_section(section) -> None:
     section.footer_distance = Cm(0.8)
 
 
-def _footer(section, page: Page) -> None:
+_FOOTER_ALIGN = {
+    "sol": WD_ALIGN_PARAGRAPH.LEFT,
+    "orta": WD_ALIGN_PARAGRAPH.CENTER,
+    "sag": WD_ALIGN_PARAGRAPH.RIGHT,
+}
+
+
+def _footer(section, page: Page) -> int:
     footer = section.footer
     footer.is_linked_to_previous = False
     p = footer.paragraphs[0]
-    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if page.book_page_side == "sag" else WD_ALIGN_PARAGRAPH.LEFT
+    p.alignment = _FOOTER_ALIGN.get(page.book_page_side, WD_ALIGN_PARAGRAPH.LEFT)
     if label := page_label(page):
+        label, replaced = _NOT_XML.subn("�", label)
         p.add_run(label).font.size = Pt(HEADER_PT)
+        return replaced
+    return 0
 
 
 def _header(doc, block: Block):
@@ -192,8 +210,7 @@ def _header(doc, block: Block):
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.space_after = Pt(10)
-    _add_runs(p, block, None, None, False, _header_size(block), HEADER_SPACING)
-    return p
+    return p, _add_runs(p, block, None, None, False, _header_size(block), HEADER_SPACING)
 
 
 def _close_section(doc, last_paragraph) -> None:
@@ -222,26 +239,30 @@ def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_patter
         footnote_pt = min(body_pt, _section_size(page, footnotes, FOOTNOTE_PT, False, warnings))
         section = doc.sections[-1]
         _setup_section(section)
-        _footer(section, page)
+        replaced = _footer(section, page)
         sup = _sup_pattern(page)
         last = None
-        if page.needs_review and not page.failed:
-            last = doc.add_paragraph(REVIEW_TEXT)
+        if notice := review_notice(page):
+            last = doc.add_paragraph(notice)
         for block in headers:
-            last = _header(doc, block)
+            last, count = _header(doc, block)
+            replaced += count
         for block in body:
             last = doc.add_paragraph()
             last.paragraph_format.space_after = Pt(5)
             if block.indent:
                 last.paragraph_format.first_line_indent = INDENT
-            _add_runs(last, block, sup, bold_re, highlight, body_pt)
+            replaced += _add_runs(last, block, sup, bold_re, highlight, body_pt)
         if footnotes:
             sep = doc.add_paragraph()
             sep.paragraph_format.space_before = Pt(8)
             sep.add_run("_" * 18).font.size = Pt(SEPARATOR_PT)
             for block in footnotes:
                 last = doc.add_paragraph()
-                _add_runs(last, block, sup, bold_re, highlight, footnote_pt)
+                replaced += _add_runs(last, block, None, bold_re, highlight, footnote_pt)
+        if replaced:
+            where = page_label(page) or f"PDF s. {page.index}"
+            warnings.append(f"docx sayfa {where}: XML'e uyumsuz {replaced} karakter � ile değiştirildi")
         if page.failed:
             last = doc.add_paragraph(FAILED_TEXT)
         if last is None:

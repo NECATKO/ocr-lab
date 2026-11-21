@@ -69,21 +69,64 @@ def load_runs(lab_dir: Path) -> list[dict]:
 
 
 @app.function
+def page_key(record: dict) -> tuple:
+    """Yalnız aynı görüntü ve aynı referans eşleşir; eski kayıtlar tek koşu içinde eşleşebilir."""
+    source = record.get("source_key")
+    origin = ("content", source) if source else ("legacy", record.get("run"), record["pdf"])
+    return (*origin, record["page"], record.get("dpi"), record.get("reference_sha256"))
+
+
+@app.function
+def mixed_ocr_profiles(records: list[dict]) -> bool:
+    profiles: dict[tuple, set] = {}
+    for r in records:
+        info = r.get("ocr_profile") or {}
+        # Kimliği doğrulanamayan bir modelin aynı görünen adı, farklı koşulda aynı ağırlığı garanti etmez.
+        unverified = info.get("backend") in ("managed", "external") and info.get("cacheable") is False
+        profiles.setdefault((r["engine"], r["mode"]), set()).add((info.get("id"), r.get("run") if unverified else None))
+    return any(len(ids) > 1 for ids in profiles.values())
+
+
+@app.function
 def summarize(records: list[dict]) -> list[dict]:
-    """Motor/mod başına satır: hatasız kayıtların ölçü ortalamaları (None olanlar ortalamaya girmez),
-    n = hatasız kayıt sayısı, errors = hatalı kayıt sayısı."""
+    """Her sütun aynı tamamlanmış sayfalardan hesaplanır; tekrarlar önce sayfa içinde ortalanır."""
     groups: dict[str, list[dict]] = {}
     for r in records:
         groups.setdefault(f"{r['engine']}/{r['mode']}", []).append(r)
+    if not groups:
+        return []
     rows = []
+    attempted = []
+    samples: dict[str, dict[str, dict[tuple, list[float]]]] = {}
     for key, group in sorted(groups.items()):
-        ok = [r for r in group if not r.get("error")]
+        states = [bench.status(r) for r in group]
+        refs = {page_key(r) for r in group if r.get("reference_sha256") or r.get("cer_raw") is not None}
+        attempted.append({page_key(r) for r in group})
+        samples[key] = {field: {} for field, *_ in COLUMNS}
+        for r, state in zip(group, states):
+            if state == "complete":
+                pid = page_key(r)
+                for field, *_ in COLUMNS:
+                    if r.get(field) is not None:
+                        sample = (*pid, r.get("dictionary_sha256")) if field in (
+                            "cer_document", "wer_document", "line_end", "apostrophe") else pid
+                        samples[key][field].setdefault(sample, []).append(r[field])
         row = {"key": key, "engine": group[0]["engine"], "mode": group[0]["mode"],
-               "n": len(ok), "errors": len(group) - len(ok), "review": sum(bool(r.get("needs_review")) for r in ok)}
-        for field, *_ in COLUMNS:
-            values = [r[field] for r in ok if r.get(field) is not None]
-            row[field] = sum(values) / len(values) if values else None
+               "n": states.count("complete"), "total": len(group), "errors": states.count("error"),
+               "review": states.count("empty"), "truncated": states.count("truncated"), "refs": len(refs),
+               "scope": {}, "rankable": {}}
         rows.append(row)
+    full = (len(rows) > 1 and all(r["n"] == r["total"] for r in rows)
+            and all(scope == attempted[0] for scope in attempted))
+    for field, *_ in COLUMNS:
+        available = [set(s[field]) for s in samples.values()]
+        common = set.intersection(*available)
+        rankable = full and bool(common) and all(scope == common for scope in available)
+        for row in rows:
+            data = samples[row["key"]][field]
+            values = [sum(data[pid]) / len(data[pid]) for pid in sorted(common, key=repr)]
+            row[field] = sum(values) / len(values) if values else None
+            row["scope"][field], row["rankable"][field] = len(common), rankable
     return rows
 
 
@@ -92,7 +135,7 @@ def best_cells(rows: list[dict]) -> dict[str, set[str]]:
     """Her ölçü sütununun en iyi satır anahtarları (eşitlikte hepsi); ölçüsü olmayan sütun boş küme."""
     best: dict[str, set[str]] = {}
     for field, _, higher_better, _ in COLUMNS:
-        known = [(r[field], r["key"]) for r in rows if r.get(field) is not None]
+        known = [(r[field], r["key"]) for r in rows if r.get("rankable", {}).get(field) and r.get(field) is not None]
         top = (max if higher_better else min)((v for v, _ in known), default=None)
         best[field] = {k for v, k in known if v == top}
     return best
@@ -102,14 +145,18 @@ def best_cells(rows: list[dict]) -> dict[str, set[str]]:
 def metrics_table(rows: list[dict]) -> str:
     """Ölçü tablosu (HTML): en iyi hücre kalın ve yeşil zeminli. Açık/koyu temada okunur (renk devralınır)."""
     best = best_cells(rows)
-    head = "".join(f"<th>{html.escape(t)}</th>" for t in ["Motor/mod", "Sayfa", "Hata", "Kontrol"] + [c[1] for c in COLUMNS])
+    head = "".join(f"<th>{html.escape(t)}</th>" for t in
+                   ["Motor/mod", "Tam/denenen", "Kesik", "Okunamadı", "Boş", "Ortak ref. / toplam"] + [c[1] for c in COLUMNS])
     body = []
     for r in rows:
-        cells = [f"<td>{html.escape(r['key'])}</td>", f"<td>{r['n']}</td>", f"<td>{r['errors'] or ''}</td>",
-                 f"<td>{r.get('review') or ''}</td>"]
+        shared = r["scope"]["cer_raw"]
+        cells = [f"<td>{html.escape(r['key'])}</td>", f"<td>{r['n']}/{r['total']}</td>",
+                 f"<td>{r['truncated']}</td>", f"<td>{r['errors']}</td>",
+                 f"<td>{r['review']}</td>", f"<td>{shared}/{r['refs']}</td>"]
         for field, _, _, percent in COLUMNS:
             mark = ' style="font-weight:700;background:rgba(34,160,90,.28)"' if r["key"] in best[field] else ""
-            cells.append(f"<td{mark}>{fmt(r.get(field), percent)}</td>")
+            detail = f' title="{r["scope"][field]} ortak sayfa"' if r["scope"][field] else ""
+            cells.append(f"<td{mark}{detail}>{fmt(r.get(field), percent)}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
     return ('<table class="ocr-ozet" style="border-collapse:collapse;font-size:.9em;font-variant-numeric:tabular-nums">'
             f"<thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
@@ -242,9 +289,14 @@ def _(run_select, runs):
     mo.stop(not selected, mo.md("Yukarıdan en az bir çalışma seçin."))
     mo.stop(len({r.get("metrics_version", 1) for r in selected}) > 1,
             mo.md("Eski ve yeni ölçüm yöntemleri aynı tabloda karşılaştırılamaz. Aynı sürümden koşuları seçin."))
+    mo.stop(len({r.get("holdout", False) for r in selected}) > 1,
+            mo.md("Sözlüklü ve kör test koşularını ayrı seçin."))
+    mo.stop(mixed_ocr_profiles(selected),
+            mo.md("Aynı motor/mod farklı OCR ayarlarıyla çalıştırılmış. Bu koşuları ayrı seçin."))
     rows = summarize(selected)
-    mo.vstack([mo.md("## Ölçüler\n\nMotor/mod başına sayfa ortalaması; en iyi değer vurgulu. "
-                     "Hatalı sayfalar ortalamaya girmez. Boş OCR çıktıları 'Kontrol' sütununda ayrıca sayılır."),
+    mo.vstack([mo.md("## Ölçüler\n\nHer sütun yalnız seçili motorların ortak tamamladığı ve o ölçünün "
+                     "hesaplandığı sayfaları karşılaştırır. Eksik kapsamada en iyi değer vurgulanmaz. "
+                     "Kapsama sütunları bütün okuma denemelerini sayar; referans sütunu benzersiz sayfaları sayar."),
                mo.Html(metrics_table(rows))])
     return rows, selected
 
@@ -287,6 +339,11 @@ def _(key_select, page_options, page_select, pages_of, selected):
     rec = pick_record(selected, key_select.value, pdf, page)
     image_path = record_image(rec)
     parts = [mo.Html(f"<p>Koşu: <code>{html.escape(rec['run'])}</code></p>")]
+    profile = rec.get("ocr_profile")
+    if profile:
+        revision = profile.get("model_revision") or "bilinmiyor / uygulanamaz"
+        parts.append(mo.Html(f"<p>OCR kimliği: <code>{html.escape(profile['id'][:12])}</code> · "
+                             f"Model revizyonu: <code>{html.escape(revision)}</code></p>"))
     if rec["error"]:
         parts.append(mo.callout(mo.Html(html.escape(f"Bu sayfa hata verdi: {rec['error']}")), kind="danger"))
     parts += [mo.callout(mo.Html(html.escape(w)), kind="warn") for w in rec["warnings"]]

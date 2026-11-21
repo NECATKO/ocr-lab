@@ -12,7 +12,7 @@ PICTURE_TEXT = "[Görsel]"
 class Mark:
     start: int
     end: int
-    kind: str  # "belirsiz" | "kesme" (sarı) | "italik" | "kalin" (biçim); Block.text içindeki karakter aralığı
+    kind: str  # "belirsiz" | "kesme" (sarı) | "italik" | "kalin" | "ust" (biçim); Block.text içindeki karakter aralığı
 
 
 @dataclass
@@ -44,11 +44,12 @@ class Page:
     tess_tsv: str = ""
     book_page: str | None = None
     book_page_inferred: bool = False
-    book_page_side: str | None = None  # "sol" | "sag"
+    book_page_side: str | None = None  # "sol" | "orta" | "sag"
     book_page_check: bool = False  # okunan numara kitabın taraf–çiftlik kuralına aykırı: kontrol edilmeli (R25)
     warnings: list[str] = field(default_factory=list)
     failed: bool = False  # sayfa okunamadı (önbelleğe girmez); belgede yer tutucu durur
     needs_review: bool = False  # model okunabilir metin vermedi; gerçek boş sayfa da olabilir
+    truncated: bool = False  # model uzunluk sınırına takıldı; kurtarılan metin eksik olabilir
 
 
 def page_to_json(p: Page) -> str:
@@ -128,12 +129,51 @@ def strip_emphasis(text: str) -> str:
     return _emphasis(text)[0]
 
 
+_SUP_TAG = re.compile(r"<sup>([^<]+)</sup>", re.I)
+
+
+def _strip_sup(text: str, existing: list[Mark]) -> tuple[str, list[Mark]]:
+    """Eşli <sup>…</sup> etiketlerini metinden kaldırır, aralıklarını Mark(ust) yapar ve mevcut işaretleri kaydırır."""
+    matches = list(_SUP_TAG.finditer(text))
+    if not matches:
+        return text, existing
+    out: list[str] = []
+    marks: list[Mark] = []
+    remap = [0] * (len(text) + 1)
+    pos = new_pos = 0
+    for m in matches:
+        for i in range(pos, m.start()):
+            remap[i] = new_pos
+            new_pos += 1
+        out.append(text[pos:m.start()])
+        inner = m.group(1)
+        start = new_pos
+        for i in range(m.start(), m.start(1)):
+            remap[i] = new_pos
+        for i in range(m.start(1), m.end(1)):
+            remap[i] = new_pos
+            new_pos += 1
+        for i in range(m.end(1), m.end()):
+            remap[i] = new_pos
+        out.append(inner)
+        marks.append(Mark(start, new_pos, "ust"))
+        pos = m.end()
+    for i in range(pos, len(text)):
+        remap[i] = new_pos
+        new_pos += 1
+    remap[len(text)] = new_pos
+    out.append(text[pos:])
+    shifted = [Mark(remap[x.start], remap[x.end], x.kind) for x in existing if remap[x.start] < remap[x.end]]
+    return "".join(out), sorted(shifted + marks, key=lambda x: (x.start, x.end, x.kind))
+
+
 def _text_block(category: str, bbox: tuple[int, int, int, int] | None, text: str) -> Block:
-    """Sadeleştirilmiş metinden blok; Markdown vurgu işaretleri biçim işaretine çevrilir (R26). Table'ın HTML'ine
-    dokunulmaz (hücredeki yıldız dipnot simgesi olabilir; işaretleri zaten dışa aktarılmaz)."""
+    """Sadeleştirilmiş metinden blok; Markdown vurgu ve <sup> işaretleri biçim işaretine çevrilir (R26).
+    Table'ın HTML'ine dokunulmaz (hücredeki yıldız dipnot simgesi olabilir; işaretleri zaten dışa aktarılmaz)."""
     if category == "Table":
         return Block(category, bbox, text)
     text, marks = _emphasis(text)
+    text, marks = _strip_sup(text, marks)
     return Block(category, bbox, text, marks=marks)
 
 
@@ -143,8 +183,12 @@ def _strip_fences(raw: str) -> str:
     return re.sub(r"\s*```$", "", s).strip()
 
 
-def _scale_bbox(bbox: object, size: tuple[int, int]) -> tuple[int, int, int, int] | None:
-    """Model bbox'ını (smart_resize görüntüsünde) orijinal piksellere ölçekler; geçersizse None."""
+DEFAULT_RESIZE: tuple[int, int, int] = (28, 3136, 4_000_000)
+
+
+def _scale_bbox(bbox: object, size: tuple[int, int],
+                resize: tuple[int, int, int] | None = DEFAULT_RESIZE) -> tuple[int, int, int, int] | None:
+    """Model bbox'ını orijinal piksellere ölçekler (resize None ise bbox zaten orijinal pikseldedir); geçersizse None."""
     if (not isinstance(bbox, (list, tuple)) or len(bbox) != 4
             or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
                        for v in bbox)):
@@ -152,16 +196,19 @@ def _scale_bbox(bbox: object, size: tuple[int, int]) -> tuple[int, int, int, int
     w, h = size
     if w <= 0 or h <= 0:
         return None
-    rh, rw = smart_resize(h, w)
     x1, y1, x2, y2 = bbox
+    if resize is None:
+        return (round(x1), round(y1), round(x2), round(y2))
+    rh, rw = smart_resize(h, w, *resize)
     return (round(x1 * w / rw), round(y1 * h / rh), round(x2 * w / rw), round(y2 * h / rh))
 
 
-def _block_from_item(item: object, size: tuple[int, int]) -> tuple[Block | None, bool]:
+def _block_from_item(item: object, size: tuple[int, int],
+                     resize: tuple[int, int, int] | None = DEFAULT_RESIZE) -> tuple[Block | None, bool]:
     """(blok, bozuk_mu): nesne değilse blok yok; kategori ya da bbox eksik/geçersizse Text/None ile tamamlanır."""
     if not isinstance(item, dict):
         return None, True
-    bbox = _scale_bbox(item.get("bbox"), size)
+    bbox = _scale_bbox(item.get("bbox"), size, resize)
     category = item.get("category")
     bad_category = not isinstance(category, str) or not category
     if bad_category:
@@ -180,8 +227,8 @@ def _block_from_item(item: object, size: tuple[int, int]) -> tuple[Block | None,
     return _text_block(category, bbox, text), bad
 
 
-# numarayla başlayan, harfle süren cümle: "15 Bk. Âyet 30.", "3) Aynı eser, s. 12"
-_FOOTNOTE = re.compile(r"\d{1,3}[.)]?\s+([^\W\d_].*)")
+# numarayla başlayan, harfle süren cümle: "15 Bk. Âyet 30.", "3) Aynı eser, s. 12", "1024 A.g.e."
+_FOOTNOTE = re.compile(r"\d{1,4}[.)]?\s+([^\W\d_].*)")
 
 
 def _is_footnote(text: str) -> bool:
@@ -285,7 +332,8 @@ def _recover(s: str) -> tuple[str, list[object], str]:
         items.append(obj)
 
 
-def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Block], list[str]]:
+def parse_output(raw: str, layout: bool, size: tuple[int, int], *,
+                 resize: tuple[int, int, int] | None = DEFAULT_RESIZE) -> tuple[list[Block], list[str]]:
     """Ham model cevabını bloklara çevirir. size=(genişlik, yükseklik) orijinal görüntünün pikselidir.
 
     Blok metnindeki eşli Markdown vurgusu (*italik*, **kalın**) kaldırılır, bloğun marks'ına italik/kalin olarak
@@ -316,7 +364,7 @@ def parse_output(raw: str, layout: bool, size: tuple[int, int]) -> tuple[list[Bl
         blocks.append(_text_block("Text", None, _norm(head)))
     bad_count = 0
     for item in items:
-        block, bad = _block_from_item(item, size)
+        block, bad = _block_from_item(item, size, resize)
         bad_count += bad
         if block is not None:
             blocks.append(block)

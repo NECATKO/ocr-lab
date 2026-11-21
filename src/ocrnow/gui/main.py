@@ -47,11 +47,16 @@ def _ps(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def _win_arg(value: str) -> str:
+    """Boşluk içeren Windows/WSL argümanını çift tırnakla korur."""
+    return f'"{value}"' if any(c.isspace() for c in value) else value
+
+
 def shortcut_script(distro: str, root: Path, docs: str, scans: str) -> str:
     """Masaüstündeki ocr-now-windows klasörüne üç kısayol koyan PowerShell betiği: OCR-Now (arayüzü simge
     küçültülmüş pencereyle açar), Belgeler ve Taramalar (Gezgin'de açılan klasörler; docs/scans Windows yolu).
     Eski masaüstü OCR-Now.lnk kaldırılır. Sonunda klasörün yolunu yazar."""
-    args = f"-d {distro} --cd {root} -e {root / 'ocr-gui'} --tarayici"
+    args = f"-d {_win_arg(distro)} --cd {_win_arg(str(root))} -e {_win_arg(str(root / 'ocr-gui'))} --tarayici"
     lines = [
         "$d = [Environment]::GetFolderPath('Desktop')",
         f"$f = Join-Path $d {_ps(DESKTOP_FOLDER)}",

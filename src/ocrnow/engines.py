@@ -24,6 +24,7 @@ from ocrnow import paths
 
 TESS_LANG = os.environ.get("TESS_LANG", "tur")
 MAX_TOKENS = 4096
+TEMPERATURE = 0
 STOP_GRACE = 10   # sn: sunucu SIGTERM'den sonra bu kadar beklenir, sonra öldürülür
 VLLM_FLAGS = "--max-model-len 8192 --gpu-memory-utilization 0.85 --mm-processor-cache-gb 0 --no-enable-prefix-caching"  # 8 GB GPU için
 
@@ -78,6 +79,10 @@ class Engine:
     disk_gb: float | None = None  # motora özgü diskte yer (GB); ortak .venv-vllm (~8 GB) dahil değil
     parallel: int = 1  # aynı anda okunan sayfa sayısı (yalnız ölçülmüş motorlarda > 1)
     env: dict[str, str] = field(default_factory=dict)  # sunucu sürecine eklenen ortam değişkenleri
+    resize: tuple[int, int, int] | None = None  # bbox geri ölçekleme: (factor, min_pixels, max_pixels) ya da None
+
+
+DOTS_MAX_PIXELS = 4_000_000  # 11 MP varsayılanı 8 GB GPU'yu aşıyor; serve bayrağı ve bbox ölçeklemesi aynı sabiti kullanır
 
 
 def _duz(prompt: str | None) -> dict[str, Mode]:
@@ -114,22 +119,29 @@ ENGINES: dict[str, Engine] = {e.name: e for e in [
            # 8 sayfa aynı anda (KV önbelleği ~8 isteğe yetiyor): tarama1'de sayfa başı 17,7 sn → 6,1 sn. Toplu işte
            # metnin değişmemesi için vLLM'in toplu-iş-bağımsız kipi açık (1'li ve 8'li okuma birebir aynı; kapalıyken
            # Çince karakter ve düz tırnak çıktı)
-           parallel=8, env={"VLLM_BATCH_INVARIANT": "1"},
-           serve="""vllm serve dots-studio/dots.mocr --port 8005 --trust-remote-code --chat-template-content-format string --quantization fp8 --enforce-eager --mm-processor-kwargs '{"max_pixels": 4000000}' $VLLM"""),
+           parallel=8, env={"VLLM_BATCH_INVARIANT": "1"}, resize=(28, 3136, DOTS_MAX_PIXELS),
+           serve=f"""vllm serve dots-studio/dots.mocr --port 8005 --trust-remote-code --chat-template-content-format string --quantization fp8 --enforce-eager --mm-processor-kwargs '{{"max_pixels": {DOTS_MAX_PIXELS}}}' $VLLM"""),
 ]}
 DEFAULT_ENGINE = "dots.mocr"
 DEFAULT_MODE = "duzen"
 
 
+def _tesseract_env() -> dict[str, str]:
+    """Tesseract alt süreç ortamı: paralel okumada OpenMP iş parçacıkları CPU'yu boğmasın."""
+    env = paths.subprocess_env()
+    env.setdefault("OMP_THREAD_LIMIT", "1")
+    return env
+
+
 def _tesseract_text(img: Path) -> str:
     return subprocess.run(["tesseract", str(img), "stdout", "-l", TESS_LANG],
-                          capture_output=True, text=True, check=True, env=paths.subprocess_env()).stdout
+                          capture_output=True, text=True, check=True, env=_tesseract_env()).stdout
 
 
 def tesseract_tsv(img: Path) -> str:
     """Kelime kutularıyla birlikte tesseract TSV çıktısı (satır yapısı buradan gelir)."""
     return subprocess.run(["tesseract", str(img), "stdout", "-l", TESS_LANG, "tsv"],
-                          capture_output=True, text=True, check=True, env=paths.subprocess_env()).stdout
+                          capture_output=True, text=True, check=True, env=_tesseract_env()).stdout
 
 
 def _kraken_model() -> Path:
@@ -199,7 +211,8 @@ def _check_cancel(cancel: threading.Event | None) -> None:
         raise ServerError("model açılışı iptal edildi")
 
 
-def _start_server(eng: Engine, *, cancel: threading.Event | None = None):
+def _start_server(eng: Engine, *, cancel: threading.Event | None = None, revision: str | None = None,
+                  expect_managed: bool = False, external_model: str | None = None):
     """(base, model, proc) döndürür; sunucu zaten açıksa proc None olur ve kapatılmaz.
 
     Beklerken hata ya da Ctrl-C gelirse açılan süreç kapatılıp istisna yeniden fırlatılır
@@ -209,7 +222,11 @@ def _start_server(eng: Engine, *, cancel: threading.Event | None = None):
     _check_cancel(cancel)
     model = served_model(base)
     _check_cancel(cancel)
+    if external_model is not None and model != external_model:
+        raise ServerError("Harici OCR sunucusu veya modeli değişti; yeniden deneyin")
     if model:
+        if expect_managed:
+            raise ServerError("OCR ayarları alınırken başka bir model sunucusu açıldı; yeniden deneyin")
         return base, model, None
     proc = None
     try:
@@ -217,7 +234,10 @@ def _start_server(eng: Engine, *, cancel: threading.Event | None = None):
         with open(paths.LOGS / f"{eng.name}.server.log", "w") as log:
             print(f"[{eng.name}] sunucu başlatılıyor (log: {log.name})")
             _check_cancel(cancel)
-            proc = subprocess.Popen(_serve_cmd(eng), stdout=log, stderr=subprocess.STDOUT,
+            cmd = _serve_cmd(eng)
+            if revision is not None:
+                cmd += ["--revision", revision]
+            proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True, env={**paths.subprocess_env(), **eng.env})
         deadline = time.monotonic() + 1200
         while True:
@@ -274,7 +294,7 @@ def _vlm(img: Path, base: str, model: str, prompt: str | None) -> str:
     content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(img.read_bytes()).decode()}}]
     if prompt:
         content.append({"type": "text", "text": prompt})
-    body = {"model": model, "messages": [{"role": "user", "content": content}], "temperature": 0, "max_tokens": MAX_TOKENS}
+    body = {"model": model, "messages": [{"role": "user", "content": content}], "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS}
     req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=900) as r:
         choice = json.load(r)["choices"][0]
@@ -293,7 +313,8 @@ def _mode(eng: Engine, mode: str) -> Mode:
 
 
 @contextmanager
-def server(name: str, *, cancel: threading.Event | None = None) -> Iterator[Callable[[Path, str], str]]:
+def server(name: str, *, cancel: threading.Event | None = None, revision: str | None = None,
+           expect_managed: bool = False, external_model: str | None = None) -> Iterator[Callable[[Path, str], str]]:
     """Motoru hazırlar ve run(img, mode) -> ham metin verir. VLM sunucusu çıkışta her durumda kapatılır.
 
     VLM için GPU kilidi (gpu_lock) sunucu açılmadan alınır, kapanınca bırakılır; alınamazsa GpuBusy.
@@ -304,7 +325,8 @@ def server(name: str, *, cancel: threading.Event | None = None) -> Iterator[Call
         yield lambda img, mode: (_mode(eng, mode), _local_text(name, img))[1]
         return
     with gpu_lock():                # sunucu ömrü boyunca: ikinci koşu GPU'yu paylaşmaz
-        base, model, proc = _start_server(eng, cancel=cancel)
+        base, model, proc = _start_server(eng, cancel=cancel, revision=revision, expect_managed=expect_managed,
+                                          external_model=external_model)
         try:
             yield lambda img, mode: _vlm(img, base, model, _mode(eng, mode).prompt)
         finally:
@@ -312,7 +334,7 @@ def server(name: str, *, cancel: threading.Event | None = None) -> Iterator[Call
 
 
 @contextmanager
-def lazy_server(name: str) -> Iterator[Callable[[Path, str], str]]:
+def lazy_server(name: str, **server_options) -> Iterator[Callable[[Path, str], str]]:
     """server() gibi, ama motor ilk run çağrısında açılır: bütün sayfalar önbellekteyse GPU hiç kullanılmaz.
 
     Açılış hata verirse ServerError fırlatılır; sonraki çağrılarda da aynısı (her sayfada yeniden beklenmez).
@@ -332,7 +354,7 @@ def lazy_server(name: str) -> Iterator[Callable[[Path, str], str]]:
                 raise error
             if read is None:
                 try:
-                    read = stack.enter_context(server(name, cancel=cancel))
+                    read = stack.enter_context(server(name, cancel=cancel, **server_options))
                 except Exception as e:
                     error = ServerError(f"'{name}' modeli başlatılamadı: {e}")
                     raise error from e

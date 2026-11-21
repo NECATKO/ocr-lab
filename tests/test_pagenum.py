@@ -227,3 +227,28 @@ def test_leading_pages_before_first_run_are_guessed_backwards():
     assert infer(["285", None, "199", "198"])[1] == ("PDF s. 2", True)         # ilk okumadan önce değil
     blocked = infer([None, "412", "411", "410"], headers=["YAZAR", "YAZAR", "KİTAP", "YAZAR"])
     assert blocked[0] == ("PDF s. 1", True)                                    # 413 tek, yazar adı çift sayfada
+
+
+def test_centered_page_numbers_are_orta_and_do_not_create_side_rule():
+    # Ortalanmış numaralar (CamScanner kaymasıyla bile) "orta" olur; sahte sol/sağ çiftlik kuralı öğretmez
+    blocks = [Block("Page-footer", (760, 2200, 840, 2240), "412")]
+    assert read_book_page(blocks, 1653) == ("412", "orta")
+    blocks_dash = [Block("Page-footer", (780, 2200, 880, 2240), "— 413 —")]
+    assert read_book_page(blocks_dash, 1653) == ("413", "orta")
+    assert infer(["412", "413", "414", "416"], sides=["orta"] * 4) == [
+        ("412", False), ("413", False), ("414", False), ("416", False)]
+
+
+def test_wide_header_uses_number_edge_for_side():
+    left_hdr = [Block("Page-header", (80, 80, 1560, 120), "412   KİTAP ADI")]
+    right_hdr = [Block("Page-header", (80, 80, 1560, 120), "KİTAP ADI   413")]
+    assert read_book_page(left_hdr, 1653) == ("412", "sol")
+    assert read_book_page(right_hdr, 1653) == ("413", "sag")
+
+
+def test_header_ordinals_and_section_numbers_are_not_page_numbers():
+    head = lambda t: [Block("Page-header", (100, 100, 1500, 140), t)]
+    for text in ("19. YÜZYIL OSMANLI TARİHİ", "2. BÖLÜM", "BÖLÜM 3", "CİLT 2", "HİCRÎ 1324"):
+        assert read_book_page(head(text), 1653) == (None, None), text
+    assert read_book_page(head("412 BÖLÜM 3"), 1653) == ("412", "sol")
+    assert read_book_page(head("BÖLÜM 3 — 412"), 1653) == ("412", "sag")

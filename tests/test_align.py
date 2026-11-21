@@ -1,6 +1,6 @@
 from ocrnow.align import apply_line_structure, rebreak
 from ocrnow.layout import Block, Line, parse_output
-from ocrnow.tesslines import TessLine, lines_in, parse_tsv
+from ocrnow.tesslines import TessLine, assign_lines, lines_in, parse_tsv
 
 
 def L(text, x=0): return TessLine((x, 0, x + 100, 10), text)
@@ -164,3 +164,54 @@ def test_short_last_line_and_two_line_blocks_are_fine():
     two = "kısa " + ROWS[0] + " " + ROWS[1]           # iki satırlı blokta karşılaştırma yapılmaz
     b = Block("Text", (0, 0, 500, 500), two)
     assert apply_line_structure(b, [L("kısa"), L(ROWS[0] + " " + ROWS[1])]) is None
+
+
+def test_short_dialogue_or_split_block_not_falsely_rejected_as_overlong():
+    # kasagi s.2 blok 10 benzeri: 32 karakterlik satır ortanca 19'dan uzun ama iki satır birleşimi değil
+    text = "Eğilirdim, uzanırdım. Lakin atın sağrısından kuyruğu görünmezdi."
+    b = Block("Text", (0, 0, 500, 500), text)
+    lines = [L("Eğilirdim, uzanırdım. Lakin atın"), L("sağrısından kuyruğu"), L("görünmezdi.")]
+    assert apply_line_structure(b, lines) is None and len(b.lines) == 3
+
+
+def test_indent_threshold_scales_with_line_height():
+    # 600 DPI benzeri büyük satır yüksekliğinde (80 px) 50 px kayma girinti sayılmaz, 100 px sayılır
+    big = lambda text, x: TessLine((x, 0, x + 400, 80), text)
+    b1 = Block("Text", (100, 0, 1800, 300), "birinci satır metni ikinci satır")
+    assert apply_line_structure(b1, [big("birinci satır metni", 150), big("ikinci satır", 100)]) is None
+    assert b1.indent is False
+    b2 = Block("Text", (100, 0, 1800, 300), "birinci satır metni ikinci satır")
+    assert apply_line_structure(b2, [big("birinci satır metni", 210), big("ikinci satır", 100)]) is None
+    assert b2.indent is True
+
+
+def test_assign_lines_separates_stacked_small_footnotes():
+    # hurriyet s.2 geometrisi: 28 px satır aralıklı 3 dipnot bloğu komşu satırları çalmamalı
+    b1 = Block("Footnote", (98, 1302, 776, 1361), "1 ilk dipnot satır bir satır iki")
+    b2 = Block("Footnote", (98, 1357, 793, 1417), "2 ikinci dipnot satır bir satır iki")
+    b3 = Block("Footnote", (98, 1415, 754, 1474), "3 üçüncü dipnot satır bir satır iki")
+    tl = [
+        TessLine((100, 1300, 770, 1324), "1 ilk dipnot satır bir"),
+        TessLine((100, 1328, 600, 1352), "satır iki"),
+        TessLine((100, 1356, 790, 1380), "2 ikinci dipnot satır bir"),
+        TessLine((100, 1384, 620, 1408), "satır iki"),
+        TessLine((100, 1412, 750, 1436), "3 üçüncü dipnot satır bir"),
+        TessLine((100, 1440, 610, 1464), "satır iki"),
+    ]
+    assigned = assign_lines([b1, b2, b3], tl)
+    assert assigned == [tl[0:2], tl[2:4], tl[4:6]]
+
+
+def test_banded_align_map_matches_full_levenshtein_on_random_strings():
+    import random
+    from ocrnow.align import _align_map
+    from ocrnow.lab.metrics import distance
+
+    rnd = random.Random(42)
+    for _ in range(80):
+        a = "".join(rnd.choice("abcde ") for _ in range(rnd.randint(0, 90)))
+        b = "".join(rnd.choice("abcde ") for _ in range(rnd.randint(0, 90)))
+        amap, dist = _align_map(a, b)
+        assert dist == distance(a, b)
+        assert len(amap) == len(a) + 1 and amap[-1] == len(b)
+        assert amap == sorted(amap) and 0 <= amap[0] <= len(b)

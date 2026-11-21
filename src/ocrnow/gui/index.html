@@ -175,6 +175,16 @@ pre.log {
           <input type="number" id="first" min="1" placeholder="sayfadan okunur">
           <small>Yalnız numaralar okunamıyorsa verin.</small>
         </div>
+        <div class="field">
+          <label for="model">Önerilen model</label>
+          <select id="model" aria-describedby="model-help"></select>
+          <small id="model-help" aria-live="polite"></small>
+        </div>
+        <div class="field">
+          <label for="mode">Okuma modu</label>
+          <select id="mode" aria-describedby="mode-help"></select>
+          <small id="mode-help">Düzen: başlık, dipnot ve sayfa numarasını ayırır.</small>
+        </div>
       </div>
       <div class="checks">
         <label><input type="checkbox" id="f-docx" checked> Word belgesi (.docx)</label>
@@ -186,14 +196,9 @@ pre.log {
         <summary>Gelişmiş ayarlar</summary>
         <div class="grid">
           <div class="field">
-            <label for="model">Model</label>
-            <select id="model"></select>
-            <small id="model-help"></small>
-          </div>
-          <div class="field">
-            <label for="mode">Okuma</label>
-            <select id="mode"></select>
-            <small>Düzen: başlık, dipnot ve sayfa numarasını ayırır.</small>
+            <label for="all-models">Tüm OCR motorları</label>
+            <select id="all-models" aria-describedby="all-models-help"></select>
+            <small id="all-models-help">Terminaldeki tüm motorlar. Okuma modu yukarıdan seçilir.</small>
           </div>
           <div class="field">
             <label for="dpi">Çözünürlük (DPI)</label>
@@ -259,6 +264,7 @@ pre.log {
 const $ = id => document.getElementById(id);
 let state = null;          // /api/durum
 let selected = null;       // seçili tarama adı
+let activeModel = null;    // ana ve gelişmiş listelerde ortak seçim
 let poll = null;
 let dismissed = false;
 
@@ -316,25 +322,39 @@ function updatePagesHelp() {
     : "Boş bırakırsanız hepsi. Örnek: 1-5, 8 ya da ilk10";
 }
 
-function renderModels() {
-  const sel = $("model");
-  sel.replaceChildren();
-  for (const m of state.modeller) {
-    const o = el("option", {value: m.ad}, m.hazir ? m.ad : `${m.ad} (kurulu değil)`);
+function renderModels(preferredMode = $("mode").value) {
+  const models = state.modeller;
+  if (!models.some(m => m.ad === activeModel)) activeModel = state.varsayilan.model;
+  const current = models.find(m => m.ad === activeModel);
+  const recommended = models.filter(m => m.onerilen);
+  const option = m => {
+    const o = el("option", {value: m.ad}, m.hazir ? m.ad : `${m.ad} (hazır değil)`);
     o.disabled = !m.hazir;
-    sel.append(o);
+    if (!m.hazir) o.title = m.neden;
+    return o;
+  };
+  const main = $("model");
+  main.replaceChildren(...recommended.map(option));
+  if (current && !current.onerilen) {
+    main.prepend(el("option", {value: "", disabled: "", hidden: ""}, `Gelişmiş: ${current.ad}`));
   }
-  sel.value = state.varsayilan.model;
-  const def = state.modeller.find(m => m.ad === state.varsayilan.model);
-  $("model-help").textContent = def && !def.hazir ? `Varsayılan model hazır değil: ${def.neden}` : "";
-  renderModes();
+  main.value = current?.onerilen ? activeModel : "";
+  $("all-models").replaceChildren(...models.map(option));
+  $("all-models").value = activeModel;
+  $("model-help").textContent = current && !current.hazir
+    ? `${current.ad} hazır değil: ${current.neden}. Başka bir motor seçin.`
+    : "Diğer motorlar Gelişmiş ayarlar’da.";
+  renderModes(current, preferredMode);
 }
 
-function renderModes() {
-  const m = state.modeller.find(x => x.ad === $("model").value);
+function renderModes(model, preferredMode) {
+  const supported = model?.modlar ?? [];
   const names = {duzen: "Düzen", duz: "Düz metin"};
-  $("mode").replaceChildren(...(m ? m.modlar : []).map(x => el("option", {value: x}, names[x] || x)));
-  if (m && m.modlar.includes(state.varsayilan.okuma)) $("mode").value = state.varsayilan.okuma;
+  $("mode").replaceChildren(...supported.map(x => el("option", {value: x}, names[x] || x)));
+  $("mode").value = [preferredMode, state.varsayilan.okuma, ...supported].find(x => supported.includes(x)) ?? "";
+  $("mode-help").textContent = supported.includes("duzen")
+    ? "Düzen: başlık, dipnot ve sayfa numarasını ayırır."
+    : "Bu motor yalnızca düz metin okur.";
 }
 
 async function upload(file) {
@@ -354,6 +374,7 @@ async function upload(file) {
     selected = data.ad;
     state = await api("/api/durum");
     renderFiles();
+    renderModels();
   };
   xhr.onerror = () => { status.textContent = "Dosya eklenemedi: arayüz sunucusuna ulaşılamıyor."; };
   xhr.send(file);
@@ -364,13 +385,17 @@ function formData() {
   if ($("f-docx").checked) formats.push("docx");
   if ($("f-txt").checked) formats.push("txt");
   return {dosya: selected, sayfalar: $("pages").value, ilk_sayfa: $("first").value, formatlar: formats,
-          isaretle: $("mark").checked, model: $("model").value, okuma: $("mode").value,
+          isaretle: $("mark").checked, model: activeModel, okuma: $("mode").value,
           kesme: $("apos").checked, dpi: Number($("dpi").value || 200)};
 }
 
 async function start() {
   $("form-error").textContent = "";
   if (!selected) { $("form-error").textContent = "Önce bir tarama ekleyin ya da seçin."; return; }
+  if (!state?.modeller.some(m => m.ad === activeModel && m.hazir) || !$("mode").value) {
+    $("form-error").textContent = "Hazır bir OCR motoru ve okuma modu seçin.";
+    return;
+  }
   $("start").disabled = true;
   try {
     const job = await api("/api/baslat", formData());
@@ -488,11 +513,14 @@ function renderResult(job) {
   for (const is of res.isler) {
     const writeErrors = is.yazma_hatalari ?? [];
     const review = is.metin_kontrol ?? [];
+    const truncated = is.kesilen ?? [];
     if (!is.yazildi && !writeErrors.length) {
       check.append(el("p", {class: "form-error"}, `${is.ad}: hiçbir sayfa okunamadı, belge yazılmadı.`));
     }
     for (const error of writeErrors) check.append(el("p", {class: "form-error"}, error));
     if (review.length) check.append(el("p", {class: "form-error"}, `Metni kontrol gerekli: ${review.join(", ")}`));
+    if (truncated.length) check.append(el("p", {class: "form-error"},
+      `Model çıktısı kesildi: ${truncated.join(", ")}. Belgedeki bu sayfalar eksik olabilir.`));
     if (is.tahmin.length || is.kontrol.length) {
       check.append(el("h3", {}, "Sayfa numaraları"));
       const dl = el("dl", {class: "nums"});
@@ -522,7 +550,13 @@ $("drop").addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer
 window.addEventListener("dragover", e => e.preventDefault());   // sayfanın dışına bırakılan dosya açılmasın
 window.addEventListener("drop", e => e.preventDefault());
 
-$("model").addEventListener("change", renderModes);
+for (const id of ["model", "all-models"]) {
+  $(id).addEventListener("change", e => {
+    if (activeModel === e.target.value) return;
+    activeModel = e.target.value;
+    renderModels("");
+  });
+}
 $("start").addEventListener("click", start);
 $("cancel").addEventListener("click", async () => {
   $("cancel").disabled = true;
@@ -532,6 +566,7 @@ $("again").addEventListener("click", async () => {
   dismissed = true;
   state = await api("/api/durum");
   renderFiles();
+  renderModels();
   show("form-view");
 });
 $("close").addEventListener("click", async () => {

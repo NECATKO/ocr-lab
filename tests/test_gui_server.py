@@ -135,18 +135,35 @@ def test_state_lists_inputs_and_models(app_url):
     data = json.loads(body)
     assert data["dosyalar"] == [{"ad": "kitap.pdf", "sayfa": 5}]
     names = [m["ad"] for m in data["modeller"]]
-    assert names[0] == "dots.mocr" and "tesseract" not in names    # varsayılan başta; tesseract yardımcıdır
+    assert names[0] == "dots.mocr" and set(names) == set(engines.ENGINES)
+    assert {m["ad"] for m in data["modeller"] if m["onerilen"]} == {"dots.mocr", "glm-ocr", "lightonocr"}
+    assert all(m["modlar"] == list(engines.ENGINES[m["ad"]].modes) for m in data["modeller"])
     assert data["varsayilan"]["model"] == "dots.mocr" and data["is"] is None
 
 
-def test_start_job_runs_and_reports(app_url):
+def test_states_check_each_model_once_and_include_unavailable_reason(dirs, monkeypatch):
+    checked = []
+
+    def missing(name):
+        checked.append(name)
+        return "model dosyası yok" if name == "kraken" else None
+
+    monkeypatch.setattr(engines, "missing", missing)
+    state = App().state()
+    assert checked == list(engines.ENGINES)
+    kraken = next(m for m in state["modeller"] if m["ad"] == "kraken")
+    assert not kraken["hazir"] and kraken["neden"] == "model dosyası yok"
+
+
+@pytest.mark.parametrize("model,mode", [("dots.mocr", "duzen"), ("kraken", "duz"), ("tesseract", "duz")])
+def test_start_job_runs_and_reports(app_url, model, mode):
     url, app, _ = app_url
-    status, body = call(url, "/api/baslat", FORM)
+    status, body = call(url, "/api/baslat", FORM | {"model": model, "okuma": mode})
     assert status == 200, body
     assert app.job.wait(20)
     snap = json.loads(call(url, "/api/is")[1])
     assert snap["durum"] == "bitti" and snap["ad"] == "kitap.pdf"
-    assert snap["sonuc"]["args"][0] == str(paths.INPUT / "kitap.pdf")
+    assert snap["sonuc"]["args"][:5] == [str(paths.INPUT / "kitap.pdf"), "-m", model, "-o", mode]
 
 
 def test_start_rejects_bad_form_with_message(app_url):
@@ -215,3 +232,23 @@ def test_open_folder_endpoint(app_url):
 
 def test_health_endpoint_identifies_gui(app_url):
     assert json.loads(call(app_url[0], "/api/saglik")[1]) == {"ocr-gui": True}
+
+
+def test_input_files_caches_pdf_page_count_until_modified(dirs, monkeypatch):
+    from ocrnow import pages
+    calls = []
+    real = pages.pdf_page_count
+    monkeypatch.setattr(pages, "pdf_page_count", lambda p: calls.append(p) or real(p))
+    server._PAGE_COUNT_CACHE.clear()
+    assert server.input_files() == [{"ad": "kitap.pdf", "sayfa": 5}]
+    assert server.input_files() == [{"ad": "kitap.pdf", "sayfa": 5}]
+    assert len(calls) == 1
+    make_pdf(paths.INPUT / "kitap.pdf", 8)
+    assert server.input_files() == [{"ad": "kitap.pdf", "sayfa": 8}]
+    assert len(calls) == 2
+
+
+def test_unreadable_upload_leaves_no_temp_files(app_url):
+    status, _ = call(app_url[0], "/api/yukle", b"bozuk", {"X-Dosya-Adi": "bozuk.pdf"}, method="POST")
+    assert status == 400
+    assert sorted(p.name for p in paths.INPUT.iterdir()) == ["kitap.pdf"]

@@ -1,7 +1,7 @@
 import json
 import random
 
-from ocrnow.lab.metrics import (apostrophe_accuracy, cer_base, cer_body, cer_norm, cer_raw,
+from ocrnow.lab.metrics import (apostrophe_accuracy, apostrophe_decided_accuracy, cer_base, cer_body, cer_norm, cer_raw,
                                 line_end_accuracy, wer, word_errors)
 
 
@@ -99,6 +99,15 @@ def test_apostrophe_accuracy_survives_letter_errors_and_missing_words():
 
 def test_apostrophe_accuracy_without_marks():
     assert apostrophe_accuracy("düz metin", "düz metin") == (0.0, 0)
+
+
+def test_apostrophe_accuracy_handles_turkish_dotted_i_case():
+    assert apostrophe_accuracy("İ‘lân ve i‘tibâr", "i‘lân ve İ‘tibâr") == (1.0, 2)
+
+
+def test_apostrophe_decided_accuracy_excludes_undecided_marks():
+    assert apostrophe_decided_accuracy("Haleb’de mes’ele", "Haleb’de mes'ele") == (1.0, 1)
+    assert apostrophe_decided_accuracy("mes’ele bâ‘is", "mes'ele bâ'is") == (0.0, 0)
 
 
 def test_line_end_accuracy():

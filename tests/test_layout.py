@@ -259,3 +259,25 @@ def test_real_page_footers_stay_footers():
     for text in ("412", "— 412 —", "412 TEZKİRE", "TEZKİRE 413", "56 / İhsan Süreyya Sırma",
                  "56 İhsan Süreyya Sırma", "Müslümanların Târihi / 57", "xii", "57 | Bölüm"):
         assert blocks_of(("Page-footer", text)) == [("Page-footer", text)], text
+
+
+def test_four_digit_footnote_in_footer_becomes_footnote():
+    assert blocks_of(("Page-footer", "1024 Bk. Âyet 30.")) == [("Footnote", "1024 Bk. Âyet 30.")]
+
+
+def test_sup_tags_become_superscript_marks_and_shift_emphasis():
+    assert emphasis("taştında<sup>724</sup>") == ("taştında724", [(8, 11, "ust")])
+    assert emphasis("*metin<sup>1</sup> son*") == ("metin1 son", [(0, 10, "italik"), (5, 6, "ust")])
+    raw = json.dumps([{"bbox": [0, 0, 10, 10], "category": "Table", "text": "<td>a<sup>1</sup></td>"}])
+    (b,), _ = parse_output(raw, True, (100, 100))
+    assert b.text == "<td>a<sup>1</sup></td>" and b.marks == []
+
+
+def test_parse_output_respects_custom_and_none_resize():
+    raw = '[{"bbox": [100, 200, 300, 400], "category": "Text", "text": "a"}]'
+    (unscaled,), _ = parse_output(raw, True, (3306, 4678), resize=None)
+    assert unscaled.bbox == (100, 200, 300, 400)
+    (scaled,), _ = parse_output(raw, True, (3306, 4678), resize=(28, 3136, 1_000_000))
+    rh, rw = smart_resize(4678, 3306, 28, 3136, 1_000_000)
+    assert scaled.bbox == (round(100 * 3306 / rw), round(200 * 4678 / rh),
+                           round(300 * 3306 / rw), round(400 * 4678 / rh))

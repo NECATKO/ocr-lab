@@ -50,3 +50,10 @@ def test_shortcut_script_puts_everything_in_one_desktop_folder():
     assert "'\"" + r"\\wsl.localhost\Ubuntu\o''b" + "\"'" in script     # yol tırnakta; PowerShell ' ikilenir
     assert "'\"" + r"\\wsl.localhost\Ubuntu\t" + "\"'" in script
     assert "Remove-Item" in script and '"$d\\OCR-Now.lnk"' in script   # eski masaüstü simgesi kalkar
+
+
+def test_shortcut_script_quotes_root_with_spaces():
+    from pathlib import Path
+    root = Path("/home/user/my ocr lab")
+    script = gui_main.shortcut_script("Ubuntu", root, r"\\wsl.localhost\Ubuntu\b", r"\\wsl.localhost\Ubuntu\t")
+    assert '-d Ubuntu --cd "/home/user/my ocr lab" -e "/home/user/my ocr lab/ocr-gui" --tarayici' in script

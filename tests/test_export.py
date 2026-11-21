@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from docx import Document
@@ -302,3 +303,25 @@ def test_markdown_asterisks_do_not_reach_documents(tmp_path):
     assert d.paragraphs[0].text == "bkz. a.g.e. ve Sâniyen: dipnot*"
     assert [r.text for r in d.paragraphs[0].runs if r.italic] == ["a.g.e."]
     assert [r.text for r in d.paragraphs[0].runs if r.bold] == ["Sâniyen:"]
+
+
+def test_centered_footer_and_punctuated_footnote_and_sup_tags(tmp_path):
+    raw = json.dumps([
+        {"bbox": [0, 0, 500, 300], "category": "Text", "text": "metin15 ve diğer3 ve ek<sup>9</sup>"},
+        {"bbox": [0, 400, 500, 450], "category": "Footnote", "text": "15. ilk dipnot bkz. c3"},
+        {"bbox": [0, 460, 500, 510], "category": "Footnote", "text": "3) ikinci dipnot"},
+        {"bbox": [450, 900, 550, 940], "category": "Page-footer", "text": "412"},
+    ])
+    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 1), Options(), lambda img, m: raw, lambda img: "",
+                     (1000, 1000), words={})
+    assert p.book_page_side == "orta"
+    d = Document(write_docx([p], tmp_path / "a.docx"))
+    assert d.sections[0].footer.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    body_sup = [r.text for r in d.paragraphs[0].runs if r.font.superscript]
+    assert body_sup == ["15", "3", "9"]
+    fn1_sup = [r.text for r in d.paragraphs[2].runs if r.font.superscript]
+    fn2_sup = [r.text for r in d.paragraphs[3].runs if r.font.superscript]
+    assert fn1_sup == ["15"]    # dipnot gövdesindeki "c3" yanlışlıkla üst simge olmaz
+    assert fn2_sup == ["3"]
+    txt = write_txt([p], tmp_path / "a.txt").read_text(encoding="utf-8")
+    assert "<sup>" not in txt and "ek9" in txt

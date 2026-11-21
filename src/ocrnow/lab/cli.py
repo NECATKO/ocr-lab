@@ -45,6 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("-p", "--sayfalar", default=DEFAULT_PAGES,
                    help="sayfa seçimi: hepsi, 5, 1,3,7, 10-25, ilk10 (varsayılan: %(default)s)")
     p.add_argument("--dpi", type=_positive_int, default=DEFAULT_DPI, help="PDF görüntüleme çözünürlüğü (varsayılan: %(default)s)")
+    p.add_argument("--referans", type=Path, metavar="KLASÖR", help="doğru metin klasörü (varsayılan: gt/)")
+    p.add_argument("--kor-test", action="store_true", help="ayın/hemze kurallarını sözlük yardımı olmadan ölç")
     return p
 
 
@@ -135,8 +137,14 @@ def print_table(records: list[dict]) -> None:
     for r in records:
         if r["error"]:
             print(f"  HATA  {r['engine']}/{r['mode']}  {r['pdf']} s.{r['page']}: {r['error']}")
+        elif r.get("truncated"):
+            print(f"  KESİLDİ  {r['engine']}/{r['mode']}  {r['pdf']} s.{r['page']}: model çıktısı eksik")
         elif r.get("needs_review"):
             print(f"  KONTROL GEREKLİ  {r['engine']}/{r['mode']}  {r['pdf']} s.{r['page']}: metin bulunamadı")
+    for engine, mode in dict.fromkeys((r["engine"], r["mode"]) for r in records):
+        states = [bench.status(r) for r in records if (r["engine"], r["mode"]) == (engine, mode)]
+        print(f"  {engine}/{mode}: {states.count('complete')}/{len(states)} tam, "
+              f"{states.count('truncated')} kesik, {states.count('error')} okunamadı, {states.count('empty')} boş")
 
 
 def _run(args: argparse.Namespace, ask_start: bool) -> int:
@@ -155,18 +163,20 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
         print(f"Uyarı: {w}")
     source_pages = [p for job in jobs for p in job.pages]
     bench.check_sources(source_pages)
+    if args.referans is not None and not args.referans.is_dir():
+        raise InputError(f"Doğru metin klasörü bulunamadı: {args.referans}")
     print(f"\n▶ {', '.join(j.name for j in jobs)} · sayfa {args.sayfalar} · "
           f"{', '.join(f'{e}/{m}' for e, m in targets)}")
 
     out_dir = bench.new_run_dir(paths.LAB_OUT)
-    results = bench.run_bench(source_pages, targets, paths.GT, out_dir, dpi=args.dpi)
+    results = bench.run_bench(source_pages, targets, args.referans or paths.GT, out_dir, dpi=args.dpi, holdout=args.kor_test)
     records = json.loads(results.read_text(encoding="utf-8"))
     print_table(records)
     print(f"\nSonuçlar: {results}")
     for md in sorted(out_dir.glob("*_karsilastirma.md")):
         print(f"Karşılaştırma: {md}")
     print(f"Özet: {paths.LAB_OUT / bench.SUMMARY_FILE}")
-    return 1 if any(r["error"] or r.get("needs_review") for r in records) else 0
+    return 1 if any(bench.status(r) != "complete" for r in records) else 0
 
 
 def rapor(html: bool) -> int:

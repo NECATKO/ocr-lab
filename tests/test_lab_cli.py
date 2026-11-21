@@ -39,8 +39,9 @@ def env(tmp_path, monkeypatch):
                                                                           "lightonocr": "vllm kurulu değil"})
     monkeypatch.setattr(engines, "missing", lambda name: state.missing.get(name))
 
-    def run_bench(source_pages, targets, gt_dir, out_dir, *, dpi=200):
-        state.calls.append(types.SimpleNamespace(pages=source_pages, targets=targets, gt=gt_dir, out=out_dir, dpi=dpi))
+    def run_bench(source_pages, targets, gt_dir, out_dir, *, dpi=200, holdout=False):
+        state.calls.append(types.SimpleNamespace(pages=source_pages, targets=targets, gt=gt_dir, out=out_dir, dpi=dpi,
+                                                 holdout=holdout))
         (out_dir / "k_karsilastirma.md").write_text("md")
         (out_dir / "results.json").write_text(json.dumps(state.records))
         return out_dir / "results.json"
@@ -71,7 +72,19 @@ def test_runs_given_pdf_pages_and_targets(tmp_path, env, capsys):
     assert call.out.parent == paths.LAB_OUT and call.out.is_dir()
     out = capsys.readouterr().out
     assert "glm-ocr/duz" in out and "k s.1" in out and "results.json" in out and "k_karsilastirma.md" in out
-    assert "summary_v2.csv" in out
+    assert "summary_v3.csv" in out
+
+
+def test_references_and_holdout_options_and_truncated_exit(tmp_path, env, capsys):
+    pdf = make_pdf(tmp_path / "k.pdf", 2)
+    refs = tmp_path / "referans"
+    assert main([str(pdf), "-e", "glm-ocr", "--referans", str(refs)]) == 2
+    refs.mkdir()
+    env.records = [record(), record(page=2, truncated=True)]
+    assert main([str(pdf), "-e", "glm-ocr", "--referans", str(refs), "--kor-test", "-p", "hepsi"]) == 1
+    assert env.calls[0].gt == refs and env.calls[0].holdout
+    out = capsys.readouterr().out
+    assert "KESİLDİ" in out and "1/2 tam, 1 kesik, 0 okunamadı" in out
 
 
 def test_defaults_to_input_pdfs_page_one_and_ready_engines(tmp_path, env, monkeypatch):

@@ -10,8 +10,8 @@ from PIL import Image
 
 from ocrnow import paths
 from ocrnow.lab import notebook
-from ocrnow.lab.notebook import (best_cells, find_page_image, image_html, load_runs, metrics_table, nice_max, rapor,
-                                 record_image, record_text, scatter_svg, summarize)
+from ocrnow.lab.notebook import (best_cells, find_page_image, image_html, load_runs, metrics_table, mixed_ocr_profiles,
+                                 nice_max, rapor, record_image, record_text, scatter_svg, summarize)
 
 
 def rec(**kw):
@@ -57,8 +57,58 @@ def test_summarize_means_ignore_none_and_errors():
     assert by["glm-ocr/duz"]["cer_body"] is None
 
 
+def test_no_leader_for_incomplete_coverage_and_scores_use_only_common_pages():
+    rows = summarize([
+        rec(engine="a", page=1, cer_norm=.03),
+        rec(engine="a", page=2, error="okunamadı", cer_norm=None),
+        rec(engine="a", page=3, truncated=True, cer_norm=.9),
+        rec(engine="a", page=4, needs_review=True, cer_norm=1),
+        rec(engine="b", page=1, cer_norm=.01),
+        rec(engine="b", page=2, cer_norm=.15),
+        rec(engine="b", page=3, cer_norm=.04),
+        rec(engine="b", page=4, cer_norm=.04),
+    ])
+    a, b = rows
+    assert (a["n"], a["errors"], a["review"], a["truncated"], a["total"]) == (1, 1, 1, 1, 4)
+    assert a["scope"]["cer_norm"] == b["scope"]["cer_norm"] == 1
+    assert a["cer_norm"] == .03 and b["cer_norm"] == .01
+    assert best_cells(rows)["cer_norm"] == set()
+
+
+@pytest.mark.parametrize("changed", [{"source_key": "img-C"}, {"reference_sha256": "ref-2"}, {"dpi": 100}])
+def test_different_scan_reference_or_dpi_cannot_be_compared(changed):
+    page = {"source_key": "img-A", "reference_sha256": "ref-1", "dpi": 200}
+    rows = summarize([rec(engine="a", **page), rec(engine="b", **(page | changed))])
+    assert all(r["cer_norm"] is None and r["scope"]["cer_norm"] == 0 for r in rows)
+
+
+def test_ocr_profiles_can_differ_between_motors_not_within_a_motor():
+    assert not mixed_ocr_profiles([rec(engine="x", ocr_profile={"id": "v1"}), rec(ocr_profile={"id": "v2"})])
+    assert mixed_ocr_profiles([rec(ocr_profile={"id": "v1"}), rec(ocr_profile={"id": "v2"})])
+
+
+def test_unverified_models_of_the_same_name_are_not_merged_across_runs():
+    fields = {"id": "external", "backend": "external", "cacheable": False}
+    assert not mixed_ocr_profiles([rec(run="a", ocr_profile=fields), rec(run="a", ocr_profile=fields)])
+    assert mixed_ocr_profiles([rec(run="a", ocr_profile=fields), rec(run="b", ocr_profile=fields)])
+
+
+def test_document_metrics_are_not_compared_with_different_dictionaries():
+    rows = summarize([rec(engine="a", dictionary_sha256="a", cer_document=.01),
+                      rec(engine="b", dictionary_sha256="b", cer_document=.02)])
+    assert all(r["cer_norm"] is not None and r["cer_document"] is None for r in rows)
+
+
+def test_repeated_ocr_of_one_page_does_not_overweight_it():
+    dataset = dict(source_key="pdf-test", reference_sha256="referans", dpi=200)
+    rows = summarize([rec(**dataset, page=1, cer_norm=.1), rec(**dataset, page=1, cer_norm=.1),
+                      rec(**dataset, page=2, cer_norm=.3)])
+    assert rows[0]["cer_norm"] == pytest.approx(.2)
+    assert rows[0]["scope"]["cer_norm"] == 2 and rows[0]["n"] == 3
+
+
 def test_best_cells_lower_is_better_except_line_end_and_apostrophe():
-    rows = summarize([rec(), rec(engine="b", cer_norm=0.01, line_end=0.5, apostrophe=0.8),
+    rows = summarize([rec(apostrophe=0.6), rec(engine="b", cer_norm=0.01, line_end=0.5, apostrophe=0.8),
                       rec(engine="c", cer_norm=0.01, line_end=0.95, apostrophe=0.7)])
     best = best_cells(rows)
     assert best["cer_norm"] == {"b/duz", "c/duz"}           # eşitlik: ikisi de vurgulu
@@ -71,8 +121,8 @@ def test_metrics_table_highlights_best_escapes_and_dashes_for_none():
     html = metrics_table(rows)
     assert "a&lt;b/duz" in html and "a<b" not in html
     assert html.count("font-weight:700") >= 2                       # en iyi hücreler
-    assert '<td style="font-weight:700;background:rgba(34,160,90,.28)">1.00%</td>' in html
-    assert "<td>20.00%</td>" in html                               # en iyi olmayan: işaretsiz
+    assert 'title="1 ortak sayfa">1.00%</td>' in html
+    assert '<td title="1 ortak sayfa">20.00%</td>' in html         # en iyi olmayan: işaretsiz
     assert "<td>—</td>" in html                                    # cer_body ölçüsü yok
 
 
@@ -90,11 +140,11 @@ def test_image_html_escapes_alt(tmp_path):
 
 
 def test_scatter_svg_skips_missing_points_and_escapes():
-    rows = summarize([rec(engine="a<b"), rec(engine="x", cer_norm=None)])
+    rows = summarize([rec(engine="a<b")])
     svg = scatter_svg(rows, "cer_norm")
     assert svg.startswith("<svg") and "a&lt;b" in svg and "a<b" not in svg
-    assert "x/duz" not in svg
     assert scatter_svg(summarize([rec(cer_norm=None)]), "cer_norm") == ""
+    assert scatter_svg(summarize([rec(engine="a<b"), rec(engine="x", cer_norm=None)]), "cer_norm") == ""
 
 
 def test_find_page_image_picks_newest_and_ignores_other_pdfs(tmp_path, monkeypatch):

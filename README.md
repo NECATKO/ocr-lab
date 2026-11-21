@@ -63,8 +63,9 @@ bir pencere belirir. Arayüzde sırasıyla:
 
 1. **Tarama:** PDF'i sürükleyip bırakın ya da `input/`'taki taramalardan birini seçin. Eklenen dosya `input/`'a
    kopyalanır; aynı dosya yeniden eklenirse kopyası çıkmaz, önbellek geçerli kalır.
-2. **Ayarlar:** sayfalar, ilk sayfanın kitap numarası, Word/metin, sarı işaretleme. Model, okuma modu, ayın/hemze ve
-   DPI "Gelişmiş ayarlar"dadır. Varsayılanlar `ocr-now`'ınkilerle aynıdır.
+2. **Ayarlar:** sayfalar, ilk sayfanın kitap numarası, Word/metin, sarı işaretleme, önerilen model ve okuma modu.
+   **Gelişmiş ayarlar** terminaldeki tüm OCR motorlarını, ayın/hemze ve DPI seçeneklerini gösterir.
+   Model değişince yalnızca desteklediği modlar görünür. Varsayılanlar `ocr-now`'ınkilerle aynıdır.
 3. **Okumayı başlat:** her sayfa bir kutucukla gösterilir, geçen ve kalan süre yazılır. Model açılışı (birkaç
    dakika) kalan süre hesabına katılmaz. Sekme kapatılsa da okuma sürer; yeniden açınca kaldığı yerden görünür.
 4. **Sonuç:** belgeleri indirme ya da Windows Gezgini'nde gösterme, taramayı gösterme, sayfa numarası
@@ -116,7 +117,9 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 - Her PDF kendi belgesini üretir.
 - Bütün sayfalar seçilmediyse ad seçimi taşır (`kitap_s11-20.docx`).
 - Aynı adlı belge varsa üzerine yazılmaz, `_2`, `_3` eklenir. Elle düzeltilmiş bir belge böylece kaybolmaz.
-- Word veya TXT yazımı yarıda kesilirse hedefte yarım belge kalmaz; yazma hatası özette dosya adıyla görünür.
+  Eşzamanlı `ocr-now` koşuları da ayrı ad alır; bir işin Word ve TXT çıktısı aynı eki paylaşır.
+- Word veya TXT yazımı yarıda kesilirse hedefte yarım belge kalmaz. Bir biçim yazılamazsa diğerleri yine
+  denenir; yazma hatası özette dosya adıyla görünür.
 - Bir klasördeki görüntüler doğal sırayla (`2.jpg` → `10.jpg`) tek belgede birleşir.
 
 **`.docx`**
@@ -129,6 +132,7 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
   Tek başına duran yıldız (`kelime*`, dipnot simgesi olabilir) olduğu gibi kalır.
 - Kitabın sayfa numarası altlıkta, kitaptaki tarafta durur.
 - Punto her sayfa için en uzun satır sığacak şekilde seçilir: en çok 10.5, en az 8 pt.
+- Word'ün XML biçiminde gösterilemeyen karakterler `�` ile işaretlenir; iş özetinde ilgili sayfa belirtilir.
 
 **Sayfa numarası.** Sayfadan okunan numara olduğu gibi yazılır; komşularıyla tutmaması tek başına sorun sayılmaz.
 Taranmış belge kitabın farklı yerlerinden, hatta ters sırayla alınmış parçalardan oluşabilir.
@@ -166,6 +170,9 @@ Aynı numara birden fazla sayfada okunduysa her birine uyarı eklenir
 - Motor okunabilir metin vermezse sayfa silinmez: Word ve TXT çıktısında
   `[Kontrol gerekli: Bu sayfada metin bulunamadı]` yazılır. Tarama gerçekten boş da olabilir; iş özeti bu
   sayfaları ayrı listeler ve çıkış kodu 1 olur. Bu yanıt önbelleğe yazılmaz, sayfa sonraki koşuda yeniden okunur.
+- Model yanıtı uzunluk sınırında kesilirse elde edilen metin korunur, ancak ilgili Word/TXT sayfasına uyarı
+  eklenir. İş özeti bu sayfaları ayrı listeler (`--rapor` alanı `kesilen`); çıkış kodu 1 olur ve arayüz belge
+  yazıldıysa “Kısmen tamamlandı” gösterir. Kesik okumalar önbelleğe alınmaz, eski kesik kayıtlar da kullanılmaz.
 - Hiçbir sayfası okunamayan belge yazılmaz.
 
 ### Önbellek
@@ -175,13 +182,17 @@ kez yazılır.
 - Kaynağın SHA-256 içerik özeti hem görüntü hem OCR önbelleğinde kullanılır. Aynı adlı ve eşit boyutlu farklı
   taramalar birbirine karışmaz; adı değişen bir kopya, içeriği aynıysa aynı önbelleği kullanır.
 - Tarama OCR sırasında değiştirilirse etkilenen sayfalar hata olarak bildirilir; değişen kaynak eski anahtara yazılmaz.
-- Aynı sayfa aynı model/modla ve PDF için aynı DPI ile yeniden istenirse (ör. önce `-f docx`, sonra `-f txt`)
-  kullanılabilir bir sonuç varsa OCR yeniden çalışmaz.
-- Bütün sayfalar önbellekteyse model sunucusu hiç açılmaz.
+- Aynı sayfa aynı OCR kimliğiyle ve PDF için aynı DPI ile yeniden istenirse (ör. önce `-f docx`, sonra
+  `-f txt`) kullanılabilir bir sonuç varsa OCR yeniden çalışmaz. Kimliğe motor ve mod, model revizyonu
+  veya yerel ağırlık kimliği, istem, token sınırı ve Tesseract sürümü/dili dahildir.
+- Yönetilen vLLM sunucusu, yerelde bilinen Hugging Face revizyonuna sabitlenir. Harici sunucunun revizyonu
+  veya yönetilen modelin revizyonu doğrulanamazsa ham OCR önbelleği okunmaz ve yazılmaz. Doğrulanmış
+  bütün sayfalar önbellekteyse model sunucusu hiç açılmaz.
 - Sayfa yapısı (satırlar, ayın/hemze, sarı işaretler) her çalıştırmada önbellekteki çıktıdan yeniden kurulur
   (sayfa başına ~0.3 sn). Bu yüzden `ayarlar/kesme.txt`'deki ya da programdaki değişiklikler, `--kesme-yok` dahil,
   GPU'suz ve yeniden OCR gerekmeden uygulanır.
-- Eski ad/boyut tabanlı görüntü ve OCR önbellekleri silinmez ama kullanılmaz; sayfalar bir kez yeniden okunur.
+- Kimliksiz eski OCR kayıtları silinmez ama kullanılmaz; yalnızca istenen sayfalar yeniden okunur. İçerik
+  özetli eski PNG'ler yeniden kullanılabilir; ad/boyut tabanlı eski görüntü önbelleği kullanılmaz.
 
 ### Ayın/hemze kelime listesi
 
@@ -205,6 +216,9 @@ kelime, doğru işaretiyle (ör. `mes’ele`, `bâ‘is`). Karar verilemeyen iş
 ./ocr-lab rapor --html                               # statik sayfa: output/lab/rapor.html
 ```
 
+Özel doğru metin klasörü için `--referans KLASÖR`; sözlükleri kapatarak ölçmek için `--kor-test` kullanın.
+Tekrarlanabilir altı örnek sayfa ve komutlar: [açık referans seti](benchmark/README.md).
+
 Doğru metin `gt/<pdf adı>_syf<N>.txt` olarak varsa şu ölçüler hesaplanır:
 
 | Ölçü | Ne ölçer |
@@ -224,8 +238,14 @@ Word'ün otomatik satır kaydırmasını ölçmez. Benchmark, ayın/hemze kelime
 bağlı olduğundan aynı adlı farklı PDF'ler tek koşuda kabul edilmez.
 
 Koşular `output/lab/<YYYYmmdd-HHMM>/` altına yazılır. Her koşunun içinde `results.json`, ham model çıktıları ve bir
-karşılaştırma `.md`'si bulunur. `output/lab/summary_v2.csv` yeni yöntemle yapılan koşuları biriktirir. Eski
-`summary.csv` ve koşular olduğu gibi kalır; eski ve yeni ölçüler doğrudan karşılaştırılmamalıdır.
+karşılaştırma `.md`'si bulunur. JSON'da OCR kimliği/ayarları, model revizyonu (bilinmiyorsa `null`), kaynak,
+referans ve sözlük özetleri, DPI ve okuma durumu saklanır. `summary_v3.csv` tüm denemeleri (hatalar dahil) biriktirir;
+`summary.csv` ve `summary_v2.csv` değişmez.
+
+Rapor her skoru seçili motor/modların **ortak tamamladığı ve o ölçünün hesaplandığı sayfalarda** verir.
+Belge ölçüleri aynı sözlükle üretilmiş sayfalarda eşleştirilir.
+Tam, kesik, boş ve okunamayan sayfalar ayrı sayılır. Kapsama eksikse en iyi değer vurgulanmaz. Farklı ölçüm
+sürümleri, kör test ile sözlüklü koşular ya da aynı motorun farklı OCR ayarları ayrı seçilmelidir.
 
 Benchmark'ta kazanan ayar, `engines.DEFAULT_ENGINE` ve `engines.DEFAULT_MODE` değiştirilerek ocr-now'ın varsayılanı yapılır.
 
@@ -267,7 +287,7 @@ input/                         taranacak PDF'ler (varsayılan girdi)
 gt/                            doğru metinler: gt/<pdf>_syf<N>.txt
 output/belgeler/               ocr-now belgeleri
 output/_cache/  output/_pages/ önbellek, sayfa görselleri
-output/lab/                    ocr-lab koşuları, summary_v2.csv, rapor.html
+output/lab/                    ocr-lab koşuları, summary_v3.csv, rapor.html
 output/_logs/                  sunucu logları, gpu.lock
 models/  tools/                model dosyaları, llama.cpp
 .venv  .venv-vllm  .venv-kraken   ayrı ortamlar (vLLM ile kraken bağımlılıkları çakışıyor)

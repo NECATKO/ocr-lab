@@ -24,9 +24,14 @@ MIN_STEM = 3
 _WORD = re.compile(rf"(?:[^\W\d_]|[{re.escape(APOS)}]|-)+")
 
 
+def _tr_lower(text: str) -> str:
+    """Türkçe büyük İ/I dönüşümü: Python'da 'İ'.lower() 'i\\u0307', 'I'.lower() 'i' üretir."""
+    return text.replace("İ", "i").replace("I", "ı").lower()
+
+
 def _key(word: str) -> str:
     """Liste anahtarı: küçük harf, bütün kesme türleri "'" (yalnız anahtar için; metne uygulanmaz)."""
-    return "".join("'" if c in APOS else c for c in word.lower())
+    return "".join("'" if c in APOS else c for c in _tr_lower(word))
 
 
 def _core(text: str, start: int, end: int) -> tuple[int, int]:
@@ -97,10 +102,10 @@ def _decide(text: str, i: int) -> str | None:
     k = i + 1
     while k < n and text[k].isalpha():
         k += 1
-    suffix = text[i + 1:k].lower()
+    suffix = _tr_lower(text[i + 1:k])
     # 1. ardından harf-i tarif geliyorsa hemze: l- (Bi’l-âhır) ya da tireden sonra tekrarlanan ünsüz (bi’t-Tevbîh,
     # Nûru’d-dîn); Sa‘d-ı gibi izafette ünsüz tekrarlanmaz
-    article = text[i + 1:i + 4].lower()
+    article = _tr_lower(text[i + 1:i + 4])
     if article[:2] == "l-" or (len(article) == 3 and article[1] == "-" and article[0] == article[2]
                                and article[0].isalpha() and article[0] not in VOWELS):
         return HAMZA

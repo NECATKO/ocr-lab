@@ -37,7 +37,7 @@ class Fake:
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, known_ocr):
     fake = Fake()
     monkeypatch.setattr(paths, "LAB_OUT", tmp_path / "lab")
     monkeypatch.setattr(paths, "SETTINGS", tmp_path / "ayarlar")
@@ -49,7 +49,7 @@ def env(tmp_path, monkeypatch):
         return out
 
     @contextmanager
-    def server(name):
+    def server(name, **options):
         fake.log.append(("giriş", name))
         if name in fake.fail_start:
             raise RuntimeError("sunucu ayağa kalkmadı")
@@ -98,10 +98,14 @@ def test_two_targets_without_gt(tmp_path, env):
                    (*bench.METRICS, "apostrophe_n"))
         assert r["word_errors"] == []
         assert Path(r["raw_path"]).read_text(encoding="utf-8") == env.outputs[r["engine"], r["mode"]]
-        assert r["metrics_version"] == 2 and Path(r["image_path"]).is_file()
+        assert r["metrics_version"] == 3 and Path(r["image_path"]).is_file()
+        assert r["dpi"] == 200
+        assert r["ocr_profile"]["model_revision"] == "a" * 40
+        assert r["ocr_profile"]["tesseract"]["version"] == "test-5"
+        assert r["ocr_profile"]["prompt"] == engines.ENGINES[r["engine"]].modes[r["mode"]].prompt
     rows = list(csv.reader((paths.LAB_OUT / bench.SUMMARY_FILE).open(encoding="utf-8")))
-    assert rows[0] == ["engine", "pdf", "page", "seconds", "chars", "cer", "mode", "cer_norm", "cer_body",
-                       "cer_base", "wer", "line_end", "apostrophe", "cer_document", "wer_document"]
+    assert rows[0] == bench.SUMMARY_HEADER and rows[0][-6:] == [
+        "status", "ocr_profile", "dpi", "source_key", "reference_sha256", "holdout"]
     assert len(rows) == 3 and rows[1][0] == "dots.mocr" and rows[1][5] == "" and rows[2][6] == "duz"
 
 
@@ -141,6 +145,24 @@ def test_apostrophe_list_excludes_the_entire_book_being_measured(tmp_path, env):
     assert rec["cer_raw"] > 0 and rec["cer_document"] == 0
 
 
+def test_holdout_skips_all_dictionaries_and_records_reference_identity(tmp_path, env):
+    env.outputs["glm-ocr", "duz"] = "cür'et"
+    gt = tmp_path / "gt"
+    (gt / "kitap_syf1.txt").write_text("cür’et", encoding="utf-8")
+    (gt / "baska_syf1.txt").write_text("cür’et", encoding="utf-8")
+    paths.SETTINGS.mkdir()
+    (paths.SETTINGS / "kesme.txt").write_text("cür’et", encoding="utf-8")
+    sources = [src(tmp_path)]
+    target = [("glm-ocr", "duz")]
+    rec = load(run_bench(sources, target, gt, tmp_path / "r1", holdout=True))[0]
+    assert rec["holdout"] and rec["apostrophe"] == 0.0
+    assert rec["source_key"].startswith("pdf-") and len(rec["reference_sha256"]) == 64
+    normal = load(run_bench(sources, target, gt, tmp_path / "r2"))[0]
+    assert not normal["holdout"] and normal["apostrophe"] == 1.0
+    assert normal["reference_sha256"] == rec["reference_sha256"]
+    assert normal["dictionary_sha256"] != rec["dictionary_sha256"]
+
+
 def test_engines_run_one_server_at_a_time_and_pages_in_each_mode(tmp_path, env):
     env.outputs["dots.mocr", "duz"] = "x"
     run_bench([src(tmp_path, 1), src(tmp_path, 2)],
@@ -159,8 +181,9 @@ def test_failed_server_start_marks_its_records_and_continues(tmp_path, env):
                           tmp_path / "run"))
     assert recs[0]["error"] == "sunucu ayağa kalkmadı" and recs[0]["seconds"] is None and recs[0]["cer_norm"] is None
     assert recs[1]["error"] is None
-    rows = list(csv.reader((paths.LAB_OUT / bench.SUMMARY_FILE).open(encoding="utf-8")))
-    assert len(rows) == 2   # hatalı kayıt özet satırı almaz
+    with (paths.LAB_OUT / bench.SUMMARY_FILE).open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert [r["status"] for r in rows] == ["error", "complete"]
 
 
 def test_failed_page_marks_one_record_and_continues(tmp_path, env):
@@ -239,6 +262,17 @@ def test_blank_benchmark_output_is_flagged_and_still_measured(tmp_path, env):
     assert "Kontrol gerekli" in (out / "kitap_karsilastirma.md").read_text(encoding="utf-8")
 
 
+def test_truncated_and_full_ocr_have_distinct_status_and_same_reference(tmp_path, env):
+    env.outputs["glm-ocr", "duz"] = engines.Truncated("bir iki")
+    gt = tmp_path / "gt"
+    (gt / "kitap_syf1.txt").write_text("bir iki üç", encoding="utf-8")
+    out = tmp_path / "run"
+    complete, truncated = load(run_bench([src(tmp_path)], [("dots.mocr", "duzen"), ("glm-ocr", "duz")], gt, out))
+    assert bench.status(complete) == "complete" and bench.status(truncated) == "truncated"
+    assert truncated["cer_raw"] > 0 and complete["reference_sha256"] == truncated["reference_sha256"]
+    assert "model çıktısı kesildi" in (out / "kitap_karsilastirma.md").read_text(encoding="utf-8")
+
+
 def test_document_text_follows_export_order_and_uses_read_page_number():
     from ocrnow.layout import Block, Page
 
@@ -301,3 +335,14 @@ def test_apostrophe_flagged_counts_undecided_marks(tmp_path, env):
     env.fail_page.add(("glm-ocr", "kitap_syf1.png"))
     rec = load(run_bench([src(tmp_path)], [("glm-ocr", "duz")], tmp_path / "gt", tmp_path / "run2"))[0]
     assert rec["apostrophe_flagged"] is None
+
+
+def test_apostrophe_decided_separates_rules_from_model_fallback(tmp_path, env):
+    # modelin kendi doğru ’/‘ çıktısı korunsa da kural karar veremediyse apostrophe_decided_n = 0 olur
+    env.outputs["glm-ocr", "duz"] = "Haleb’de mes’ele"
+    gt = tmp_path / "gt"
+    (gt / "kitap_syf1.txt").write_text("Haleb’de mes’ele", encoding="utf-8")
+    rec = load(run_bench([src(tmp_path)], [("glm-ocr", "duz")], gt, tmp_path / "r1", holdout=True))[0]
+    assert rec["apostrophe"] == 1.0 and rec["apostrophe_n"] == 2
+    assert rec["apostrophe_flagged"] == 1     # yalnız mes’ele kararsız; Haleb’de kural 2 ile kararlı
+    assert rec["apostrophe_decided"] == 1.0 and rec["apostrophe_decided_n"] == 1
