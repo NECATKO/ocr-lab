@@ -171,6 +171,12 @@ def build_args(form: dict) -> list[str]:
     if not DPI_RANGE[0] <= dpi <= DPI_RANGE[1]:
         raise FormError(f"DPI {DPI_RANGE[0]}–{DPI_RANGE[1]} arasında olmalı")
     args += ["--dpi", str(dpi)]
+    lang = str(form.get("dil") or "").strip()
+    if lang:
+        args += ["--dil", lang]
+    kraken_model = str(form.get("kraken_model") or "").strip()
+    if kraken_model:
+        args += ["--kraken-model", kraken_model]
     first = str(form.get("ilk_sayfa") or "").strip()
     if first:
         if not first.isdigit() or int(first) < 1:
@@ -225,10 +231,12 @@ class App:
         ]
         cfg = engines.api_config()
         api_state = {"base_url": cfg["base_url"], "model": cfg["model"], "anahtar_var": bool(cfg["api_key"])}
+        k_models = [p.name for p in engines.kraken_models()]
         return {"dosyalar": input_files(), "modeller": models, "profiller": profs, "api": api_state,
+                "kraken_modelleri": k_models,
                 "is": self.job.snapshot() if self.job else None,
                 "varsayilan": {"profil": profiles.DEFAULT_PROFILE, "model": engines.DEFAULT_ENGINE,
-                               "okuma": engines.DEFAULT_MODE, "dpi": DEFAULT_DPI,
+                               "okuma": engines.DEFAULT_MODE, "dpi": DEFAULT_DPI, "dil": engines.TESS_LANG,
                                "formatlar": ["docx"], "isaretle": True, "kesme": True}}
 
     def start(self, form: dict) -> Job:

@@ -230,6 +230,16 @@ pre.preview {
             <input type="number" id="dpi" min="72" max="600" step="10">
             <small>Varsayılan 200. Daha yükseği yavaşlatır.</small>
           </div>
+          <div class="field">
+            <label for="lang">Tesseract dili</label>
+            <input type="text" id="lang" placeholder="tur" autocomplete="off">
+            <small>Ör. tur, tur+eng, eng, ara.</small>
+          </div>
+          <div class="field">
+            <label for="kraken-model">Kraken HTR modeli (.mlmodel)</label>
+            <select id="kraken-model"></select>
+            <small>models/ klasöründeki yazma/matbu Kraken ağırlıkları.</small>
+          </div>
           <div class="field checks" style="margin-top:0">
             <label><input type="checkbox" id="apos" checked>
               <span>Ayın (‘) ve hemzeyi (’) ayır</span></label>
@@ -478,6 +488,13 @@ function renderApiSettings() {
     : "Yerel ayarlar/api.json dosyasında saklanır.";
 }
 
+function renderKrakenModels() {
+  const list = state?.kraken_modelleri || [];
+  const sel = $("kraken-model");
+  sel.replaceChildren(el("option", {value: ""}, "Varsayılan (catmus-print-large.mlmodel)"),
+                      ...list.map(name => el("option", {value: name}, name)));
+}
+
 function formData() {
   const formats = [];
   if ($("f-docx").checked) formats.push("docx");
@@ -487,7 +504,8 @@ function formData() {
   if ($("f-csv").checked) formats.push("csv");
   return {profil: activeProfile, dosya: selected, sayfalar: $("pages").value, ilk_sayfa: $("first").value,
           formatlar: formats, isaretle: $("mark").checked, model: activeModel, okuma: $("mode").value,
-          kesme: $("apos").checked, dpi: Number($("dpi").value || 200)};
+          kesme: $("apos").checked, dpi: Number($("dpi").value || 200),
+          dil: $("lang").value.trim(), kraken_model: $("kraken-model").value};
 }
 
 async function start() {
@@ -737,8 +755,10 @@ $("close").addEventListener("click", async () => {
     return;
   }
   $("dpi").value = state.varsayilan.dpi;
+  $("lang").value = state.varsayilan.dil || "";
   renderFiles();
   renderApiSettings();
+  renderKrakenModels();
   if (state.profiller?.length) applyProfile(state.varsayilan.profil || state.profiller[0].id);
   else renderModels();
   if (!state.is) { show("form-view"); return; }

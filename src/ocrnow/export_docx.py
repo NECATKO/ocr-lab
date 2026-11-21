@@ -169,7 +169,13 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
                 sp.set(qn("w:val"), str(spacing))
                 r._r.get_or_add_rPr().append(sp)
             if rtl:
-                r._r.get_or_add_rPr().append(OxmlElement("w:rtl"))
+                rpr = r._r.get_or_add_rPr()
+                rpr.append(OxmlElement("w:rtl"))
+                rfonts = rpr.find(qn("w:rFonts"))
+                if rfonts is None:
+                    rfonts = OxmlElement("w:rFonts")
+                    rpr.insert(0, rfonts)
+                rfonts.set(qn("w:cs"), "Amiri")
             if is_bold:
                 r.bold = True
             if is_italic:

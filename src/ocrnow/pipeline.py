@@ -49,6 +49,7 @@ class Options:
     use_tesseract: bool = True
     detect_pagenum: bool = True
     cjk_check: bool = True
+    lang: str | None = None
 
 
 def _is_pdf(src: SourcePage) -> bool:
@@ -78,7 +79,10 @@ def ocr_page(img: Path, opts: Options, run: Callable[[Path, str], str], tsv: Cal
              size: tuple[int, int] | None = None) -> RawPage:
     """Sayfanın OCR'ı: (gerekirse) tesseract ve model. size=(genişlik, yükseklik); None ise img'den okunur.
     tsv None ise engines.tesseract_tsv (çağrı anında okunur)."""
-    tsv_text = (tsv or engines.tesseract_tsv)(img) if opts.use_tesseract else ""   # önce: tesseract hata verirse model (VLM) boşuna beklenmez
+    if opts.use_tesseract:
+        tsv_text = tsv(img) if tsv is not None else (engines.tesseract_tsv(img, lang=opts.lang) if opts.lang else engines.tesseract_tsv(img))
+    else:
+        tsv_text = ""
     raw = run(img, opts.mode)
     if size is None:
         with Image.open(img) as im:

@@ -89,6 +89,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ilk-sayfa", type=_positive_int, help="ilk sayfanın kitap sayfa numarası")
     p.add_argument("--birlestir", action="store_true", help="bütün girdileri tek belgede birleştir")
     p.add_argument("--dpi", type=_positive_int, default=DEFAULT_DPI, help="PDF görüntüleme çözünürlüğü (varsayılan: %(default)s)")
+    p.add_argument("--dil", help="Tesseract dili (ör. tur, tur+eng, eng, ara; varsayılan: TESS_LANG/tur)")
+    p.add_argument("--kraken-model", dest="kraken_model", metavar="DOSYA",
+                   help="Kraken .mlmodel dosyası (models/ içindeki ad ya da tam yol; yazma HTR modelleri için)")
     p.add_argument("--rapor", type=Path, metavar="DOSYA", help="iş sonu özetini JSON olarak bu dosyaya da yaz (ocr-gui için)")
     p.set_defaults(okuma_verildi=False, model_verildi=False, profil_verildi=False, kalin_kalip_verildi=False)
     return p
@@ -335,8 +338,13 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
     apostrophes = prof.apostrophes if args.kesme is None else args.kesme
     opts = pipeline.Options(engine=args.model, mode=args.okuma, apostrophes=apostrophes,
                             first_page=args.ilk_sayfa, dpi=args.dpi, use_tesseract=use_tesseract,
-                            detect_pagenum=prof.detect_pagenum, cjk_check=prof.cjk_check)
-    runtime = identity.runtime(args.model)
+                            detect_pagenum=prof.detect_pagenum, cjk_check=prof.cjk_check, lang=args.dil)
+    rt_kwargs = {}
+    if args.dil:
+        rt_kwargs["lang"] = args.dil
+    if args.kraken_model:
+        rt_kwargs["kraken_model"] = args.kraken_model
+    runtime = identity.runtime(args.model, **rt_kwargs)
     profile = runtime.profile(args.okuma, prompt_override=prof.prompt)
     if not profile["cacheable"]:
         print("Uyarı: OCR ayar kimliği doğrulanamadı; ham OCR önbelleği kullanılmayacak.")

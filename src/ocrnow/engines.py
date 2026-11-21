@@ -176,32 +176,47 @@ def _tesseract_env() -> dict[str, str]:
     return env
 
 
-def _tesseract_text(img: Path) -> str:
-    return subprocess.run(["tesseract", str(img), "stdout", "-l", TESS_LANG],
+def _tesseract_text(img: Path, lang: str | None = None) -> str:
+    return subprocess.run(["tesseract", str(img), "stdout", "-l", lang or TESS_LANG],
                           capture_output=True, text=True, check=True, env=_tesseract_env()).stdout
 
 
-def tesseract_tsv(img: Path) -> str:
+def tesseract_tsv(img: Path, lang: str | None = None) -> str:
     """Kelime kutularıyla birlikte tesseract TSV çıktısı (satır yapısı buradan gelir)."""
-    return subprocess.run(["tesseract", str(img), "stdout", "-l", TESS_LANG, "tsv"],
+    return subprocess.run(["tesseract", str(img), "stdout", "-l", lang or TESS_LANG, "tsv"],
                           capture_output=True, text=True, check=True, env=_tesseract_env()).stdout
 
 
-def _kraken_model() -> Path:
-    env = os.environ.get("KRAKEN_MODEL")
-    return paths.ROOT / env if env else paths.MODELS / "catmus-print-large.mlmodel"  # göreli yol köke göre
+def kraken_models() -> list[Path]:
+    """models/ klasöründeki tüm Kraken .mlmodel ağırlık dosyaları (Arapça/Osmanlıca HTR dahil)."""
+    if not paths.MODELS.is_dir():
+        return []
+    return sorted(p for p in paths.MODELS.iterdir() if p.is_file() and p.suffix.lower() == ".mlmodel")
 
 
-def _kraken_text(img: Path) -> str:
+def _kraken_model(name: str | None = None) -> Path:
+    chosen = (name or "").strip() or os.environ.get("KRAKEN_MODEL") or ""
+    if not chosen:
+        return paths.MODELS / "catmus-print-large.mlmodel"
+    p = Path(chosen)
+    if p.is_absolute():
+        return p
+    in_models = paths.MODELS / chosen
+    return in_models if in_models.exists() else paths.ROOT / chosen  # önce models/, yoksa köke göre
+
+
+def _kraken_text(img: Path, model_name: str | None = None) -> str:
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "o.txt"
-        subprocess.run(["kraken", "-i", str(img), str(out), "segment", "-bl", "ocr", "-m", str(_kraken_model())],
+        subprocess.run(["kraken", "-i", str(img), str(out), "segment", "-bl", "ocr", "-m", str(_kraken_model(model_name))],
                        capture_output=True, text=True, check=True, env=paths.subprocess_env())
         return out.read_text()
 
 
-def _local_text(name: str, img: Path) -> str:
-    return _tesseract_text(img) if name == "tesseract" else _kraken_text(img)
+def _local_text(name: str, img: Path, *, lang: str | None = None, kraken_model: str | None = None) -> str:
+    if name == "tesseract":
+        return _tesseract_text(img, lang=lang) if lang else _tesseract_text(img)
+    return _kraken_text(img, model_name=kraken_model) if kraken_model else _kraken_text(img)
 
 
 def _which(cmd: str) -> str | None:
@@ -366,7 +381,8 @@ def _mode(eng: Engine, mode: str) -> Mode:
 @contextmanager
 def server(name: str, *, cancel: threading.Event | None = None, revision: str | None = None,
            expect_managed: bool = False, external_model: str | None = None,
-           prompt_override: str | None = None) -> Iterator[Callable[[Path, str], str]]:
+           prompt_override: str | None = None, lang: str | None = None,
+           kraken_model: str | None = None) -> Iterator[Callable[[Path, str], str]]:
     """Motoru hazırlar ve run(img, mode) -> ham metin verir. VLM sunucusu çıkışta her durumda kapatılır.
 
     VLM için GPU kilidi (gpu_lock) sunucu açılmadan alınır, kapanınca bırakılır; alınamazsa GpuBusy.
@@ -375,7 +391,7 @@ def server(name: str, *, cancel: threading.Event | None = None, revision: str | 
     _check_cancel(cancel)
     eng = ENGINES[name]
     if eng.kind == "local":
-        yield lambda img, mode: (_mode(eng, mode), _local_text(name, img))[1]
+        yield lambda img, mode: (_mode(eng, mode), _local_text(name, img, lang=lang, kraken_model=kraken_model))[1]
         return
     if eng.kind == "api":
         cfg = api_config()

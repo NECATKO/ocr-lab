@@ -26,7 +26,7 @@ def _file_id(path: str | Path | None) -> dict | None:
     return None
 
 
-def tesseract_profile() -> dict:
+def tesseract_profile(lang: str | None = None) -> dict:
     binary = engines._which("tesseract")
     env = paths.subprocess_env()
     prefix = env.get("TESSDATA_PREFIX")
@@ -42,9 +42,10 @@ def tesseract_profile() -> dict:
                 data_dir = m[1]
         except (OSError, subprocess.SubprocessError, IndexError):
             pass
-    langs = engines.TESS_LANG.split("+")
-    files = {lang: _file_id(Path(data_dir) / f"{lang}.traineddata") if data_dir else None for lang in langs}
-    return {"version": version, "language": engines.TESS_LANG, "data_prefix": prefix,
+    tess_lang = lang or engines.TESS_LANG
+    langs = tess_lang.split("+")
+    files = {lg: _file_id(Path(data_dir) / f"{lg}.traineddata") if data_dir else None for lg in langs}
+    return {"version": version, "language": tess_lang, "data_prefix": prefix,
             "data_files": files, "binary": _file_id(binary)}
 
 
@@ -119,19 +120,21 @@ class Runtime:
         return {**fields, "id": _digest(semantic), "cacheable": self.cacheable}
 
 
-def runtime(name: str, *, tess: dict | None = None) -> Runtime:
+def runtime(name: str, *, tess: dict | None = None, lang: str | None = None,
+            kraken_model: str | None = None) -> Runtime:
     """Ağırlık sürümü saptanamayan harici/VLM okumaları kalıcı önbelleğe girmez."""
     eng = engines.ENGINES[name]
-    tess = tess if tess is not None else tesseract_profile()
+    tess = tess if tess is not None else (tesseract_profile(lang=lang) if lang else tesseract_profile())
     fields = {"tesseract": tess, "backend": eng.kind, "model": None, "model_revision": None}
     cacheable = bool(tess["version"])
     if name == "tesseract":
-        return Runtime(name, fields, cacheable, {})
+        return Runtime(name, fields, cacheable, {"lang": lang} if lang else {})
     if name == "kraken":
-        model = _file_id(engines._kraken_model())
+        model = _file_id(engines._kraken_model(kraken_model))
         binary = engines._which("kraken")
         fields.update(model_files=[model], executable=_file_id(binary), backend_version=_package_version(binary, "kraken"))
-        return Runtime(name, fields, cacheable and model is not None, {})
+        return Runtime(name, fields, cacheable and model is not None,
+                       {"kraken_model": kraken_model} if kraken_model else {})
     if eng.kind == "api":
         cfg = engines.api_config()
         fields.update(backend="api", base_url=cfg["base_url"] or None, model=cfg["model"] or None)
