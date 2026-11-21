@@ -1,13 +1,11 @@
 # ocr-now + ocr-lab
 
-Taranmış kitap sayfalarını (PDF ya da görüntü) **seçilebilir ve düzenlenebilir** metne çeviren yerel bir OCR hattı.
-Atıf ve alıntı için yapıldı. Çıktı kitapta ne yazıyorsa onu verir. Satır kırılımları, sayfa numaraları ve
-Osmanlıca transkripsiyon işaretleri (â î û, ‘ ’, ğ ı ş) korunur.
+Taranmış kitap sayfalarını, ders notlarını (el yazısı/tahta/slayt/PDF), Arapça/Osmanlıca yazmaları, faturaları ve günlük görselleri **seçilebilir ve düzenlenebilir** metne çeviren yerel + isteğe bağlı API destekli OCR hattı.
 
 | Komut | Ne için |
 |---|---|
-| `./ocr-now` | Üretim: PDF girer, kitabın sayfasına benzeyen `.docx` ve/veya ham `.txt` çıkar |
-| `./ocr-gui` | `ocr-now`'ın tarayıcıda açılan arayüzü: terminalsiz kullanım |
+| `./ocr-now` | Üretim: PDF veya görsel girer; `.docx`, `.md`, `.txt`, `.json`, `.csv` veya aranabilir `.pdf` çıkar |
+| `./ocr-gui` | `ocr-now`'ın tarayıcıda açılan arayüzü: profil seçici, Ctrl+V pano yapıştırma, yan yana düzenleme |
 | `./ocr-lab` | Benchmark: OCR motorlarını ve okuma modlarını `gt/` altındaki doğru metinlerle karşılaştırır |
 
 İki komut aynı motor tanımlarını (`src/ocrnow/engines.py`) kullanır, yeni bir model bir kez eklenir. Her şey
@@ -99,17 +97,20 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 
 | Seçenek | Anlamı |
 |---|---|
+| `--profil` | Belge profili: `kitap` (varsayılan), `gunluk`, `ders-notu`, `fatura`, `yazma`. Motor, mod, format ve son-işlem varsayılanlarını ayarlar |
 | `-p`, `--sayfalar` | Değerler: `hepsi` (varsayılan), `5`, `1,3,7`, `10-25`, `ilk10`; karışık da olur (`1-3,7`). Birden fazla PDF'te hepsine uygulanır. PDF'i aşan kısım kırpılır ve uyarı verilir |
-| `-m`, `--model` | Kullanılacak motor (varsayılan `dots.mocr`) |
-| `-o`, `--okuma` | Okuma modu: `duzen` (varsayılan; model desteklemiyorsa `duz`) ya da `duz`. Düz modda başlık, dipnot ve sayfa numarası ayrılamaz |
-| `-f`, `--format` | `docx`, `txt` ya da `docx txt` |
+| `-m`, `--model` | Kullanılacak motor (varsayılan profile göre; yerel motorlar ya da harici OpenAI-uyumlu `api`) |
+| `-o`, `--okuma` | Okuma modu: `duzen` ya da `duz`. Düz modda başlık, dipnot ve sayfa numarası ayrılamaz |
+| `-f`, `--format` | `docx`, `txt`, `md`, `json`, `csv`, `pdf` (aranabilir PDF) ya da birkaçı |
 | `--isaretle` / `--isaretleme` | Şüpheli kelimeleri sarı işaretle / işaretleme |
-| `--kesme-yok` | Ayın/hemze geri getirme adımını kapatır |
+| `--kesme` / `--kesme-yok` | Ayın/hemze geri getirme adımını açar / kapatır |
+| `--dil KOD` | Tesseract dili (ör. `tur`, `tur+eng`, `eng`, `ara`) |
+| `--kraken-model DOSYA` | Kraken için `models/` içindeki `.mlmodel` dosyası (Arapça/Osmanlıca HTR ağırlıkları dahil) |
 | `--kalin-kalip KALIP` | Kalın yazılacak nüsha işaretinin düzenli ifadesi. Varsayılan `\[\d+[ab] [^\]]*\]`, ör. `[106b sayfanın sağ yanı]`. `''` verilirse hiçbir şey kalın yapılmaz |
 | `--ilk-sayfa N` | İlk seçilen sayfanın kitaptaki numarası. Okunamayan numaralar buradan sayılır |
 | `--birlestir` | Bütün girdileri tek belgede birleştirir |
 | `--dpi N` | PDF görüntüleme çözünürlüğü (varsayılan 200) |
-| `--rapor DOSYA` | İş sonu özetini (belgeler, sayfa numaraları, uyarılar) JSON olarak da yazar; `ocr-gui` kullanır |
+| `--rapor DOSYA` | İş sonu özetini (belgeler, sayfa numaraları, önizleme, uyarılar) JSON olarak da yazar; `ocr-gui` kullanır |
 
 ### Çıktı
 

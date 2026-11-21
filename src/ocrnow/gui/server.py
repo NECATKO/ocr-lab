@@ -78,6 +78,22 @@ def input_files() -> list[dict]:
     return out
 
 
+def recent_documents(limit: int = 15) -> list[dict]:
+    """output/belgeler/ altındaki en son üretilen belgeler (yeniden eskiye)."""
+    if not paths.DOCS_OUT.is_dir():
+        return []
+    docs = []
+    for f in paths.DOCS_OUT.iterdir():
+        if f.is_file() and not f.name.startswith("."):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            docs.append((st.st_mtime, {"ad": f.name, "boyut": st.st_size}))
+    docs.sort(key=lambda x: x[0], reverse=True)
+    return [d for _, d in docs[:limit]]
+
+
 def _sha256_file(path: Path) -> str:
     with path.open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
@@ -233,7 +249,7 @@ class App:
         api_state = {"base_url": cfg["base_url"], "model": cfg["model"], "anahtar_var": bool(cfg["api_key"])}
         k_models = [p.name for p in engines.kraken_models()]
         return {"dosyalar": input_files(), "modeller": models, "profiller": profs, "api": api_state,
-                "kraken_modelleri": k_models,
+                "kraken_modelleri": k_models, "son_belgeler": recent_documents(),
                 "is": self.job.snapshot() if self.job else None,
                 "varsayilan": {"profil": profiles.DEFAULT_PROFILE, "model": engines.DEFAULT_ENGINE,
                                "okuma": engines.DEFAULT_MODE, "dpi": DEFAULT_DPI, "dil": engines.TESS_LANG,
@@ -331,6 +347,14 @@ class Handler(BaseHTTPRequestHandler):
             quoted = urllib.parse.quote(name)
             self._send(200, target.read_bytes(), "application/octet-stream",
                        {"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})
+        elif path.startswith("/tarama/"):
+            name = urllib.parse.unquote(path[len("/tarama/"):])
+            target = _target("tarama", name)
+            if target is None or target.suffix.lower() not in pages.IMAGE_EXTS:
+                return self._error(404, "görsel bulunamadı")
+            ctype = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                     ".tif": "image/tiff", ".tiff": "image/tiff"}.get(target.suffix.lower(), "application/octet-stream")
+            self._send(200, target.read_bytes(), ctype)
         else:
             self._error(404, "bulunamadı")
 

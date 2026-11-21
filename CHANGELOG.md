@@ -7,6 +7,20 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 ## [Yayımlanmadı]
 
 ### Eklendi
+- **Profil mimarisi** (`--profil`): `kitap` (varsayılan, mevcut akış), `gunluk` (hızlı fotoğraf/pano metni),
+  `ders-notu` (el yazısı/tahta/slayt → Markdown+LaTeX), `fatura` (yapısal JSON/CSV + Markdown) ve `yazma`
+  (sağdan sola Arapça/Osmanlıca). Kitap dışı profillerde Tesseract satır hizalaması ve kitap sayfa no uyarısı
+  otomatik kapatılır.
+- **Yeni çıktı biçimleri:** Markdown (`-f md`), yapısal JSON (`-f json`), tablo/fatura CSV (`-f csv`),
+  aranabilir Unicode PDF (`-f pdf`), akan A4 Word ve sağdan sola (RTL, `Amiri` kompleks betik fontlu) Word.
+- **Harici OpenAI-uyumlu API motoru (`-m api`):** OpenAI, Gemini, OpenRouter, Ollama veya LM Studio uç noktaları
+  `ayarlar/api.json` (git dışı, `0600`) ya da `OCR_API_BASE`/`OCR_API_MODEL`/`OCR_API_KEY` ile tanımlanır; yerel GPU
+  kilidi almaz ve profile özel prompt kullanır.
+- **Çoklu Kraken HTR modeli ve dil seçimi:** `--kraken-model` (`models/` altındaki `.mlmodel` dosyaları) ve `--dil`
+  (Tesseract dili, ör. `tur+eng`, `ara`).
+- **`ocr-gui` genel OCR deneyimi:** 5'li profil seçici, **Ctrl+V ile panodan görüntü yapıştırma**, harici API ve
+  Kraken/dil ayarları, sonuç ekranında **yan yana görsel + düzenlenebilir metin önizleme**, tek tıkla kopyalama /
+  düzeltilmiş metni indirme ve **Son üretilen belgeler** listesi.
 - Web arayüzünde ana ayarlardan önerilen model ve okuma modu, gelişmiş ayarlardan terminaldeki tüm OCR
   motorları seçilebilir. İki liste aynı seçimi paylaşır.
 - Benchmark için `--referans` ve `--kor-test` seçenekleri; kamu malı metinlerden altı görüntü sayfası üreten

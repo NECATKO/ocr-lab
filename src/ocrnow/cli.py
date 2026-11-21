@@ -10,7 +10,8 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from ocrnow import (
-    engines, export_docx, export_md, export_structured, export_txt, identity, pages, paths, pipeline, profiles, ui,
+    engines, export_docx, export_md, export_pdf, export_structured, export_txt, identity, pages, paths, pipeline,
+    profiles, ui,
 )
 from ocrnow.layout import Page
 from ocrnow.pages import DEFAULT_DPI, InputError
@@ -25,6 +26,7 @@ EXPORTERS: dict[str, Callable[[list[Page], Path, dict], object]] = {
     "md": lambda doc_pages, out, settings: export_md.write_md(doc_pages, out),
     "json": lambda doc_pages, out, settings: export_structured.write_json(doc_pages, out),
     "csv": lambda doc_pages, out, settings: export_structured.write_csv(doc_pages, out),
+    "pdf": lambda doc_pages, out, settings: export_pdf.write_pdf(doc_pages, out),
 }
 PREVIEW_LIMIT = 32_000
 MODE_LABELS = {"duz": "duz — düz metin", "duzen": "duzen — başlık, dipnot ve sütunları ayırarak"}

@@ -59,7 +59,7 @@ def test_build_args_all_options(dirs):
     ({"ilk_sayfa": "0"}, "İlk sayfa"),
     ({"ilk_sayfa": "x"}, "İlk sayfa"),
     ({"formatlar": []}, "biçim"),
-    ({"formatlar": ["pdf"]}, "biçim"),
+    ({"formatlar": ["rtf"]}, "biçim"),
     ({"model": "yok"}, "model"),
     ({"model": "glm-ocr", "okuma": "duzen"}, "okuma"),
     ({"dpi": 10}, "DPI"),

@@ -8,7 +8,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 import pytest
 
-from ocrnow import cli, engines, export_docx, export_md, export_structured, export_txt, pages, paths, pipeline
+from ocrnow import cli, engines, export_docx, export_md, export_pdf, export_structured, export_txt, pages, paths, pipeline
 from ocrnow.cli import main, parse_args
 from ocrnow.layout import Page
 from ocrnow.pages import DocJob, InputError, SourcePage
@@ -83,6 +83,7 @@ def fake_env(tmp_path, monkeypatch, known_ocr):
     monkeypatch.setattr(export_md, "write_md", write("md"))
     monkeypatch.setattr(export_structured, "write_json", write("json"))
     monkeypatch.setattr(export_structured, "write_csv", write("csv"))
+    monkeypatch.setattr(export_pdf, "write_pdf", write("pdf"))
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     return env
 
@@ -127,7 +128,7 @@ def test_option_spellings():
     ["k.pdf", "-m", "yok-model"],
     ["k.pdf", "-m", "glm-ocr", "-o", "duzen"],   # model bu modu bilmiyor
     ["k.pdf", "-o", "baska"],
-    ["k.pdf", "-f", "pdf"],
+    ["k.pdf", "-f", "rtf"],
     ["k.pdf", "--ilk-sayfa", "0"],
     ["k.pdf", "--dpi", "0"],
 ])
@@ -170,7 +171,7 @@ def test_no_inputs_non_tty_uses_input_folder(fake_env):
 
 
 def test_asks_format_at_end(fake_env, monkeypatch):
-    tty(monkeypatch, ["6", "h"])               # hepsi (docx, txt, md, json, csv), işaretleme hayır
+    tty(monkeypatch, ["7", "h"])               # hepsi (docx, txt, md, json, csv, pdf), işaretleme hayır
     assert main(["k.pdf"]) == 0                # girdi verildi → baştaki sorular yok, sondaki sorular var
     assert fake_env.written["docx"]["highlight"] is False and "txt" in fake_env.written and "md" in fake_env.written
     assert fake_env.written["docx"]["out"] == paths.DOCS_OUT / "k.docx"
@@ -244,10 +245,11 @@ def test_existing_dangling_output_link_is_not_taken(fake_env):
 
 @pytest.mark.parametrize("answer,formats", [("1", {"docx"}), ("docx", {"docx"}), ("2", {"txt"}), ("txt", {"txt"}),
                                            ("3", {"md"}), ("md", {"md"}), ("4", {"json"}), ("5", {"csv"}),
-                                           ("6", {"docx", "txt", "md", "json", "csv"}),
-                                           ("hepsi", {"docx", "txt", "md", "json", "csv"}), ("", {"docx"})])
+                                           ("6", {"pdf"}),
+                                           ("7", {"docx", "txt", "md", "json", "csv", "pdf"}),
+                                           ("hepsi", {"docx", "txt", "md", "json", "csv", "pdf"}), ("", {"docx"})])
 def test_format_answers(fake_env, monkeypatch, answer, formats):
-    tty(monkeypatch, [answer, "e"])            # txt/md/json/csv tek başına seçilirse işaretleme sorulmaz
+    tty(monkeypatch, [answer, "e"])            # txt/md/json/csv/pdf tek başına seçilirse işaretleme sorulmaz
     main(["k.pdf"])
     assert set(fake_env.written) == formats
 
@@ -257,12 +259,12 @@ def test_new_exporter_needs_only_registry_entry(fake_env, monkeypatch):
     got = []
     monkeypatch.setitem(cli.EXPORTERS, "rst", lambda doc_pages, out, settings: got.append(out))
     assert main(["k.pdf", "-f", "rst"]) == 0 and got == [paths.DOCS_OUT / "k.rst"]
-    tty(monkeypatch, ["6"])                         # 1) docx 2) txt 3) md 4) json 5) csv 6) rst 7) hepsi
+    tty(monkeypatch, ["7"])                         # 1) docx 2) txt 3) md 4) json 5) csv 6) pdf 7) rst 8) hepsi
     main(["k.pdf"])
     assert got[-1] == paths.DOCS_OUT / "k.rst" and fake_env.written == {}
     tty(monkeypatch, ["hepsi", "e"])
     main(["k.pdf"])
-    assert set(fake_env.written) == {"docx", "txt", "md", "json", "csv"} and len(got) == 3
+    assert set(fake_env.written) == {"docx", "txt", "md", "json", "csv", "pdf"} and len(got) == 3
 
 
 def test_invalid_format_answer_is_asked_again(fake_env, monkeypatch):

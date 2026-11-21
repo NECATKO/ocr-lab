@@ -139,12 +139,18 @@ pre.log {
 .nums dd { margin: 0 0 8px; }
 .ok-text { color: var(--ok); font-weight: 600; }
 .preview-box { margin-top: 18px; }
-.preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .preview-head h3 { font: 600 1.05rem var(--serif); margin: 0; }
-pre.preview {
-  background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; padding: 14px; max-height: 360px;
-  overflow: auto; font: 0.92rem/1.55 var(--sans); white-space: pre-wrap; margin: 0;
+.preview-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.preview-split { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.preview-split.with-img { grid-template-columns: 1fr 1fr; align-items: start; }
+.preview-split img { width: 100%; max-height: 420px; object-fit: contain; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); }
+textarea.preview {
+  width: 100%; min-height: 240px; max-height: 420px; resize: vertical;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: 5px; padding: 14px;
+  font: 0.92rem/1.55 var(--sans); margin: 0;
 }
+@media (max-width: 640px) { .preview-split.with-img { grid-template-columns: 1fr; } }
 .error-box { border-left: 4px solid var(--error); padding: 2px 0 2px 14px; margin: 10px 0; }
 .closed { text-align: center; padding: 80px 16px; }
 
@@ -214,6 +220,7 @@ pre.preview {
         <label><input type="checkbox" id="f-txt"> Düz metin (.txt)</label>
         <label><input type="checkbox" id="f-json"> Yapısal JSON (.json)</label>
         <label><input type="checkbox" id="f-csv"> Tablo / Fatura (.csv)</label>
+        <label><input type="checkbox" id="f-pdf"> Aranabilir PDF (.pdf)</label>
         <label id="mark-label"><input type="checkbox" id="mark" checked>
           <span>Şüpheli kelimeleri Word'de <mark>sarıya boya</mark></span></label>
       </div>
@@ -275,6 +282,13 @@ pre.preview {
       <button class="primary" id="start" type="button">Okumayı başlat</button>
       <span class="form-error" id="form-error" role="alert"></span>
     </div>
+
+    <section id="recent-section" aria-labelledby="h-recent" hidden style="margin-top:24px">
+      <details>
+        <summary id="h-recent">Son üretilen belgeler</summary>
+        <ul class="docs" id="recent-docs"></ul>
+      </details>
+    </section>
   </div>
 
   <section id="run-view" hidden aria-live="polite">
@@ -305,10 +319,16 @@ pre.preview {
       <ul class="docs" id="docs"></ul>
       <div id="preview-box" class="preview-box" hidden>
         <div class="preview-head">
-          <h3>Metin önizleme</h3>
-          <button type="button" id="copy-preview">Metni kopyala</button>
+          <h3>Metin önizleme ve düzenleme</h3>
+          <div class="preview-actions">
+            <button type="button" id="copy-preview">Metni kopyala</button>
+            <button type="button" id="download-preview">Düzeltilmişi indir</button>
+          </div>
         </div>
-        <pre class="preview" id="preview"></pre>
+        <div class="preview-split" id="preview-split">
+          <img id="preview-img" alt="Kaynak görsel" hidden>
+          <textarea class="preview" id="preview" spellcheck="false"></textarea>
+        </div>
       </div>
       <div class="check" id="check"></div>
       <details id="result-log-box">
@@ -470,6 +490,7 @@ function applyProfile(id) {
   $("f-txt").checked = cur.formatlar.includes("txt");
   $("f-json").checked = cur.formatlar.includes("json");
   $("f-csv").checked = cur.formatlar.includes("csv");
+  $("f-pdf").checked = cur.formatlar.includes("pdf");
   $("mark").checked = cur.isaretle;
   $("apos").checked = cur.kesme;
   $("first-field").hidden = !cur.sayfa_no;
@@ -495,6 +516,13 @@ function renderKrakenModels() {
                       ...list.map(name => el("option", {value: name}, name)));
 }
 
+function renderRecentDocs() {
+  const list = state?.son_belgeler || [];
+  $("recent-section").hidden = !list.length;
+  const ul = $("recent-docs");
+  ul.replaceChildren(...list.map(d => docButtons(d.ad)));
+}
+
 function formData() {
   const formats = [];
   if ($("f-docx").checked) formats.push("docx");
@@ -502,6 +530,7 @@ function formData() {
   if ($("f-txt").checked) formats.push("txt");
   if ($("f-json").checked) formats.push("json");
   if ($("f-csv").checked) formats.push("csv");
+  if ($("f-pdf").checked) formats.push("pdf");
   return {profil: activeProfile, dosya: selected, sayfalar: $("pages").value, ilk_sayfa: $("first").value,
           formatlar: formats, isaretle: $("mark").checked, model: activeModel, okuma: $("mode").value,
           kesme: $("apos").checked, dpi: Number($("dpi").value || 200),
@@ -578,7 +607,8 @@ function stopPolling() { if (poll) clearInterval(poll); poll = null; }
 function docButtons(path) {
   const name = path.split("/").pop();
   const kind = name.endsWith(".docx") ? "Word" : name.endsWith(".md") ? "Markdown"
-    : name.endsWith(".json") ? "JSON" : name.endsWith(".csv") ? "CSV" : "metin";
+    : name.endsWith(".json") ? "JSON" : name.endsWith(".csv") ? "CSV"
+    : name.endsWith(".pdf") ? "Aranabilir PDF" : "metin";
   return el("li", {},
     el("span", {class: "name"}, name, " ", el("span", {class: "kind"}, kind)),
     el("a", {class: "button", href: `/belge/${encodeURIComponent(name)}`, download: name}, "İndir"),
@@ -634,9 +664,14 @@ function renderResult(job) {
   const previews = (res.isler || []).map(is => is.onizleme).filter(Boolean);
   if (previews.length) {
     $("preview-box").hidden = false;
-    $("preview").textContent = previews.join("\n\n");
+    $("preview").value = previews.join("\n\n");
     $("preview").dir = (res.isler || []).some(is => is.rtl) ? "rtl" : "ltr";
     $("copy-preview").textContent = "Metni kopyala";
+    const isImg = /\.(png|jpe?g|tiff?)$/i.test(job.ad || "");
+    const img = $("preview-img");
+    img.hidden = !isImg;
+    $("preview-split").classList.toggle("with-img", isImg);
+    if (isImg) img.src = `/tarama/${encodeURIComponent(job.ad)}`;
   }
 
   const check = $("check");
@@ -696,7 +731,7 @@ window.addEventListener("paste", e => {
   }
 });
 $("copy-preview").addEventListener("click", async () => {
-  const text = $("preview").textContent;
+  const text = $("preview").value;
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
@@ -705,6 +740,16 @@ $("copy-preview").addEventListener("click", async () => {
   } catch (_) {
     $("copy-preview").textContent = "Kopyalanamadı";
   }
+});
+$("download-preview").addEventListener("click", () => {
+  const text = $("preview").value;
+  if (!text) return;
+  const blob = new Blob([text], {type: "text/plain;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "ocr-duzenlenmis.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
 });
 
 for (const id of ["model", "all-models"]) {
@@ -736,6 +781,7 @@ $("again").addEventListener("click", async () => {
   dismissed = true;
   state = await api("/api/durum");
   renderFiles();
+  renderRecentDocs();
   renderModels();
   show("form-view");
 });
@@ -759,6 +805,7 @@ $("close").addEventListener("click", async () => {
   renderFiles();
   renderApiSettings();
   renderKrakenModels();
+  renderRecentDocs();
   if (state.profiller?.length) applyProfile(state.varsayilan.profil || state.profiller[0].id);
   else renderModels();
   if (!state.is) { show("form-view"); return; }
