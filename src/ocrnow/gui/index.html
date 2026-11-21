@@ -53,6 +53,15 @@ button.quiet { border: none; color: var(--ink-soft); padding: 6px 8px; font-weig
 button.quiet:hover { color: var(--ink); }
 :focus-visible { outline: 3px solid var(--navy); outline-offset: 2px; }
 
+/* profiller */
+.profiles { display: flex; flex-wrap: wrap; gap: 8px; }
+.prof-btn {
+  padding: 8px 14px; font-weight: 600; font-size: .92rem; border-radius: 5px;
+  border: 1px solid var(--rule); background: var(--paper); color: var(--ink);
+}
+.prof-btn[aria-pressed="true"] { background: var(--navy); border-color: var(--navy); color: var(--sheet); }
+.prof-desc { margin: 10px 0 0; color: var(--ink-soft); font-size: .92rem; }
+
 /* tarama seçimi */
 .drop {
   border: 2px dashed var(--rule); border-radius: 6px; padding: 22px; text-align: center; color: var(--ink-soft);
@@ -129,6 +138,13 @@ pre.log {
 .nums dt { font-weight: 600; }
 .nums dd { margin: 0 0 8px; }
 .ok-text { color: var(--ok); font-weight: 600; }
+.preview-box { margin-top: 18px; }
+.preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.preview-head h3 { font: 600 1.05rem var(--serif); margin: 0; }
+pre.preview {
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; padding: 14px; max-height: 360px;
+  overflow: auto; font: 0.92rem/1.55 var(--sans); white-space: pre-wrap; margin: 0;
+}
 .error-box { border-left: 4px solid var(--error); padding: 2px 0 2px 14px; margin: 10px 0; }
 .closed { text-align: center; padding: 80px 16px; }
 
@@ -144,17 +160,23 @@ pre.log {
   <header>
     <div>
       <h1>OCR-Now</h1>
-      <p>Taranmış kitap sayfalarını Word belgesine çevirir.</p>
+      <p>Kitap, ders notu, fatura, yazma ve günlük metinleri yerelde okur.</p>
     </div>
     <button class="quiet" id="close" type="button">Kapat</button>
   </header>
 
   <div id="form-view">
+    <section aria-labelledby="h-profile">
+      <h2 id="h-profile">Profil</h2>
+      <div class="profiles" id="profiles" role="group" aria-label="Belge profili"></div>
+      <p class="prof-desc" id="prof-desc"></p>
+    </section>
+
     <section aria-labelledby="h-scan">
-      <h2 id="h-scan">Tarama</h2>
+      <h2 id="h-scan">Tarama / Görsel</h2>
       <div class="drop" id="drop" tabindex="0" role="button" aria-describedby="drop-help">
-        <strong>PDF'i buraya sürükleyin</strong> ya da tıklayıp seçin
-        <div id="drop-help" class="note">PDF, PNG, JPG ya da TIFF. Dosya bu bilgisayarda kalır.</div>
+        <strong>Dosyayı buraya sürükleyin</strong>, tıklayın ya da <strong>Ctrl+V</strong> ile yapıştırın
+        <div id="drop-help" class="note">PDF, PNG, JPG, TIFF ya da panodaki ekran görüntüsü. Dosya bu bilgisayarda kalır.</div>
       </div>
       <input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff" hidden>
       <p class="note" id="upload-status" aria-live="polite"></p>
@@ -170,7 +192,7 @@ pre.log {
           <input type="text" id="pages" placeholder="hepsi" autocomplete="off">
           <small id="pages-help">Boş bırakırsanız hepsi. Örnek: 1-5, 8 ya da ilk10</small>
         </div>
-        <div class="field">
+        <div class="field" id="first-field">
           <label for="first">İlk sayfanın kitaptaki numarası</label>
           <input type="number" id="first" min="1" placeholder="sayfadan okunur">
           <small>Yalnız numaralar okunamıyorsa verin.</small>
@@ -188,8 +210,9 @@ pre.log {
       </div>
       <div class="checks">
         <label><input type="checkbox" id="f-docx" checked> Word belgesi (.docx)</label>
+        <label><input type="checkbox" id="f-md"> Markdown (.md)</label>
         <label><input type="checkbox" id="f-txt"> Düz metin (.txt)</label>
-        <label><input type="checkbox" id="mark" checked>
+        <label id="mark-label"><input type="checkbox" id="mark" checked>
           <span>Şüpheli kelimeleri Word'de <mark>sarıya boya</mark></span></label>
       </div>
       <details>
@@ -245,6 +268,13 @@ pre.log {
       </div>
       <div id="result-error" class="error-box" hidden></div>
       <ul class="docs" id="docs"></ul>
+      <div id="preview-box" class="preview-box" hidden>
+        <div class="preview-head">
+          <h3>Metin önizleme</h3>
+          <button type="button" id="copy-preview">Metni kopyala</button>
+        </div>
+        <pre class="preview" id="preview"></pre>
+      </div>
       <div class="check" id="check"></div>
       <details id="result-log-box">
         <summary>Ayrıntılı kayıt</summary>
@@ -264,6 +294,7 @@ pre.log {
 const $ = id => document.getElementById(id);
 let state = null;          // /api/durum
 let selected = null;       // seçili tarama adı
+let activeProfile = null;  // seçili profil id
 let activeModel = null;    // ana ve gelişmiş listelerde ortak seçim
 let poll = null;
 let dismissed = false;
@@ -380,12 +411,43 @@ async function upload(file) {
   xhr.send(file);
 }
 
+function renderProfiles() {
+  const profs = state.profiller || [];
+  if (!profs.length) return;
+  if (!profs.some(p => p.id === activeProfile)) activeProfile = state.varsayilan.profil || profs[0].id;
+  const box = $("profiles");
+  box.replaceChildren(...profs.map(p => {
+    const btn = el("button", {type: "button", class: "prof-btn", "aria-pressed": String(p.id === activeProfile),
+      onclick: () => applyProfile(p.id)}, p.ad);
+    return btn;
+  }));
+  const cur = profs.find(p => p.id === activeProfile);
+  $("prof-desc").textContent = cur ? cur.aciklama : "";
+}
+
+function applyProfile(id) {
+  const cur = (state.profiller || []).find(p => p.id === id);
+  if (!cur) return;
+  activeProfile = cur.id;
+  activeModel = cur.model;
+  $("f-docx").checked = cur.formatlar.includes("docx");
+  $("f-md").checked = cur.formatlar.includes("md");
+  $("f-txt").checked = cur.formatlar.includes("txt");
+  $("mark").checked = cur.isaretle;
+  $("apos").checked = cur.kesme;
+  $("first-field").hidden = !cur.sayfa_no;
+  if (!cur.sayfa_no) $("first").value = "";
+  renderProfiles();
+  renderModels(cur.okuma);
+}
+
 function formData() {
   const formats = [];
   if ($("f-docx").checked) formats.push("docx");
+  if ($("f-md").checked) formats.push("md");
   if ($("f-txt").checked) formats.push("txt");
-  return {dosya: selected, sayfalar: $("pages").value, ilk_sayfa: $("first").value, formatlar: formats,
-          isaretle: $("mark").checked, model: activeModel, okuma: $("mode").value,
+  return {profil: activeProfile, dosya: selected, sayfalar: $("pages").value, ilk_sayfa: $("first").value,
+          formatlar: formats, isaretle: $("mark").checked, model: activeModel, okuma: $("mode").value,
           kesme: $("apos").checked, dpi: Number($("dpi").value || 200)};
 }
 
@@ -458,8 +520,9 @@ function stopPolling() { if (poll) clearInterval(poll); poll = null; }
 
 function docButtons(path) {
   const name = path.split("/").pop();
+  const kind = name.endsWith(".docx") ? "Word" : name.endsWith(".md") ? "Markdown" : "metin";
   return el("li", {},
-    el("span", {class: "name"}, name, " ", el("span", {class: "kind"}, name.endsWith(".docx") ? "Word" : "metin")),
+    el("span", {class: "name"}, name, " ", el("span", {class: "kind"}, kind)),
     el("a", {class: "button", href: `/belge/${encodeURIComponent(name)}`, download: name}, "İndir"),
     el("button", {type: "button", onclick: () => reveal("belge", name)}, "Klasörde göster"));
 }
@@ -485,6 +548,7 @@ function renderResult(job) {
   head.classList.toggle("bad", job.durum !== "bitti");
   $("result-time").textContent = `${minutes(job.gecen)} sürdü`;
   $("result-error").hidden = true;
+  $("preview-box").hidden = true;
   $("docs").replaceChildren();
   $("check").replaceChildren();
   $("result-log").textContent = job.satirlar.join("\n");
@@ -508,6 +572,14 @@ function renderResult(job) {
   $("docs").append(el("li", {},
     el("span", {class: "name"}, job.ad, " ", el("span", {class: "kind"}, "taranmış PDF")),
     el("button", {type: "button", onclick: () => reveal("tarama", job.ad)}, "Klasörde göster")));
+
+  const previews = (res.isler || []).map(is => is.onizleme).filter(Boolean);
+  if (previews.length) {
+    $("preview-box").hidden = false;
+    $("preview").textContent = previews.join("\n\n");
+    $("preview").dir = (res.isler || []).some(is => is.rtl) ? "rtl" : "ltr";
+    $("copy-preview").textContent = "Metni kopyala";
+  }
 
   const check = $("check");
   for (const is of res.isler) {
@@ -549,6 +621,33 @@ for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, () => $("
 $("drop").addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); });
 window.addEventListener("dragover", e => e.preventDefault());   // sayfanın dışına bırakılan dosya açılmasın
 window.addEventListener("drop", e => e.preventDefault());
+window.addEventListener("paste", e => {
+  if ($("form-view").hidden) return;
+  const items = e.clipboardData?.items || [];
+  for (const item of items) {
+    if (item.type.startsWith("image/")) {
+      const blob = item.getAsFile();
+      if (!blob) continue;
+      e.preventDefault();
+      const ext = item.type === "image/jpeg" ? "jpg" : "png";
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const file = new File([blob], `pano-${ts}.${ext}`, {type: item.type});
+      upload(file);
+      return;
+    }
+  }
+});
+$("copy-preview").addEventListener("click", async () => {
+  const text = $("preview").textContent;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    $("copy-preview").textContent = "Kopyalandı";
+    setTimeout(() => { $("copy-preview").textContent = "Metni kopyala"; }, 1800);
+  } catch (_) {
+    $("copy-preview").textContent = "Kopyalanamadı";
+  }
+});
 
 for (const id of ["model", "all-models"]) {
   $(id).addEventListener("change", e => {
@@ -586,7 +685,8 @@ $("close").addEventListener("click", async () => {
   }
   $("dpi").value = state.varsayilan.dpi;
   renderFiles();
-  renderModels();
+  if (state.profiller?.length) applyProfile(state.varsayilan.profil || state.profiller[0].id);
+  else renderModels();
   if (!state.is) { show("form-view"); return; }
   renderJob(state.is);                     // süren iş: ilerleme; biten iş: son sonuç
   if (state.is.durum === "calisiyor" || state.is.durum === "bekliyor") startPolling();

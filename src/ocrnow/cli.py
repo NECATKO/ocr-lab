@@ -9,7 +9,7 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 
-from ocrnow import engines, export_docx, export_txt, identity, pages, paths, pipeline, ui
+from ocrnow import engines, export_docx, export_md, export_txt, identity, pages, paths, pipeline, profiles, ui
 from ocrnow.layout import Page
 from ocrnow.pages import DEFAULT_DPI, InputError
 
@@ -17,9 +17,12 @@ from ocrnow.pages import DEFAULT_DPI, InputError
 # yazma döngüsü buradan okur. ayarlar: highlight, bold (kalın kalıbı ya da None), warnings (eklenecek uyarı listesi).
 EXPORTERS: dict[str, Callable[[list[Page], Path, dict], object]] = {
     "docx": lambda doc_pages, out, settings: export_docx.write_docx(
-        doc_pages, out, highlight=settings["highlight"], bold_pattern=settings["bold"], warnings=settings["warnings"]),
+        doc_pages, out, highlight=settings["highlight"], bold_pattern=settings["bold"],
+        warnings=settings["warnings"], flowing=settings.get("flowing", False), rtl=settings.get("rtl", False)),
     "txt": lambda doc_pages, out, settings: export_txt.write_txt(doc_pages, out),
+    "md": lambda doc_pages, out, settings: export_md.write_md(doc_pages, out),
 }
+PREVIEW_LIMIT = 32_000
 MODE_LABELS = {"duz": "duz — düz metin", "duzen": "duzen — başlık, dipnot ve sütunları ayırarak"}
 YES = {"e", "evet", "y", "yes"}
 NO = {"h", "hayır", "hayir", "n", "no"}
@@ -57,34 +60,46 @@ def _positive_int(text: str) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = _Parser(prog="ocr-now", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG,
-                description="Taranmış kitap sayfalarını Word (.docx) ya da düz metne (.txt) çevirir. "
+                description="Taranmış belge ve görselleri Word (.docx), Markdown (.md) ya da düz metne (.txt) çevirir. "
                             "Argümansız çalıştırılırsa adım adım sorar.")
     p.add_argument("girdiler", nargs="*", help="PDF, görüntü ya da klasör (varsayılan: input/ klasörü)")
+    p.add_argument("--profil", choices=list(profiles.PROFILES), default=profiles.DEFAULT_PROFILE, action=_Explicit,
+                   help=f"belge profili: {', '.join(profiles.PROFILES)} (varsayılan: %(default)s)")
     p.add_argument("-p", "--sayfalar", help="sayfa seçimi: hepsi, 5, 1,3,7, 10-25, ilk10 (varsayılan: hepsi)")
-    p.add_argument("-m", "--model", default=engines.DEFAULT_ENGINE,
-                   help=f"motor: {', '.join(engines.ENGINES)} (varsayılan: %(default)s)")
+    p.add_argument("-m", "--model", default=engines.DEFAULT_ENGINE, action=_Explicit,
+                   help=f"motor: {', '.join(engines.ENGINES)} (varsayılan: profile göre)")
     p.add_argument("-o", "--okuma", default=engines.DEFAULT_MODE, action=_Explicit,
-                   help="okuma modu: duz ya da duzen (varsayılan: %(default)s; model desteklemiyorsa duz)")
+                   help="okuma modu: duz ya da duzen (varsayılan: profile göre; model desteklemiyorsa duz)")
     p.add_argument("-f", "--format", nargs="+",
                    help=f"çıktı biçimi: {', '.join(EXPORTERS)} ya da birkaçı (verilmezse sonda sorulur)")
     p.add_argument("--isaretle", dest="isaretle", action="store_true", default=None,
-                   help="şüpheli kelimeleri sarı işaretle (verilmezse sonda sorulur)")
+                   help="şüpheli kelimeleri sarı işaretle (verilmezse profile göre / sonda sorulur)")
     p.add_argument("--isaretleme", dest="isaretle", action="store_false", default=None,
                    help="sarı işaretleme yapma")
-    p.add_argument("--kesme-yok", action="store_true", help="ayın/hemze (kesme işareti) adımını kapat")
-    p.add_argument("--kalin-kalip", default=export_docx.BOLD_DEFAULT, metavar="KALIP",
-                   help="kalın yazılacak metnin düzenli ifadesi; boş ('') kalın yapmaz (varsayılan: %(default)s)")
+    p.add_argument("--kesme", dest="kesme", action="store_true", default=None,
+                   help="ayın/hemze (kesme işareti) adımını aç")
+    p.add_argument("--kesme-yok", dest="kesme", action="store_false", default=None,
+                   help="ayın/hemze (kesme işareti) adımını kapat")
+    p.add_argument("--kalin-kalip", default=export_docx.BOLD_DEFAULT, action=_Explicit, metavar="KALIP",
+                   help="kalın yazılacak metnin düzenli ifadesi; boş ('') kalın yapmaz (varsayılan: profile göre)")
     p.add_argument("--ilk-sayfa", type=_positive_int, help="ilk sayfanın kitap sayfa numarası")
     p.add_argument("--birlestir", action="store_true", help="bütün girdileri tek belgede birleştir")
     p.add_argument("--dpi", type=_positive_int, default=DEFAULT_DPI, help="PDF görüntüleme çözünürlüğü (varsayılan: %(default)s)")
     p.add_argument("--rapor", type=Path, metavar="DOSYA", help="iş sonu özetini JSON olarak bu dosyaya da yaz (ocr-gui için)")
-    p.set_defaults(okuma_verildi=False)
+    p.set_defaults(okuma_verildi=False, model_verildi=False, profil_verildi=False, kalin_kalip_verildi=False)
     return p
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    prof = profiles.get(args.profil)
+    if not args.model_verildi:
+        args.model = prof.engine
+    if not args.okuma_verildi:
+        args.okuma = prof.mode
+    if not args.kalin_kalip_verildi:
+        args.kalin_kalip = prof.bold_pattern or ""
     if args.model not in engines.ENGINES:
         parser.error(f"bilinmeyen model '{args.model}' (olanlar: {', '.join(engines.ENGINES)})")
     modes = engines.ENGINES[args.model].modes
@@ -102,6 +117,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if bad:
             parser.error(f"bilinmeyen biçim '{bad[0]}' (olanlar: {', '.join(EXPORTERS)}; girdileri -f'den önce yazın)")
         args.format = list(dict.fromkeys(args.format))
+    args.kesme_yok = args.kesme is False
     return args
 
 
@@ -237,9 +253,19 @@ def _write_job(name: str, doc_pages: list[Page], formats: list[str], settings: d
     return written, errors
 
 
+def _preview_text(doc_pages: list[Page], formats: list[str]) -> str:
+    text = (export_md.render_md(doc_pages) if "md" in formats
+            else export_txt.render_txt(doc_pages, page_breaks=len(doc_pages) > 1)).strip()
+    if len(text) > PREVIEW_LIMIT:
+        return text[:PREVIEW_LIMIT] + "\n…"
+    return text
+
+
 def _report(results: list[tuple[pages.DocJob, list[Page]]], written: dict[str, list[Path]],
-            export_warnings: dict[str, list[str]], export_errors: dict[str, list[str]]) -> dict:
+            export_warnings: dict[str, list[str]], export_errors: dict[str, list[str]],
+            formats: list[str] | None = None, *, rtl: bool = False) -> dict:
     """İş sonu özeti: gerçek çıktılar, sayfa denetimleri ve dışa aktarma hataları ayrı tutulur."""
+    formats = formats or []
     jobs = []
     for job, doc_pages in results:
         multi = len({src.source for src in job.pages if src.source.suffix.lower() == ".pdf"}) > 1
@@ -254,6 +280,8 @@ def _report(results: list[tuple[pages.DocJob, list[Page]]], written: dict[str, l
                         for src, p in zip(job.pages, doc_pages) if p.truncated],
             "yazma_hatalari": export_errors.get(job.name, []),
             "uyarilar": [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, []),
+            "onizleme": _preview_text(doc_pages, formats),
+            "rtl": rtl,
         })
     return {"belgeler": [str(path) for files in written.values() for path in files], "isler": jobs,
             "okunamayan": any(p.failed for _, doc_pages in results for p in doc_pages)}
@@ -283,7 +311,9 @@ def _summary(report: dict) -> None:
 
 def _run(args: argparse.Namespace, ask_start: bool) -> int:
     interactive = sys.stdin.isatty()
-    if reason := engines.missing("tesseract"):   # her sayfada satır yapısı ve sarı işaret için gerekir
+    prof = profiles.get(args.profil)
+    use_tesseract = prof.use_tesseract
+    if (use_tesseract or args.model == "tesseract") and (reason := engines.missing("tesseract")):
         _err(f"Hata: tesseract kullanılamıyor: {reason} (satır yapısı ve sarı işaretleme için gerekli)\n"
              "Kurulum için: ocr-now models install tesseract")
         return 2
@@ -298,8 +328,10 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
         _err(f"Hata: '{args.model}' modeli kullanılamıyor: {reason}\nKurulum için: ocr-now models install")
         return 2
 
-    opts = pipeline.Options(engine=args.model, mode=args.okuma, apostrophes=not args.kesme_yok,
-                            first_page=args.ilk_sayfa, dpi=args.dpi)
+    apostrophes = prof.apostrophes if args.kesme is None else args.kesme
+    opts = pipeline.Options(engine=args.model, mode=args.okuma, apostrophes=apostrophes,
+                            first_page=args.ilk_sayfa, dpi=args.dpi, use_tesseract=use_tesseract,
+                            detect_pagenum=prof.detect_pagenum, cjk_check=prof.cjk_check)
     runtime = identity.runtime(args.model)
     profile = runtime.profile(args.okuma)
     if not profile["cacheable"]:
@@ -315,11 +347,12 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
 
     writable = [(job, doc_pages) for job, doc_pages in results   # boş belge yazılmaz, aynı adlı eski belge ezilmez
                 if not all(p.failed for p in doc_pages)]
-    formats = args.format or (_ask_formats() if interactive and writable else ["docx"])
+    formats = args.format or (_ask_formats() if interactive and writable else list(prof.formats))
     highlight = args.isaretle
     if highlight is None:
-        highlight = _ask_highlight() if interactive and writable and "docx" in formats else True
-    settings = {"highlight": highlight, "bold": args.kalin_kalip or None}   # boş kalıp kalın işaretlemeyi kapatır
+        highlight = _ask_highlight() if interactive and writable and "docx" in formats and prof.highlight else prof.highlight
+    settings = {"highlight": highlight, "bold": args.kalin_kalip or None,
+                "flowing": prof.flowing_docx, "rtl": prof.rtl}
 
     written: dict[str, list[Path]] = {}
     export_warnings: dict[str, list[str]] = {}
@@ -330,7 +363,7 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
             written[job.name] = files
         if errors:
             export_errors[job.name] = errors
-    report = _report(results, written, export_warnings, export_errors)
+    report = _report(results, written, export_warnings, export_errors, formats, rtl=prof.rtl)
     _summary(report)
     incomplete = (report["okunamayan"] or bool(export_errors)
                   or any(j["metin_kontrol"] or j["kesilen"] for j in report["isler"]))

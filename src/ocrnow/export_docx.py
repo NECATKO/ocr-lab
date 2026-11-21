@@ -119,8 +119,14 @@ def _sup_pattern(page: Page) -> re.Pattern | None:
     return re.compile(r"(?<=[^\W\d_])(?:" + "|".join(sorted(nums, key=len, reverse=True)) + r")(?!\d)")
 
 
+def _set_rtl_paragraph(p) -> None:
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p._p.get_or_add_pPr().append(OxmlElement("w:bidi"))
+
+
 def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern | None, highlight: bool,
-              size: float | None = None, spacing: int | None = None) -> int:
+              size: float | None = None, spacing: int | None = None, *, flowing: bool = False,
+              rtl: bool = False) -> int:
     """Bloğu satır satır run'lara yazar: run'lar kalın, italik, üst simge ve sarı aralıklarının sınırlarından bölünür.
 
     Table'ın işaretleri kullanılmaz (konumlar HTML'li metne göredir, yazılan düz metne değil).
@@ -138,7 +144,7 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
     if block.category == "Footnote" and (m := re.match(r"\d+(?=[.)]?\s)", text)):
         sup.append(m.span())
     marks = [(m.start, m.end) for m in own if m.kind in YELLOW_KINDS] if highlight else []
-    spans = _spans(block, text)
+    spans = [(0, len(text), False)] if flowing else _spans(block, text)
     replaced = 0
     for k, (start, end, hyphen) in enumerate(spans):
         cuts = sorted({start, end, *(x for r in bold + italic + sup + marks for x in r if start < x < end)})
@@ -162,6 +168,8 @@ def _add_runs(p, block: Block, page_sup: re.Pattern | None, bold_re: re.Pattern 
                 sp = OxmlElement("w:spacing")
                 sp.set(qn("w:val"), str(spacing))
                 r._r.get_or_add_rPr().append(sp)
+            if rtl:
+                r._r.get_or_add_rPr().append(OxmlElement("w:rtl"))
             if is_bold:
                 r.bold = True
             if is_italic:
@@ -222,17 +230,70 @@ def _close_section(doc, last_paragraph) -> None:
         sentinel.remove(ref)            # sonraki bölüm kendi altlığını alır
 
 
+def _write_flowing(doc, pages: list[Page], bold_re: re.Pattern | None, highlight: bool, rtl: bool,
+                   warnings: list[str]) -> None:
+    """Akan Word belgesi (A4, gerçek başlık/paragraf, zorla satır kırılmaz; yazmalarda RTL)."""
+    section = doc.sections[-1]
+    section.page_width, section.page_height = Cm(21), Cm(29.7)
+    section.left_margin = section.right_margin = Cm(2.2)
+    section.top_margin = section.bottom_margin = Cm(2.2)
+    for n, page in enumerate(pages):
+        _, body, footnotes = ([b for b in g if plain_text(b)] for g in split_blocks(page))
+        replaced = 0
+        sup = _sup_pattern(page)
+        if n > 0 and (body or footnotes or page.failed):
+            doc.add_page_break()
+        if notice := review_notice(page):
+            p = doc.add_paragraph(notice)
+            if rtl:
+                _set_rtl_paragraph(p)
+        for block in body:
+            if block.category == "Title":
+                p = doc.add_heading(level=1)
+            elif block.category == "Section-header":
+                p = doc.add_heading(level=2)
+            else:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after = Pt(6)
+            if rtl:
+                _set_rtl_paragraph(p)
+            replaced += _add_runs(p, block, sup, bold_re, highlight, flowing=True, rtl=rtl)
+        if footnotes:
+            sep = doc.add_paragraph()
+            sep.paragraph_format.space_before = Pt(8)
+            if rtl:
+                _set_rtl_paragraph(sep)
+            sep.add_run("_" * 18).font.size = Pt(SEPARATOR_PT)
+            for block in footnotes:
+                p = doc.add_paragraph()
+                if rtl:
+                    _set_rtl_paragraph(p)
+                replaced += _add_runs(p, block, None, bold_re, highlight, FOOTNOTE_PT, flowing=True, rtl=rtl)
+        if page.failed:
+            p = doc.add_paragraph(FAILED_TEXT)
+            if rtl:
+                _set_rtl_paragraph(p)
+        if replaced:
+            where = page_label(page) or f"PDF s. {page.index}"
+            warnings.append(f"docx sayfa {where}: XML'e uyumsuz {replaced} karakter \ufffd ile değiştirildi")
+
+
 def write_docx(pages: list[Page], out: Path, highlight: bool = True, bold_pattern: str | None = BOLD_DEFAULT,
-               warnings: list[str] | None = None) -> Path:
+               warnings: list[str] | None = None, *, flowing: bool = False, rtl: bool = False) -> Path:
     """Belgeyi yazar. warnings verilirse dışa aktarma uyarıları (ör. MIN_PT'ye sığmayan satır) ona eklenir."""
     warnings = [] if warnings is None else warnings
     bold_re = re.compile(bold_pattern) if bold_pattern else None
 
     doc = Document()
     style = doc.styles["Normal"]
-    style.font.name, style.font.size = FONT, Pt(BODY_PT)
+    style.font.name, style.font.size = FONT, Pt(11.0 if flowing else BODY_PT)
     style.paragraph_format.space_after = Pt(0)
     style.paragraph_format.line_spacing = 1.15
+    if flowing:
+        _write_flowing(doc, pages, bold_re, highlight, rtl, warnings)
+        with paths.atomic_output(out) as tmp:
+            doc.save(tmp)
+        return out
     for n, page in enumerate(pages):
         headers, body, footnotes = ([b for b in g if plain_text(b)] for g in split_blocks(page))
         body_pt = _section_size(page, body, BODY_PT, True, warnings)

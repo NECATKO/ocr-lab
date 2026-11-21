@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 
-from ocrnow import engines, pages, paths
+from ocrnow import engines, pages, paths, profiles
 from ocrnow.cli import EXPORTERS
 from ocrnow.gui.job import Job
 from ocrnow.pages import DEFAULT_DPI, InputError
@@ -142,6 +142,12 @@ def save_upload(name: str, data: bytes) -> Path:
 def build_args(form: dict) -> list[str]:
     path = _input_file(form.get("dosya", ""))
     args = [str(path)]
+    profile_id = form.get("profil") or profiles.DEFAULT_PROFILE
+    if profile_id not in profiles.PROFILES:
+        raise FormError(f"Bilinmeyen profil: {profile_id}")
+    if profile_id != profiles.DEFAULT_PROFILE:
+        args += ["--profil", profile_id]
+    prof = profiles.PROFILES[profile_id]
     spec = str(form.get("sayfalar") or "").strip()
     if spec and spec.lower() != "hepsi":
         try:
@@ -170,12 +176,15 @@ def build_args(form: dict) -> list[str]:
         if not first.isdigit() or int(first) < 1:
             raise FormError("İlk sayfanın kitap numarası 1 ya da daha büyük bir tam sayı olmalı")
         args += ["--ilk-sayfa", first]
-    args.append("--isaretle" if form.get("isaretle", True) else "--isaretleme")
-    if not form.get("kesme", True):
+    args.append("--isaretle" if form.get("isaretle", prof.highlight) else "--isaretleme")
+    kesme = form.get("kesme", prof.apostrophes)
+    if kesme and not prof.apostrophes:
+        args.append("--kesme")
+    elif not kesme and prof.apostrophes:
         args.append("--kesme-yok")
     formats = form.get("formatlar") or []
     if not formats or any(f not in EXPORTERS for f in formats):
-        raise FormError("En az bir çıktı biçimi seçin (Word ya da metin)")
+        raise FormError("En az bir çıktı biçimi seçin (Word, Markdown ya da metin)")
     return args + ["-f", *dict.fromkeys(formats)]
 
 
@@ -208,8 +217,16 @@ class App:
             models.append({"ad": e.name, "hazir": reason is None, "neden": reason, "modlar": list(e.modes),
                            "onerilen": e.recommended and e.name != "tesseract"})
         models.sort(key=lambda m: m["ad"] != engines.DEFAULT_ENGINE)    # varsayılan başta
-        return {"dosyalar": input_files(), "modeller": models, "is": self.job.snapshot() if self.job else None,
-                "varsayilan": {"model": engines.DEFAULT_ENGINE, "okuma": engines.DEFAULT_MODE, "dpi": DEFAULT_DPI,
+        profs = [
+            {"id": p.id, "ad": p.label, "aciklama": p.description, "model": p.engine, "okuma": p.mode,
+             "formatlar": list(p.formats), "isaretle": p.highlight, "kesme": p.apostrophes,
+             "sayfa_no": p.detect_pagenum, "rtl": p.rtl}
+            for p in profiles.PROFILES.values()
+        ]
+        return {"dosyalar": input_files(), "modeller": models, "profiller": profs,
+                "is": self.job.snapshot() if self.job else None,
+                "varsayilan": {"profil": profiles.DEFAULT_PROFILE, "model": engines.DEFAULT_ENGINE,
+                               "okuma": engines.DEFAULT_MODE, "dpi": DEFAULT_DPI,
                                "formatlar": ["docx"], "isaretle": True, "kesme": True}}
 
     def start(self, form: dict) -> Job:

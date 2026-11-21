@@ -45,7 +45,7 @@ def split_blocks(page: Page) -> tuple[list[Block], list[Block], list[Block]]:
     return headers, body, footnotes
 
 
-def write_txt(pages: list[Page], out: Path) -> Path:
+def render_txt(pages: list[Page], *, page_breaks: bool = True) -> str:
     chunks = []
     for page in pages:
         label = page_label(page)
@@ -53,8 +53,15 @@ def write_txt(pages: list[Page], out: Path) -> Path:
         paragraphs = [FAILED_TEXT] if page.failed else [t for b in body + footnotes if (t := plain_text(b))]
         if notice := review_notice(page):
             paragraphs.insert(0, notice)
-        head = f"--- s. {label} ---" if label else "---"
-        chunks.append("\n".join([head, "\n\n".join(paragraphs)]) if paragraphs else head)
+        if page_breaks:
+            head = f"--- s. {label} ---" if label else "---"
+            chunks.append("\n".join([head, "\n\n".join(paragraphs)]) if paragraphs else head)
+        elif paragraphs:
+            chunks.append("\n\n".join(paragraphs))
+    return "\n\n".join(chunks) + ("\n" if chunks else "")
+
+
+def write_txt(pages: list[Page], out: Path) -> Path:
     with paths.atomic_output(out) as tmp:
-        tmp.write_text("\n\n".join(chunks) + "\n", encoding="utf-8")
+        tmp.write_text(render_txt(pages), encoding="utf-8")
     return out

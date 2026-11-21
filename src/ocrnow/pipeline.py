@@ -46,6 +46,9 @@ class Options:
     apostrophes: bool = True
     first_page: int | None = None
     dpi: int = DEFAULT_DPI
+    use_tesseract: bool = True
+    detect_pagenum: bool = True
+    cjk_check: bool = True
 
 
 def _is_pdf(src: SourcePage) -> bool:
@@ -73,9 +76,9 @@ def _word_list() -> dict[str, str]:
 
 def ocr_page(img: Path, opts: Options, run: Callable[[Path, str], str], tsv: Callable[[Path], str] | None = None,
              size: tuple[int, int] | None = None) -> RawPage:
-    """Sayfanın OCR'ı: tesseract ve model. size=(genişlik, yükseklik); None ise img'den okunur.
+    """Sayfanın OCR'ı: (gerekirse) tesseract ve model. size=(genişlik, yükseklik); None ise img'den okunur.
     tsv None ise engines.tesseract_tsv (çağrı anında okunur)."""
-    tsv_text = (tsv or engines.tesseract_tsv)(img)   # önce: tesseract hata verirse model (VLM) boşuna beklenmez
+    tsv_text = (tsv or engines.tesseract_tsv)(img) if opts.use_tesseract else ""   # önce: tesseract hata verirse model (VLM) boşuna beklenmez
     raw = run(img, opts.mode)
     if size is None:
         with Image.open(img) as im:
@@ -101,11 +104,11 @@ def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str,
         warnings.append(f"{pid}: {TRUNCATED_WARNING}")
     if opts.apostrophes and words is None:
         words = _word_list()
-    tlines = parse_tsv(ocr.tsv)
-    assigned = assign_lines(blocks, tlines, categories=TEXT_CATEGORIES)
+    tlines = parse_tsv(ocr.tsv) if opts.use_tesseract and ocr.tsv else []
+    assigned = assign_lines(blocks, tlines, categories=TEXT_CATEGORIES) if opts.use_tesseract else [[] for _ in blocks]
     cjk_chars: list[str] = []
     for k, block in enumerate(blocks, 1):
-        if block.category != "Picture" and (text := plain_text(block)):
+        if opts.cjk_check and block.category != "Picture" and (text := plain_text(block)):
             cjk_chars += _CJK.findall(text)
         if not block.text or block.category not in RESTORE_CATEGORIES:
             continue
@@ -116,20 +119,25 @@ def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str,
         if block.category not in TEXT_CATEGORIES:
             block.marks = sorted(marks, key=lambda m: (m.start, m.end))
             continue
-        mine = assigned[k - 1]
-        uncertain = flag_uncertain(block.text, "\n".join(line.text for line in mine))
-        flagged = {(m.start, m.end) for m in uncertain}
-        marks += uncertain
-        for m in _NONSPACE.finditer(block.text):
-            if _CJK.search(m.group()) and (m.start(), m.end()) not in flagged:
-                marks.append(Mark(m.start(), m.end(), "belirsiz"))
+        if opts.use_tesseract:
+            mine = assigned[k - 1]
+            uncertain = flag_uncertain(block.text, "\n".join(line.text for line in mine))
+            flagged = {(m.start, m.end) for m in uncertain}
+            marks += uncertain
+        else:
+            mine = []
+            flagged = set()
+        if opts.cjk_check:
+            for m in _NONSPACE.finditer(block.text):
+                if _CJK.search(m.group()) and (m.start(), m.end()) not in flagged:
+                    marks.append(Mark(m.start(), m.end(), "belirsiz"))
         block.marks = sorted(marks, key=lambda m: (m.start, m.end))
-        if warning := apply_line_structure(block, mine):
+        if opts.use_tesseract and (warning := apply_line_structure(block, mine)):
             warnings.append(f"{pid}, blok {k}: {warning}")
     if cjk_chars:
         sample = "".join(dict.fromkeys(cjk_chars))[:8]
         warnings.append(f"{pid}: {UNEXPECTED_SCRIPT_WARNING} ({sample}), kontrol edin")
-    book_page, side = read_book_page(blocks, size[0])
+    book_page, side = read_book_page(blocks, size[0]) if opts.detect_pagenum else (None, None)
     return Page(source=str(src.source), index=src.index, width=size[0], height=size[1],
                 engine=opts.engine, mode=opts.mode, blocks=blocks, tess_tsv=ocr.tsv,
                 book_page=book_page, book_page_side=side, warnings=warnings, needs_review=needs_review,
@@ -159,18 +167,30 @@ def _load(path: Path, opts: Options, profile: dict) -> RawPage | None:
             return None
         if d["ocr_profile"] != profile["id"]:
             return None
+        if opts.use_tesseract and not d.get("use_tesseract", True):
+            return None
         ocr = RawPage(d["raw"], d["tsv"], d["width"], d["height"], d["truncated"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
     ok = (isinstance(ocr.raw, str) and isinstance(ocr.tsv, str) and ocr.truncated is False
-           and all(type(v) is int and v > 0 for v in (ocr.width, ocr.height)))
+          and all(type(v) is int and v > 0 for v in (ocr.width, ocr.height)))
     return ocr if ok else None
 
 
 def _save(path: Path, ocr: RawPage, opts: Options, profile: dict) -> None:
     """Yarım yazılmış dosya önbellekte kalmasın: geçici dosyaya yazılıp yeniden adlandırılır."""
-    record = {"version": CACHE_VERSION, "engine": opts.engine, "mode": opts.mode, "ocr_profile": profile["id"], "width": ocr.width,
-              "height": ocr.height, "truncated": ocr.truncated, "raw": ocr.raw, "tsv": ocr.tsv}
+    if not opts.use_tesseract and path.is_file():
+        # Mevcut önbellekte tesseract'lı geçerli kayıt varsa tesseract'sız kayıtla ezme
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if existing.get("ocr_profile") == profile["id"] and existing.get("use_tesseract", True):
+                return
+        except (OSError, ValueError, TypeError):
+            pass
+    record = {"version": CACHE_VERSION, "engine": opts.engine, "mode": opts.mode, "ocr_profile": profile["id"],
+              "width": ocr.width, "height": ocr.height, "truncated": ocr.truncated, "raw": ocr.raw, "tsv": ocr.tsv}
+    if not opts.use_tesseract:
+        record["use_tesseract"] = False
     with paths.atomic_output(path) as tmp:
         tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
 
@@ -370,6 +390,8 @@ def _collect(job: DocJob, opts: Options, run, tsv, words, multi: bool, pool: Thr
 def _finish(job: DocJob, opts: Options, multi: bool, pages: list[Page], read: list, sides: list,
             headers: list) -> list[Page]:
     """Kitap sayfa numaraları ve numara uyarıları (bütün sayfalar okunduktan sonra)."""
+    if not opts.detect_pagenum and opts.first_page is None:
+        return pages
     labels = _book_pages(job.pages, read, sides, headers, opts.first_page)
     duplicates = _duplicates(job.pages, read, labels, opts.first_page)
     for pos, (page, src, value, (label, inferred)) in enumerate(zip(pages, job.pages, read, labels)):
