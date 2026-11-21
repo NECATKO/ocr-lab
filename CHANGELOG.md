@@ -7,6 +7,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 ## [Yayımlanmadı]
 
 ### Eklendi
+- **Geliştirilmiş Linux ve Windows (WSL2) kurulumu (`kurulum.sh`, `kurulum.bat`, `kurulum.ps1`, `.gitattributes`):**
+  `kurulum.sh` artık `curl`, `tar`, `tesseract` (+ Türkçe `tur` dil paketi) ve `uv` gereksinimlerini denetleyip
+  eksikleri (`apt`/`dnf`/`pacman`/`zypper` ve `uv` kurucusu ile) otomatik kurar; NVIDIA GPU/VRAM ve disk alanı
+  kontrolü yapar, GPU yoksa boşa yerel VLM indirmeden temel kurulumla devam eder. `--hepsi`, `--temel`,
+  `--kontrol`, `--kisayol-yok` ve seçici model kurulumu desteklenir; Linux masaüstünde `.desktop` kısayolu
+  oluşturulur. Windows'ta `kurulum.bat` / `kurulum.ps1` WSL2 + Ubuntu kontrol/kurulumu yapar, projeyi hızlı WSL
+  dosya sistemine (`~/ocr-lab`) aktarır ve `kurulum.sh`'ı çalıştırır.
 - **Profil mimarisi** (`--profil`): `kitap` (varsayılan, mevcut akış), `gunluk` (hızlı fotoğraf/pano metni),
   `ders-notu` (el yazısı/tahta/slayt → Markdown+LaTeX), `fatura` (yapısal JSON/CSV + Markdown) ve `yazma`
   (sağdan sola Arapça/Osmanlıca). Kitap dışı profillerde Tesseract satır hizalaması ve kitap sayfa no uyarısı

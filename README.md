@@ -15,18 +15,24 @@ Değişiklik geçmişi: [CHANGELOG.md](CHANGELOG.md).
 
 ## Hızlı başlangıç
 
+**Linux (veya WSL2 içi):**
 ```bash
-./kurulum.sh                                   # ana ortam + bütün motorlar (tekrar çalıştırmak güvenli)
+./kurulum.sh                                   # gereksinimleri denetler/kurar + ana ortam + önerilen motorlar
+./kurulum.sh --hepsi                           # benchmark motorları dahil tüm motorlar (~30+ GB)
+./kurulum.sh --temel                           # yalnızca ana ortam + tesseract (GPU'suz / harici API için)
+./kurulum.sh --kontrol                         # kurulum yapmadan sistem durumunu denetler
 ./ocr-now models                               # hangi model hazır?
 ./ocr-now input/kitap.pdf -p 10-25 -f docx     # 10-25. sayfalar → output/belgeler/kitap_s10-25.docx
 ./ocr-now                                      # ya da adım adım sorsun
 ```
 
-Gereksinimler:
-- Linux ya da WSL2.
-- NVIDIA GPU (8 GB'ta test edildi).
-- Python 3.12 ve [uv](https://docs.astral.sh/uv/).
-- tesseract (`sudo apt install -y tesseract-ocr tesseract-ocr-tur`).
+**Windows:**
+`kurulum.bat` dosyasına çift tıklayın (veya PowerShell'de `.\kurulum.ps1` çalıştırın). Betik WSL2 + Ubuntu yoksa kurar, projeyi hızlı Linux dosya sistemine (`~/ocr-lab`) aktarır, tüm gereksinimleri kurup Windows masaüstüne **ocr-now-windows** kısayol klasörünü oluşturur. Aynı seçenekler (`kurulum.bat --hepsi`, `--temel`, `--kontrol`) Windows'ta da geçerlidir.
+
+Gereksinimler (eksikler kurulum betiği tarafından otomatik kontrol edilip kurulur):
+- **Linux** (`apt`, `dnf`, `pacman` veya `zypper`) ya da **Windows 10/11 + WSL2**.
+- **NVIDIA GPU** (yerel VLM motorları için; 8 GB'ta test edildi. Windows'ta güncel Windows NVIDIA sürücüsü gerekir. GPU yoksa kurulum otomatik olarak `tesseract` + harici `api` için temel kurulumu yapar).
+- `curl`, `tar`, `tesseract` + Türkçe dil paketi (`tur`), `uv` ve Python 3.12 (`kurulum.sh` eksikleri otomatik kurar).
 
 ## Nasıl çalışır
 
@@ -277,7 +283,8 @@ hatayla durur. Bir motor çökerse `output/_logs/<motor>.server.log` dosyasına 
 
 ```
 ocr-now, ocr-lab, ocr-gui,
-kurulum.sh                     giriş noktaları (her klasörden çalışır; göreli yollar bulunduğunuz yere göredir)
+kurulum.sh, kurulum.bat,
+kurulum.ps1                    giriş noktaları ve Linux/Windows(WSL2) kurulum betikleri
 src/ocrnow/                    program; bütün yollar src/ocrnow/paths.py'de
 src/ocrnow/lab/                ocr-lab: ölçüler, benchmark, marimo notebook
 src/ocrnow/gui/                ocr-gui: yerel sunucu, iş yürütücü, arayüz sayfası (index.html)
