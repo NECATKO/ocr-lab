@@ -36,7 +36,8 @@ def env(tmp_path, monkeypatch):
     state = types.SimpleNamespace(calls=[], records=[record()], missing={"kraken": "kraken kurulu değil",
                                                                           "paddleocr-vl": "dosya yok",
                                                                           "deepseek-ocr2": "dosya yok",
-                                                                          "lightonocr": "vllm kurulu değil"})
+                                                                          "lightonocr": "vllm kurulu değil",
+                                                                          "api": "API ayarlanmadı"})
     monkeypatch.setattr(engines, "missing", lambda name: state.missing.get(name))
 
     def run_bench(source_pages, targets, gt_dir, out_dir, *, dpi=200, holdout=False):

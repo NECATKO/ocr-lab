@@ -35,9 +35,10 @@ def test_list_has_row_per_engine_and_cpu_label(monkeypatch):
     monkeypatch.setattr(engines, "missing", lambda name: None)
     lines = list_lines(gpu_gb=8.0)
     rows = [l for l in lines if any(l[2:].startswith(n + " ") for n in engines.ENGINES)]
-    assert len(rows) == len(engines.ENGINES) == 7
+    assert len(rows) == len(engines.ENGINES) == 8
     assert sum(l.startswith("★") for l in rows) == 4
     assert "CPU" in next(l for l in rows if "tesseract" in l)
+    assert "API" in next(l for l in rows if " api " in l)
     assert not any("sığmayabilir" in l for l in lines)
 
 
@@ -54,8 +55,8 @@ def test_list_shows_status(monkeypatch):
 
 def test_every_engine_has_measured_sizes():
     for e in engines.ENGINES.values():
-        assert e.vram_gb is None if e.kind == "local" else e.vram_gb > 0
-        if e.name != "tesseract":
+        assert e.vram_gb is None if e.kind in ("local", "api") else e.vram_gb > 0
+        if e.name not in ("tesseract", "api"):
             assert e.disk_gb > 0
 
 

@@ -212,6 +212,8 @@ pre.preview {
         <label><input type="checkbox" id="f-docx" checked> Word belgesi (.docx)</label>
         <label><input type="checkbox" id="f-md"> Markdown (.md)</label>
         <label><input type="checkbox" id="f-txt"> Düz metin (.txt)</label>
+        <label><input type="checkbox" id="f-json"> Yapısal JSON (.json)</label>
+        <label><input type="checkbox" id="f-csv"> Tablo / Fatura (.csv)</label>
         <label id="mark-label"><input type="checkbox" id="mark" checked>
           <span>Şüpheli kelimeleri Word'de <mark>sarıya boya</mark></span></label>
       </div>
@@ -221,7 +223,7 @@ pre.preview {
           <div class="field">
             <label for="all-models">Tüm OCR motorları</label>
             <select id="all-models" aria-describedby="all-models-help"></select>
-            <small id="all-models-help">Terminaldeki tüm motorlar. Okuma modu yukarıdan seçilir.</small>
+            <small id="all-models-help">Terminaldeki tüm motorlar (harici API dahil). Okuma modu yukarıdan seçilir.</small>
           </div>
           <div class="field">
             <label for="dpi">Çözünürlük (DPI)</label>
@@ -231,6 +233,29 @@ pre.preview {
           <div class="field checks" style="margin-top:0">
             <label><input type="checkbox" id="apos" checked>
               <span>Ayın (‘) ve hemzeyi (’) ayır</span></label>
+          </div>
+        </div>
+        <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--rule)">
+          <div style="font-weight:600; margin-bottom:10px">Harici API (OpenAI / Gemini / Ollama / LM Studio)</div>
+          <div class="grid">
+            <div class="field">
+              <label for="api-base">API adresi (Base URL)</label>
+              <input type="text" id="api-base" placeholder="https://api.openai.com/v1">
+              <small>Ör. Ollama: http://localhost:11434/v1</small>
+            </div>
+            <div class="field">
+              <label for="api-model">Model adı</label>
+              <input type="text" id="api-model" placeholder="gpt-4o / gemini-2.5-flash / qwen2.5vl">
+            </div>
+            <div class="field">
+              <label for="api-key">API anahtarı (isteğe bağlı)</label>
+              <input type="text" id="api-key" placeholder="değiştirmek için yazın" autocomplete="off">
+              <small id="api-key-help">Yerel ayarlar/api.json dosyasında saklanır.</small>
+            </div>
+            <div class="field" style="display:flex; align-items:flex-end; gap:10px">
+              <button type="button" id="save-api">API ayarını kaydet</button>
+              <span class="note" id="api-status" aria-live="polite"></span>
+            </div>
           </div>
         </div>
       </details>
@@ -433,6 +458,8 @@ function applyProfile(id) {
   $("f-docx").checked = cur.formatlar.includes("docx");
   $("f-md").checked = cur.formatlar.includes("md");
   $("f-txt").checked = cur.formatlar.includes("txt");
+  $("f-json").checked = cur.formatlar.includes("json");
+  $("f-csv").checked = cur.formatlar.includes("csv");
   $("mark").checked = cur.isaretle;
   $("apos").checked = cur.kesme;
   $("first-field").hidden = !cur.sayfa_no;
@@ -441,11 +468,23 @@ function applyProfile(id) {
   renderModels(cur.okuma);
 }
 
+function renderApiSettings() {
+  const a = state?.api || {};
+  $("api-base").value = a.base_url || "";
+  $("api-model").value = a.model || "";
+  $("api-key").value = "";
+  $("api-key-help").textContent = a.anahtar_var
+    ? "Kayıtlı anahtar var (değiştirmek için yenisini yazın)."
+    : "Yerel ayarlar/api.json dosyasında saklanır.";
+}
+
 function formData() {
   const formats = [];
   if ($("f-docx").checked) formats.push("docx");
   if ($("f-md").checked) formats.push("md");
   if ($("f-txt").checked) formats.push("txt");
+  if ($("f-json").checked) formats.push("json");
+  if ($("f-csv").checked) formats.push("csv");
   return {profil: activeProfile, dosya: selected, sayfalar: $("pages").value, ilk_sayfa: $("first").value,
           formatlar: formats, isaretle: $("mark").checked, model: activeModel, okuma: $("mode").value,
           kesme: $("apos").checked, dpi: Number($("dpi").value || 200)};
@@ -520,7 +559,8 @@ function stopPolling() { if (poll) clearInterval(poll); poll = null; }
 
 function docButtons(path) {
   const name = path.split("/").pop();
-  const kind = name.endsWith(".docx") ? "Word" : name.endsWith(".md") ? "Markdown" : "metin";
+  const kind = name.endsWith(".docx") ? "Word" : name.endsWith(".md") ? "Markdown"
+    : name.endsWith(".json") ? "JSON" : name.endsWith(".csv") ? "CSV" : "metin";
   return el("li", {},
     el("span", {class: "name"}, name, " ", el("span", {class: "kind"}, kind)),
     el("a", {class: "button", href: `/belge/${encodeURIComponent(name)}`, download: name}, "İndir"),
@@ -656,6 +696,19 @@ for (const id of ["model", "all-models"]) {
     renderModels("");
   });
 }
+$("save-api").addEventListener("click", async () => {
+  $("api-status").textContent = "Kaydediliyor…";
+  try {
+    state = await api("/api/api-ayar", {
+      base_url: $("api-base").value, model: $("api-model").value, api_key: $("api-key").value,
+    });
+    renderApiSettings();
+    renderModels();
+    $("api-status").textContent = "Kaydedildi.";
+  } catch (e) {
+    $("api-status").textContent = e.message;
+  }
+});
 $("start").addEventListener("click", start);
 $("cancel").addEventListener("click", async () => {
   $("cancel").disabled = true;
@@ -685,6 +738,7 @@ $("close").addEventListener("click", async () => {
   }
   $("dpi").value = state.varsayilan.dpi;
   renderFiles();
+  renderApiSettings();
   if (state.profiller?.length) applyProfile(state.varsayilan.profil || state.profiller[0].id);
   else renderModels();
   if (!state.is) { show("form-view"); return; }

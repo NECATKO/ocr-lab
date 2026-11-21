@@ -93,15 +93,17 @@ class Runtime:
     cacheable: bool
     server_options: dict
 
-    def profile(self, mode: str) -> dict:
+    def profile(self, mode: str, *, prompt_override: str | None = None) -> dict:
         eng = engines.ENGINES[self.engine]
-        fields = {**self.fields, "engine": self.engine, "mode": mode, "prompt": eng.modes[mode].prompt,
-                  "max_tokens": engines.MAX_TOKENS if eng.kind == "vlm" else None,
-                  "temperature": engines.TEMPERATURE if eng.kind == "vlm" else None}
+        prompt = (prompt_override or eng.modes[mode].prompt) if eng.kind == "api" else eng.modes[mode].prompt
+        fields = {**self.fields, "engine": self.engine, "mode": mode, "prompt": prompt,
+                  "max_tokens": engines.MAX_TOKENS if eng.kind in ("vlm", "api") else None,
+                  "temperature": engines.TEMPERATURE if eng.kind in ("vlm", "api") else None}
         semantic = {
             "engine": self.engine,
             "mode": mode,
             "backend": fields.get("backend"),
+            "base_url": fields.get("base_url"),
             "model": fields.get("model"),
             "model_revision": fields.get("model_revision"),
             "backend_version": fields.get("backend_version"),
@@ -130,6 +132,10 @@ def runtime(name: str, *, tess: dict | None = None) -> Runtime:
         binary = engines._which("kraken")
         fields.update(model_files=[model], executable=_file_id(binary), backend_version=_package_version(binary, "kraken"))
         return Runtime(name, fields, cacheable and model is not None, {})
+    if eng.kind == "api":
+        cfg = engines.api_config()
+        fields.update(backend="api", base_url=cfg["base_url"] or None, model=cfg["model"] or None)
+        return Runtime(name, fields, bool(cfg["base_url"] and cfg["model"]), {})
     if external := engines.served_model(engines._base(eng)):
         return Runtime(name, {**fields, "backend": "external", "model": external}, False, {"external_model": external})
     cmd = engines._serve_cmd(eng)

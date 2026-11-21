@@ -121,9 +121,52 @@ ENGINES: dict[str, Engine] = {e.name: e for e in [
            # Çince karakter ve düz tırnak çıktı)
            parallel=8, env={"VLLM_BATCH_INVARIANT": "1"}, resize=(28, 3136, DOTS_MAX_PIXELS),
            serve=f"""vllm serve dots-studio/dots.mocr --port 8005 --trust-remote-code --chat-template-content-format string --quantization fp8 --enforce-eager --mm-processor-kwargs '{{"max_pixels": {DOTS_MAX_PIXELS}}}' $VLLM"""),
+    Engine("api", "api", _duz("Extract all text from this image accurately without commentary."), parallel=4),
 ]}
 DEFAULT_ENGINE = "dots.mocr"
 DEFAULT_MODE = "duzen"
+
+
+def api_config() -> dict:
+    """Harici OpenAI-uyumlu API ayarları: önce ortam değişkenleri, sonra ayarlar/api.json."""
+    file_cfg: dict = {}
+    cfg_path = paths.SETTINGS / "api.json"
+    if cfg_path.is_file():
+        try:
+            loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                file_cfg = loaded
+        except (OSError, ValueError):
+            pass
+    base = (os.environ.get("OCR_API_BASE") or os.environ.get("OPENAI_BASE_URL")
+            or file_cfg.get("base_url") or "").strip().rstrip("/")
+    model = (os.environ.get("OCR_API_MODEL") or file_cfg.get("model") or "").strip()
+    key = (os.environ.get("OCR_API_KEY") or os.environ.get("OPENAI_API_KEY")
+           or file_cfg.get("api_key") or "").strip()
+    return {"base_url": base, "model": model, "api_key": key}
+
+
+def save_api_config(base_url: str, model: str, api_key: str | None = None) -> Path:
+    """Harici API ayarlarını ayarlar/api.json'a yazar (0o600 izinle). api_key None ise mevcut anahtar korunur."""
+    cfg_path = paths.SETTINGS / "api.json"
+    existing_key = ""
+    if api_key is None and cfg_path.is_file():
+        try:
+            existing_key = str(json.loads(cfg_path.read_text(encoding="utf-8")).get("api_key") or "")
+        except (OSError, ValueError):
+            pass
+    data = {
+        "base_url": base_url.strip().rstrip("/"),
+        "model": model.strip(),
+        "api_key": existing_key if api_key is None else api_key.strip(),
+    }
+    with paths.atomic_output(cfg_path) as tmp:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(cfg_path, 0o600)
+    except OSError:
+        pass
+    return cfg_path
 
 
 def _tesseract_env() -> dict[str, str]:
@@ -189,6 +232,11 @@ def missing(name: str) -> str | None:
             return "kraken kurulu değil"
         return None if _kraken_model().exists() else f"model yok: {_kraken_model()}"
     eng = ENGINES[name]
+    if eng.kind == "api":
+        cfg = api_config()
+        if cfg["base_url"] and cfg["model"]:
+            return None
+        return "API ayarlanmadı (ayarlar/api.json veya OCR_API_BASE / OCR_API_MODEL)"
     if served_model(_base(eng)):
         return None
     cmd = _serve_cmd(eng)
@@ -290,12 +338,15 @@ def _stop_server(proc) -> None:
             proc.wait()
 
 
-def _vlm(img: Path, base: str, model: str, prompt: str | None) -> str:
+def _vlm(img: Path, base: str, model: str, prompt: str | None, *, api_key: str | None = None) -> str:
     content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(img.read_bytes()).decode()}}]
     if prompt:
         content.append({"type": "text", "text": prompt})
     body = {"model": model, "messages": [{"role": "user", "content": content}], "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS}
-    req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(base + "/chat/completions", json.dumps(body).encode(), headers)
     with urllib.request.urlopen(req, timeout=900) as r:
         choice = json.load(r)["choices"][0]
     content = choice["message"]["content"]
@@ -314,15 +365,24 @@ def _mode(eng: Engine, mode: str) -> Mode:
 
 @contextmanager
 def server(name: str, *, cancel: threading.Event | None = None, revision: str | None = None,
-           expect_managed: bool = False, external_model: str | None = None) -> Iterator[Callable[[Path, str], str]]:
+           expect_managed: bool = False, external_model: str | None = None,
+           prompt_override: str | None = None) -> Iterator[Callable[[Path, str], str]]:
     """Motoru hazırlar ve run(img, mode) -> ham metin verir. VLM sunucusu çıkışta her durumda kapatılır.
 
     VLM için GPU kilidi (gpu_lock) sunucu açılmadan alınır, kapanınca bırakılır; alınamazsa GpuBusy.
+    API motoru yerel GPU kilidi almaz.
     """
     _check_cancel(cancel)
     eng = ENGINES[name]
     if eng.kind == "local":
         yield lambda img, mode: (_mode(eng, mode), _local_text(name, img))[1]
+        return
+    if eng.kind == "api":
+        cfg = api_config()
+        if not cfg["base_url"] or not cfg["model"]:
+            raise ServerError("API ayarlanmadı (ayarlar/api.json veya OCR_API_BASE / OCR_API_MODEL)")
+        yield lambda img, mode: _vlm(img, cfg["base_url"], cfg["model"],
+                                     prompt_override or _mode(eng, mode).prompt, api_key=cfg["api_key"] or None)
         return
     with gpu_lock():                # sunucu ömrü boyunca: ikinci koşu GPU'yu paylaşmaz
         base, model, proc = _start_server(eng, cancel=cancel, revision=revision, expect_managed=expect_managed,

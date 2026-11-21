@@ -24,7 +24,7 @@ def test_registry_defaults():
 
 
 def test_registry_modes_and_ports():
-    assert list(ENGINES) == ["tesseract", "kraken", "paddleocr-vl", "glm-ocr", "lightonocr", "deepseek-ocr2", "dots.mocr"]
+    assert list(ENGINES) == ["tesseract", "kraken", "paddleocr-vl", "glm-ocr", "lightonocr", "deepseek-ocr2", "dots.mocr", "api"]
     for name, eng in ENGINES.items():
         assert eng.name == name
         if name != "dots.mocr":

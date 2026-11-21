@@ -223,7 +223,9 @@ class App:
              "sayfa_no": p.detect_pagenum, "rtl": p.rtl}
             for p in profiles.PROFILES.values()
         ]
-        return {"dosyalar": input_files(), "modeller": models, "profiller": profs,
+        cfg = engines.api_config()
+        api_state = {"base_url": cfg["base_url"], "model": cfg["model"], "anahtar_var": bool(cfg["api_key"])}
+        return {"dosyalar": input_files(), "modeller": models, "profiller": profs, "api": api_state,
                 "is": self.job.snapshot() if self.job else None,
                 "varsayilan": {"profil": profiles.DEFAULT_PROFILE, "model": engines.DEFAULT_ENGINE,
                                "okuma": engines.DEFAULT_MODE, "dpi": DEFAULT_DPI,
@@ -355,6 +357,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(404, "dosya bulunamadı")
                 self.app.opener(target)
                 return self._json({"tamam": True})
+            if path == "/api/api-ayar":
+                base_url = str(form.get("base_url") or "").strip()
+                model = str(form.get("model") or "").strip()
+                if base_url and not base_url.startswith(("http://", "https://")):
+                    raise FormError("API adresi http:// veya https:// ile başlamalı")
+                raw_key = form.get("api_key")
+                api_key = None if raw_key in (None, "") else str(raw_key)
+                if form.get("anahtari_sil"):
+                    api_key = ""
+                engines.save_api_config(base_url, model, api_key)
+                return self._json(self.app.state())
             if path == "/api/kapat":
                 self._json({"tamam": True})
                 if self.app.on_close:

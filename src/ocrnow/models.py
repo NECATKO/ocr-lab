@@ -65,7 +65,7 @@ def list_lines(gpu_gb: float | None) -> list[str]:
     """Başlık + motor başına bir satır; GPU belleği sığmayanlara uyarı konur."""
     lines = [f"  {'Model':<14}  {'GPU belleği':>11}  {'Disk':>8}  Durum"]
     for e in engines.ENGINES.values():
-        vram = f"{e.vram_gb:.1f} GB" if e.vram_gb is not None else "CPU"
+        vram = "API" if e.kind == "api" else (f"{e.vram_gb:.1f} GB" if e.vram_gb is not None else "CPU")
         disk = f"{e.disk_gb:.1f} GB" if e.disk_gb is not None else "—"
         status = engines.missing(e.name) or "hazır"
         warn = "  ⚠ GPU'ya sığmayabilir" if gpu_gb is not None and e.vram_gb is not None and e.vram_gb > gpu_gb else ""

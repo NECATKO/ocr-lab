@@ -9,7 +9,9 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 
-from ocrnow import engines, export_docx, export_md, export_txt, identity, pages, paths, pipeline, profiles, ui
+from ocrnow import (
+    engines, export_docx, export_md, export_structured, export_txt, identity, pages, paths, pipeline, profiles, ui,
+)
 from ocrnow.layout import Page
 from ocrnow.pages import DEFAULT_DPI, InputError
 
@@ -21,6 +23,8 @@ EXPORTERS: dict[str, Callable[[list[Page], Path, dict], object]] = {
         warnings=settings["warnings"], flowing=settings.get("flowing", False), rtl=settings.get("rtl", False)),
     "txt": lambda doc_pages, out, settings: export_txt.write_txt(doc_pages, out),
     "md": lambda doc_pages, out, settings: export_md.write_md(doc_pages, out),
+    "json": lambda doc_pages, out, settings: export_structured.write_json(doc_pages, out),
+    "csv": lambda doc_pages, out, settings: export_structured.write_csv(doc_pages, out),
 }
 PREVIEW_LIMIT = 32_000
 MODE_LABELS = {"duz": "duz — düz metin", "duzen": "duzen — başlık, dipnot ve sütunları ayırarak"}
@@ -333,12 +337,15 @@ def _run(args: argparse.Namespace, ask_start: bool) -> int:
                             first_page=args.ilk_sayfa, dpi=args.dpi, use_tesseract=use_tesseract,
                             detect_pagenum=prof.detect_pagenum, cjk_check=prof.cjk_check)
     runtime = identity.runtime(args.model)
-    profile = runtime.profile(args.okuma)
+    profile = runtime.profile(args.okuma, prompt_override=prof.prompt)
     if not profile["cacheable"]:
         print("Uyarı: OCR ayar kimliği doğrulanamadı; ham OCR önbelleği kullanılmayacak.")
+    server_opts = dict(runtime.server_options)
+    if engines.ENGINES[args.model].kind == "api" and prof.prompt:
+        server_opts["prompt_override"] = prof.prompt
     results = []
     try:
-        with engines.lazy_server(args.model, **runtime.server_options) as run:
+        with engines.lazy_server(args.model, **server_opts) as run:
             for job in jobs:
                 results.append((job, pipeline.process_job(job, opts, run, progress=print, profile=profile)))
     except engines.ServerError as e:
