@@ -31,6 +31,7 @@ HAZIR_ISARETI = "Session READY"
 GERI_CEKILME = 30 * 60          # GPU açılamazsa yeniden denemeden önce beklenen süre (sn)
 EN_UZUN_IS = 4 * 3600           # tek bir Colab işinin üst sınırı (sn)
 SAKLANAN_KAYIT = 20
+EN_FAZLA_KOPMA = 2              # iş yarıda kalırsa (bağlantı koptu vb.) dosya bu kadar kez denenir
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ def durum_oku(path: Path) -> dict:
     d.setdefault("basarisiz", {})
     d.setdefault("bekle_kadar", 0.0)
     d.setdefault("bildirildi", False)
+    d.setdefault("kopmalar", {})
     return d
 
 
@@ -159,6 +161,7 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
     girdiler = girdileri_listele(args.uzak, _run)
     adlar = {g.ad for g in girdiler}
     durum["basarisiz"] = {k: v for k, v in durum["basarisiz"].items() if k in adlar}   # silinenleri unut
+    durum["kopmalar"] = {k: v for k, v in durum["kopmalar"].items() if k in adlar}
     secilen = secilecekler(girdiler, durum)
     if not secilen:
         durum_yaz(durum_dosyasi, durum)
@@ -192,17 +195,31 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
 
     durum["bildirildi"] = False
     durum["bekle_kadar"] = 0.0
-    if SONUC_ISARETI not in cikti:
-        _bildir(konu, "OCR: Colab işi yarıda kaldı", son_satirlar(cikti), etiketler=["x"], oncelik=4)
+    tamamlandi = SONUC_ISARETI in cikti
 
     kalanlar = {g.ad: g for g in girdileri_listele(args.uzak, _run)}
     durum["basarisiz"] = {k: v for k, v in durum["basarisiz"].items() if k in kalanlar}
+    durum["kopmalar"] = {k: v for k, v in durum["kopmalar"].items() if k in kalanlar}
+    vazgecilen = []
     for g in secilen:
-        if g.ad in kalanlar and kalanlar[g.ad].kimlik == g.kimlik:
-            durum["basarisiz"][g.ad] = g.kimlik
-            print(f"İşlenemedi, değişene kadar yeniden denenmeyecek: {g.ad}", flush=True)
+        if g.ad not in kalanlar or kalanlar[g.ad].kimlik != g.kimlik:
+            continue
+        if not tamamlandi:                  # iş yarıda kaldı: dosyanın suçu olmayabilir, bir tur sonra yeniden
+            durum["kopmalar"][g.ad] = durum["kopmalar"].get(g.ad, 0) + 1
+            if durum["kopmalar"][g.ad] < EN_FAZLA_KOPMA:
+                print(f"İş yarıda kaldı, sonraki turda yeniden denenecek: {g.ad}", flush=True)
+                continue
+            vazgecilen.append(g.ad)
+        durum["basarisiz"][g.ad] = g.kimlik
+        durum["kopmalar"].pop(g.ad, None)
+        print(f"İşlenemedi, değişene kadar yeniden denenmeyecek: {g.ad}", flush=True)
+    if not tamamlandi and vazgecilen:
+        _bildir(konu, "OCR: Colab işi yarıda kaldı",
+                f"{', '.join(vazgecilen)} {EN_FAZLA_KOPMA} kez denendi; dosyayı yeniden yükleyince tekrar denenir.\n"
+                + son_satirlar(cikti), etiketler=["x"], oncelik=4)
     durum_yaz(durum_dosyasi, durum)
-    return 0 if rc == 0 else 1
+    # İş tamamlandıysa (kontrol gereken sayfa olsa bile) tur başarılıdır; systemd yalnız altyapı hatasını görsün.
+    return 0 if tamamlandi else 1
 
 
 def ayristir(argv: list[str] | None = None) -> argparse.Namespace:

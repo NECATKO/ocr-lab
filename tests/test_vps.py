@@ -89,7 +89,7 @@ def test_failed_file_is_not_retried_until_it_changes(tmp_path):
     colab = Colab(d, cikti=OK, rc=1, isle=["a.pdf"])          # b.pdf okunamadı, input/'ta kaldı
     notes = []
     a = args(tmp_path)
-    assert izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=lambda *x, **k: notes.append(x)) == 1
+    assert izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=lambda *x, **k: notes.append(x)) == 0
     assert colab.calls == [["a.pdf", "b.pdf"]] and notes == []    # bildirimi VM'deki akış zaten gönderdi
     assert izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=None) == 0
     assert len(colab.calls) == 1                                   # b.pdf yeniden denenmedi
@@ -117,13 +117,27 @@ def test_gpu_unavailable_backs_off_and_notifies_once(tmp_path):
     assert izleyici.durum_oku(a.durum_dizini / "izleyici.json")["basarisiz"] == {}   # dosya suçlu sayılmaz
 
 
-def test_job_crash_without_result_marker_is_notified(tmp_path):
+def test_interrupted_job_is_retried_once_then_given_up_and_notified(tmp_path):
     d = Drive(tmp_path, {"a.pdf": ("10", "t1")})
-    colab = Colab(d, cikti="[colab] Session READY (x).\nTraceback ...\nKernelError\n", rc=1)
+    colab = Colab(d, cikti="[colab] Session READY (x).\nRuntimeError: Connection was lost.\n", rc=1)
     notes = []
-    izleyici.bir_tur(args(tmp_path), _run=d.run, _colab=colab,
-                     _bildir=lambda konu, baslik, mesaj, **k: notes.append((baslik, mesaj)))
-    assert notes[0][0] == "OCR: Colab işi yarıda kaldı" and "KernelError" in notes[0][1]
+    a = args(tmp_path)
+    kw = dict(_run=d.run, _colab=colab, _bildir=lambda konu, baslik, mesaj, **k: notes.append((baslik, mesaj)))
+    izleyici.bir_tur(a, **kw)
+    assert notes == [] and izleyici.durum_oku(a.durum_dizini / "izleyici.json")["basarisiz"] == {}
+    izleyici.bir_tur(a, **kw)                                          # ikinci kopma: vazgeç ve bildir
+    assert len(colab.calls) == 2
+    assert notes[0][0] == "OCR: Colab işi yarıda kaldı" and "Connection was lost" in notes[0][1]
+    izleyici.bir_tur(a, **kw)
+    assert len(colab.calls) == 2                                       # artık denenmez
+
+
+def test_successful_run_clears_interrupt_count(tmp_path):
+    d = Drive(tmp_path, {"a.pdf": ("10", "t1")})
+    a = args(tmp_path)
+    izleyici.bir_tur(a, _run=d.run, _colab=Colab(d, cikti="[colab] Session READY\nkopma\n", rc=1), _bildir=None)
+    izleyici.bir_tur(a, _run=d.run, _colab=Colab(d, cikti=OK, isle=["a.pdf"]), _bildir=None)
+    assert izleyici.durum_oku(a.durum_dizini / "izleyici.json")["kopmalar"] == {}
 
 
 def test_colab_runner_streams_output_to_log(tmp_path):

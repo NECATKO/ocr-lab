@@ -26,9 +26,18 @@ def sh(cmd, **kw):
 
 def rclone_kur() -> None:
     if not shutil.which("rclone"):
-        sh("curl -fsSL https://rclone.org/install.sh | bash", shell=True)
-    if not (shutil.which("fusermount3") or shutil.which("fusermount")):
-        sh(["apt-get", "install", "-y", "-qq", "fuse3"])
+        # install.sh yerine doğrudan ikili dosya: unzip/man sayfası adımlarına takılmaz
+        # (Python-urllib istemcisine 403 döndürüyor; curl ile indirilir.)
+        import zipfile
+        print("rclone indiriliyor...", flush=True)
+        sh(["curl", "-fsSL", "--retry", "3", "-o", "/tmp/rclone.zip",
+            "https://downloads.rclone.org/rclone-current-linux-amd64.zip"])
+        with zipfile.ZipFile("/tmp/rclone.zip") as z:
+            ad = next(n for n in z.namelist() if n.endswith("/rclone"))
+            Path("/usr/local/bin/rclone").write_bytes(z.read(ad))
+        os.chmod("/usr/local/bin/rclone", 0o755)
+    if not shutil.which("fusermount3"):     # rclone mount fusermount3 ister; Colab'da yalnız fuse2 var
+        sh("apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fuse3", shell=True)
     conf = Path.home() / ".config/rclone/rclone.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
     conf.write_bytes(base64.b64decode(AYAR["rclone_conf_b64"]))
