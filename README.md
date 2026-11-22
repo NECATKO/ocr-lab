@@ -323,3 +323,12 @@ gerektiren testler bu dosyaları yalnızca okur. Dosyalar yoksa bu testler atlan
 - **dots.mocr `max_pixels` 4 MP** (`engines.py`): Varsayılan 11 MP için bellek profili 8 GB'ı aşıyor. Daha büyük
   sayfa görüntüsü küçültülerek okunur, kutular orijinal piksellere geri ölçeklenir.
 - **fp8** (deepseek-ocr2, dots.mocr): Bu modellerin bf16 hâlleri 8 GB GPU'ya sığmıyor.
+
+## Google Colab + Google Drive
+
+Yerel GPU yerine Google Colab (**L4** veya **A100**) ve Google Drive kullanmak için [colab/ocr_now.ipynb](colab/ocr_now.ipynb) defterini Colab'da açın:
+
+- Telefondan (CamScanner) veya bilgisayardan PDF'leri `MyDrive/ocr-lab/input/` klasörüne atın.
+- Çıktılar `MyDrive/ocr-lab/output/` klasörüne, sayfa OCR önbelleği `MyDrive/ocr-lab/cache/` klasörüne, model ağırlıkları ise tekrar indirmemek için `MyDrive/ocr-lab/colab-models/hf_cache.tar` dosyasına kaydedilir.
+- `dots.mocr` ve `deepseek-ocr2` için **L4** (önerilen) veya **A100** seçin (T4 `fp8` desteklemez).
+
