@@ -417,3 +417,39 @@ def test_stop_server_does_not_wait_long_for_open_connections(monkeypatch):
     t = time.monotonic()
     engines._stop_server(proc)
     assert proc.poll() == -signal.SIGKILL and time.monotonic() - t < 5
+
+
+def test_high_vram_bf16_updates_serve_resize_and_identity(monkeypatch, tmp_path):
+    """OCR_BF16=1 fp8 sıkıştırmasını kaldırır, max_pixels/context'i büyütür ve ayrı önbellek kimliği üretir."""
+    from ocrnow import identity
+
+    monkeypatch.delenv("OCR_BF16", raising=False)
+    monkeypatch.delenv("OCR_DOTS_MAX_PIXELS", raising=False)
+    dots = ENGINES["dots.mocr"]
+    default_cmd = engines.serve_command(dots)
+    assert "--quantization fp8" in default_cmd
+    assert f'"max_pixels": {engines.DOTS_MAX_PIXELS}' in default_cmd
+    assert "--max-model-len 8192" in default_cmd
+    assert engines.effective_resize(dots) == (28, 3136, engines.DOTS_MAX_PIXELS)
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    rev = "c" * 40
+    model = paths.hf_cache() / "models--dots-studio--dots.mocr"
+    (model / "refs").mkdir(parents=True)
+    (model / "refs" / "main").write_text(rev)
+    (model / "snapshots" / rev).mkdir(parents=True)
+    (model / "snapshots" / rev / "config.json").write_text("{}")
+    monkeypatch.setattr(engines, "served_model", lambda _: None)
+    monkeypatch.setattr(engines, "_which", lambda _: None)
+    tess = {"version": "5.5", "language": "tur", "data_files": {}}
+    id_fp8 = identity.runtime("dots.mocr", tess=tess).profile("duzen")["id"]
+
+    monkeypatch.setenv("OCR_BF16", "1")
+    bf16_cmd = engines.serve_command(dots)
+    assert "--quantization fp8" not in bf16_cmd
+    assert f'"max_pixels": {engines.DOTS_MAX_PIXELS_HIGH}' in bf16_cmd
+    assert "--max-model-len 16384" in bf16_cmd
+    assert engines.effective_resize(dots) == (28, 3136, engines.DOTS_MAX_PIXELS_HIGH)
+    assert "--quantization fp8" not in engines.serve_command(ENGINES["deepseek-ocr2"])
+    id_bf16 = identity.runtime("dots.mocr", tess=tess).profile("duzen")["id"]
+    assert id_bf16 != id_fp8

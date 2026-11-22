@@ -108,7 +108,7 @@ class Runtime:
             "model": fields.get("model"),
             "model_revision": fields.get("model_revision"),
             "backend_version": fields.get("backend_version"),
-            "serve": (eng.serve.replace("$VLLM", engines.VLLM_FLAGS)
+            "serve": (engines.serve_command(eng)
                       if eng.serve and fields.get("backend") == "managed" else None),
             "environment": fields.get("environment"),
             "prompt": fields["prompt"],

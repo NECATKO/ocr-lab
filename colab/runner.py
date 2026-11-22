@@ -64,6 +64,19 @@ def unique_dest(folder: Path, name: str) -> Path:
     return folder / f"{stem}_{i}{suffix}"
 
 
+def _gpu_memory_gb() -> float | None:
+    res = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True,
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return None
+    try:
+        return float(res.stdout.strip().splitlines()[0]) / 1024.0
+    except ValueError:
+        return None
+
+
 def _has_tesseract_tur() -> bool:
     if not shutil.which("tesseract"):
         return False
@@ -177,16 +190,29 @@ def run_ocr(
     isaretle: bool = True,
     kesme: bool = True,
     dpi: int = 200,
+    tam_kalite_bf16: bool | None = None,
     islenenleri_tasi: bool = False,
     local_root: str | Path = DEFAULT_LOCAL_ROOT,
     local_hf: str | Path = DEFAULT_LOCAL_HF,
 ) -> int:
-    """Drive'daki girdileri yerel SSD'de işler, çıktı ve önbelleği Drive'a geri yazar."""
+    """Drive'daki girdileri yerel SSD'de işler, çıktı ve önbelleği Drive'a geri yazar.
+
+    tam_kalite_bf16: None ise 14+ GB GPU'da (L4/A100) otomatik bf16 + yüksek çözünürlük açılır.
+    """
     dp = drive_paths(drive_root)
     root = Path(local_root)
     local_cache = root / "output/_cache"
     local_docs = root / "output/belgeler"
     os.environ["HF_HOME"] = str(local_hf)
+
+    gpu_gb = _gpu_memory_gb()
+    use_bf16 = (gpu_gb is not None and gpu_gb >= 14.0) if tam_kalite_bf16 is None else bool(tam_kalite_bf16)
+    if use_bf16:
+        os.environ["OCR_BF16"] = "1"
+        print(f"Mod: Tam kalite BF16 + yüksek çözünürlük (GPU: {gpu_gb:.1f} GB)" if gpu_gb else "Mod: Tam kalite BF16")
+    else:
+        os.environ.pop("OCR_BF16", None)
+        print("Mod: Standart (8 GB uyumlu fp8)")
 
     # 1) Güncel kesme.txt ve OCR önbelleğini Drive'dan al
     if dp["kesme"].is_file():

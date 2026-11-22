@@ -27,6 +27,7 @@ MAX_TOKENS = 4096
 TEMPERATURE = 0
 STOP_GRACE = 10   # sn: sunucu SIGTERM'den sonra bu kadar beklenir, sonra öldürülür
 VLLM_FLAGS = "--max-model-len 8192 --gpu-memory-utilization 0.85 --mm-processor-cache-gb 0 --no-enable-prefix-caching"  # 8 GB GPU için
+VLLM_FLAGS_HIGH = "--max-model-len 16384 --gpu-memory-utilization 0.85 --mm-processor-cache-gb 0 --no-enable-prefix-caching"  # 16+ GB GPU (bf16 + yüksek çözünürlük) için
 
 # dots.mocr'un yerleşim (bbox + kategori + metin) istemi; ekler/layout_try.py'deki PROMPT, kelimesi kelimesine
 LAYOUT_PROMPT = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
@@ -83,6 +84,44 @@ class Engine:
 
 
 DOTS_MAX_PIXELS = 4_000_000  # 11 MP varsayılanı 8 GB GPU'yu aşıyor; serve bayrağı ve bbox ölçeklemesi aynı sabiti kullanır
+DOTS_MAX_PIXELS_HIGH = 9_000_000  # 16+ GB GPU (OCR_BF16=1) için: 300 DPI A4 (~8.7 MP) küçültülmeden okunur
+
+
+def high_vram_enabled() -> bool:
+    """OCR_BF16=1 ise fp8 sıkıştırması kapatılır (orijinal bf16 ağırlıklar + geniş bağlam/çözünürlük)."""
+    return os.environ.get("OCR_BF16", "").strip().lower() in {"1", "true", "yes", "evet"}
+
+
+def effective_resize(eng: Engine) -> tuple[int, int, int] | None:
+    """Motorun aktif görüntü yeniden boyutlandırma sınırları (serve komutu ile bbox ölçeklemesi aynı değeri kullanır)."""
+    if eng.resize is None or eng.name != "dots.mocr":
+        return eng.resize
+    raw = os.environ.get("OCR_DOTS_MAX_PIXELS", "").strip()
+    if raw:
+        try:
+            max_px = int(raw)
+            if max_px >= eng.resize[1]:
+                return (eng.resize[0], eng.resize[1], max_px)
+        except ValueError:
+            pass
+    if high_vram_enabled():
+        return (eng.resize[0], eng.resize[1], DOTS_MAX_PIXELS_HIGH)
+    return eng.resize
+
+
+def serve_command(eng: Engine) -> str | None:
+    """Etkin sunucu komutu ($VLLM çözülmüş, OCR_BF16/OCR_DOTS_MAX_PIXELS uygulanmış; önbellek kimliği de bunu kullanır)."""
+    if not eng.serve:
+        return None
+    high = high_vram_enabled()
+    cmd = eng.serve.replace("$VLLM", VLLM_FLAGS_HIGH if high else VLLM_FLAGS)
+    if high:
+        cmd = cmd.replace(" --quantization fp8", "")
+    if eng.name == "dots.mocr":
+        resize = effective_resize(eng)
+        if resize is not None and resize[2] != DOTS_MAX_PIXELS:
+            cmd = cmd.replace(f'"max_pixels": {DOTS_MAX_PIXELS}', f'"max_pixels": {resize[2]}')
+    return cmd
 
 
 def _duz(prompt: str | None) -> dict[str, Mode]:
@@ -230,8 +269,10 @@ def _which(cmd: str) -> str | None:
 
 def _serve_cmd(eng: Engine) -> list[str]:
     # önce bölünür, yollar sonra parça parça konur: kök klasör adında boşluk olsa da komut bozulmaz
+    cmd = serve_command(eng)
+    assert cmd is not None
     return [t.replace("$TOOLS", str(paths.TOOLS)).replace("$MODELS", str(paths.MODELS))
-            for t in shlex.split(eng.serve.replace("$VLLM", VLLM_FLAGS))]
+            for t in shlex.split(cmd)]
 
 
 def _base(eng: Engine) -> str:

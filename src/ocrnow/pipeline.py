@@ -98,7 +98,7 @@ def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str,
     """OCR çıktısından sayfa yapısı (OCR dışı bütün adımlar). words None ise kelime listesi burada kurulur."""
     size = (ocr.width, ocr.height)
     eng = engines.ENGINES[opts.engine]
-    blocks, parse_warnings = parse_output(ocr.raw, eng.modes[opts.mode].layout, size, resize=eng.resize)
+    blocks, parse_warnings = parse_output(ocr.raw, eng.modes[opts.mode].layout, size, resize=engines.effective_resize(eng))
     pid = page_id(src)
     warnings = [f"{pid}: {w}" for w in parse_warnings]
     needs_review = not any(b.category not in {"Picture", "Page-footer"} and plain_text(b).strip() for b in blocks)

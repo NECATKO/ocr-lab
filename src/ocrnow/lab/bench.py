@@ -87,7 +87,7 @@ def model_text(raw: str, engine: str, mode: str, size: tuple[int, int]) -> str:
     eng = engines.ENGINES[engine]
     if not eng.modes[mode].layout:
         return raw
-    blocks = parse_output(raw, True, size, resize=eng.resize)[0]
+    blocks = parse_output(raw, True, size, resize=engines.effective_resize(eng))[0]
     texts = _raw_texts(raw, len(blocks)) or [None] * len(blocks)
     parts = []
     for block, text in zip(blocks, texts):
