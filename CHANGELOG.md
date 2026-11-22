@@ -7,6 +7,18 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 ## [Yayımlanmadı]
 
 ### Eklendi
+- **Google Colab + Drive (`colab/ocr_now.ipynb`, `colab/runner.py`):** OCR, Colab'ın L4/A100 GPU'sunda
+  çalışır. Girdi, çıktı, sayfa önbelleği ve model ağırlıkları Drive'daki `ocr-lab/` klasöründe tutulur.
+  16 GB ve üzeri GPU'larda `OCR_BF16=1` tam kalite bf16 ve yüksek çözünürlükle okur.
+- **Telefondan tek dokunuş (`colab/telefon.ipynb`):** Tek hücreli L4 defteri, `input/` klasöründeki dosyaları tek tek
+  okur. İş sürerken önbelleği Drive'a eşitler. Okunan girdiyi `input/islenenler/` klasörüne taşır ve
+  `DURUM.txt` dosyasını günceller. Başlangıçta ve bitişte ntfy bildirimi gönderir (konu: `bildirim.txt`). İş bitince
+  GPU'yu hemen bırakır.
+- **VPS izleyicisi (`vps/`):** Tarayıcı gerektirmez, telefon ekranı kapalıyken de çalışır. systemd zamanlayıcısı
+  3 dakikada bir Drive `input/` klasörüne rclone ile bakar. Yeni dosya varsa Google'ın Colab komut satırı aracıyla
+  L4'te `colab run` başlatır. Aynı anda tek iş çalışır. Okunamayan dosya değişene kadar yeniden denenmez.
+  Yarıda kalan iş bir kez yeniden denenir. GPU açılamazsa 30 dakika beklenir. Colab aracının başlangıçtaki
+  bağlantı kopması yeniden denenir. Kurulum için `vps/kur.sh` çalıştırılır.
 - **Geliştirilmiş Linux ve Windows (WSL2) kurulumu (`kurulum.sh`, `kurulum.bat`, `kurulum.ps1`, `.gitattributes`):**
   `kurulum.sh` artık `curl`, `tar`, `tesseract` (+ Türkçe `tur` dil paketi) ve `uv` gereksinimlerini denetleyip
   eksikleri (`apt`/`dnf`/`pacman`/`zypper` ve `uv` kurucusu ile) otomatik kurar; NVIDIA GPU/VRAM ve disk alanı
@@ -39,6 +51,9 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 - `ocr-now --rapor DOSYA`: iş sonu özetini JSON olarak da yazar.
 
 ### Düzeltildi
+- Uzunluk sınırında kesilen sayfa (çoğu kez tekrar döngüsü) yerel vLLM'de bir kez `repetition_penalty 1.05` ile
+  yeniden okunur. Tamamlanırsa kullanılır, önbelleğe yazılır ve sayfaya kontrol uyarısı eklenir. Eski
+  önbellekler geçerli kalır.
 - Türkçe büyük `İ`/`I` küçük harfe çevrilirken (`apostrophe.py`, `metrics.py`) sözlük ve kural ıskalamaları giderildi
   (`İ‘tibâr`, `HALEB’İN`, `AY’IN`).
 - Ortalanmış sayfa numaraları `"orta"` olarak tanınır: Word altlığında ortalı yazılır ve sahte sol/sağ çiftlik

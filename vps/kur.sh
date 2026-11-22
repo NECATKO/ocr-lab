@@ -69,8 +69,9 @@ hazir=1
 if ! rclone lsf "$UZAK/" --max-depth 1 >/dev/null 2>&1; then
   hazir=0
   echo
-  echo "!! rclone Drive bağlantısı yok. 'gdrive' adlı bir Google Drive uzağı kurun:"
-  echo "   rclone config create gdrive drive scope=drive config_is_local=false"
+  echo "!! rclone Drive bağlantısı yok. Kendi Google istemci kimliğinizle 'gdrive' adlı bir uzak kurun"
+  echo "   (README: 'Kendi Google istemci kimliği'):"
+  echo "   rclone config create gdrive drive scope=drive client_id=... client_secret=... config_is_local=false"
 fi
 if ! PYTHON_KEYRING_BACKEND=keyrings.alt.file.PlaintextKeyring colab usage </dev/null >/dev/null 2>&1; then
   hazir=0

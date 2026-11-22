@@ -180,6 +180,11 @@ Aynı numara birden fazla sayfada okunduysa her birine uyarı eklenir
 - Model yanıtı uzunluk sınırında kesilirse elde edilen metin korunur, ancak ilgili Word/TXT sayfasına uyarı
   eklenir. İş özeti bu sayfaları ayrı listeler (`--rapor` alanı `kesilen`); çıkış kodu 1 olur ve arayüz belge
   yazıldıysa “Kısmen tamamlandı” gösterir. Kesik okumalar önbelleğe alınmaz, eski kesik kayıtlar da kullanılmaz.
+- Kesilme çoğu kez modelin aynı şeyi tekrarladığı bir döngüdür. Yerel vLLM sunucusuyla okunan sayfa kesilirse bir
+  kez daha, bu kez hafif tekrar cezasıyla (`repetition_penalty 1.05`, sıcaklık yine 0) okunur. İkinci okuma
+  tamamlanırsa sayfa kullanılır ve önbelleğe yazılır. Sayfaya yine de "model tekrar döngüsüne girdi; … metni
+  kontrol edin" uyarısı eklenir. İkinci okuma da kesilirse ilk sonuç yukarıdaki gibi kesik sayılır. Harici API
+  motorunda bu yeniden deneme yapılmaz.
 - Hiçbir sayfası okunamayan belge yazılmaz.
 
 ### Önbellek
@@ -372,8 +377,8 @@ Kurulum (Ubuntu/Debian VPS'te, root ya da sudo yetkili kullanıcıyla):
 ```bash
 git clone --depth 1 https://github.com/NECATKO/ocr-lab.git ~/ocr-lab
 bash ~/ocr-lab/vps/kur.sh            # paketler, uv, google-colab-cli, systemd zamanlayıcısı
-# Betik iki girişi ister (bir kez):
-rclone config create gdrive drive scope=drive config_is_local=false   # Drive
+# Betik iki girişi ister (bir kez). Drive için önce aşağıdaki "Kendi Google istemci kimliği" adımlarını yapın:
+rclone config create gdrive drive scope=drive client_id=İSTEMCİ_KİMLİĞİ client_secret=GİZLİ_ANAHTAR config_is_local=false
 PYTHON_KEYRING_BACKEND=keyrings.alt.file.PlaintextKeyring colab usage  # Colab
 bash ~/ocr-lab/vps/kur.sh            # girişlerden sonra zamanlayıcıyı açar
 ```
@@ -382,5 +387,33 @@ Durum: `systemctl --user list-timers ocr-vps.timer`, kayıtlar: `journalctl --us
 `~/.local/state/ocr-lab/kayitlar/`. Okunamadığı için bekletilen bir dosyayı yeniden denetmek için dosyayı
 yeniden yükleyin ya da `~/.local/state/ocr-lab/izleyici.json` dosyasını silin.
 
-Not: rclone'un ortak Google Drive istemci kimliği 2026 içinde kapatılıyor. Kesinti olmaması için kendi istemci
-kimliğinizi oluşturun: <https://rclone.org/drive/#making-your-own-client-id>
+#### Kendi Google istemci kimliği (rclone)
+
+rclone'un ortak Google Drive istemci kimliği 2026 içinde kapatılıyor. Kapanınca VPS Drive'ı göremez. Bu yüzden
+kendi kimliğinizi bir kez oluşturun ([rclone belgesi](https://rclone.org/drive/#making-your-own-client-id)).
+Google Cloud Console'da:
+
+1. Yeni bir proje açın (ör. `ocr-lab-rclone`). **Google Drive API**'yi etkinleştirin.
+2. **Google Auth Platform → Get started**: uygulama adı `rclone`, kitle **External**.
+3. **Branding**: *Application home page* ve *privacy policy link* alanlarına depo adresini
+   (`https://github.com/NECATKO/ocr-lab`) yazın, *Authorized domain* olarak `github.com` ekleyin ve kaydedin.
+   Bu alanlar boşken uygulama yayımlanamaz.
+4. **Audience → Publish app**: durum **In production** olmalı. *Testing* durumunda Google erişimi 7 günde bir
+   düşürür ve izleyici Drive'ı göremez. Uygulamanın Google tarafından doğrulanması gerekmez. Onay ekranındaki
+   "doğrulanmamış uygulama" uyarısında *Gelişmiş → rclone'a git* deyin.
+5. **Clients → Create client → Desktop app**. Client ID ve Client secret değerlerini alın.
+
+Mevcut bir `gdrive` uzağını yeni kimliğe geçirmek için, tarayıcısı olan bir bilgisayarda şunu çalıştırın:
+
+```bash
+rclone authorize drive İSTEMCİ_KİMLİĞİ GİZLİ_ANAHTAR
+```
+
+Komutun verdiği belirteci (token) VPS'te yazın:
+
+```bash
+rclone config update gdrive client_id İSTEMCİ_KİMLİĞİ client_secret GİZLİ_ANAHTAR token 'BELİRTEÇ_JSON'
+```
+
+Colab işi Drive ayarını her seferinde VPS'ten aldığı için orada ayrıca bir şey yapılmaz. Komut çıktısında "shared
+client_id" uyarısı görünmüyorsa geçiş tamamdır.
