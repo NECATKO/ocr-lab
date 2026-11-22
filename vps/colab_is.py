@@ -1,0 +1,108 @@
+# Bu dosya bir şablondur: VPS izleyicisi başına `AYAR = {...}` satırını ekleyip `colab run` ile
+# Colab GPU makinesinde çalıştırır. Drive'a rclone ile bağlanır ve telefon akışını (runner.telefon_calistir)
+# olduğu gibi kullanır. Elle çalıştırılmaz.
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import traceback
+from pathlib import Path
+
+AYAR = globals().get("AYAR") or {}
+MOUNT = Path("/content/drive/MyDrive/ocr-lab")
+LOCAL_ROOT = Path("/content/ocr-lab")
+RC_ADDR = "127.0.0.1:5572"
+SONUC_ISARETI = "OCR-VPS-SONUC"
+HAZIRLIK_HATASI = "OCR-VPS-HAZIRLIK-HATASI"
+
+
+def sh(cmd, **kw):
+    print("$", cmd if isinstance(cmd, str) else " ".join(map(str, cmd)), flush=True)
+    return subprocess.run(cmd, check=True, **kw)
+
+
+def rclone_kur() -> None:
+    if not shutil.which("rclone"):
+        sh("curl -fsSL https://rclone.org/install.sh | bash", shell=True)
+    if not (shutil.which("fusermount3") or shutil.which("fusermount")):
+        sh(["apt-get", "install", "-y", "-qq", "fuse3"])
+    conf = Path.home() / ".config/rclone/rclone.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_bytes(base64.b64decode(AYAR["rclone_conf_b64"]))
+    conf.chmod(0o600)
+
+
+def bagla() -> subprocess.Popen:
+    MOUNT.mkdir(parents=True, exist_ok=True)
+    log = open("/content/rclone-mount.log", "w")
+    proc = subprocess.Popen(
+        ["rclone", "mount", AYAR["uzak"], str(MOUNT),
+         "--vfs-cache-mode", "writes", "--vfs-write-back", "2s", "--dir-cache-time", "15s",
+         "--rc", "--rc-addr", RC_ADDR, "--rc-no-auth"],
+        stdout=log, stderr=subprocess.STDOUT,
+    )
+    for _ in range(60):
+        if os.path.ismount(MOUNT):
+            print(f"Drive bağlandı: {AYAR['uzak']} -> {MOUNT}", flush=True)
+            return proc
+        if proc.poll() is not None:
+            break
+        time.sleep(1)
+    raise RuntimeError("rclone mount açılamadı:\n" + Path("/content/rclone-mount.log").read_text()[-2000:])
+
+
+def bekleyen_yukleme() -> int:
+    res = subprocess.run(["rclone", "rc", "--rc-addr", RC_ADDR, "vfs/stats"], capture_output=True, text=True)
+    if res.returncode != 0:
+        return 0
+    disk = json.loads(res.stdout).get("diskCache") or {}
+    return int(disk.get("uploadsInProgress", 0)) + int(disk.get("uploadsQueued", 0))
+
+
+def ayir(proc: subprocess.Popen, en_fazla: float = 1800) -> None:
+    """Önbellekte bekleyen yazılar Drive'a gidene kadar bekler, sonra bağlantıyı kaldırır."""
+    bitis = time.time() + en_fazla
+    while (kalan := bekleyen_yukleme()) and time.time() < bitis:
+        print(f"Drive'a yükleniyor: {kalan} dosya...", flush=True)
+        time.sleep(5)
+    subprocess.run(["fusermount3" if shutil.which("fusermount3") else "fusermount", "-u", str(MOUNT)])
+    try:
+        proc.wait(timeout=120)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+
+
+def repo_hazirla() -> None:
+    if not (LOCAL_ROOT / ".git").is_dir():
+        sh(["git", "clone", "--depth", "1", "-b", AYAR["dal"], AYAR["repo"], str(LOCAL_ROOT)])
+    else:
+        sh(["git", "-C", str(LOCAL_ROOT), "pull", "--ff-only"])
+    if str(LOCAL_ROOT) not in sys.path:
+        sys.path.insert(0, str(LOCAL_ROOT))
+
+
+def calis() -> int:
+    mount = None
+    try:
+        rclone_kur()
+        mount = bagla()
+        repo_hazirla()
+        from colab import runner
+        rc = runner.telefon_calistir(MOUNT, model=AYAR.get("model", "dots.mocr"), gpu_birak=False,
+                                     yalniz=AYAR["dosyalar"])
+    except Exception:  # noqa: BLE001 - VPS izleyicisi bu işareti görüp bildirim gönderir
+        traceback.print_exc()
+        print(HAZIRLIK_HATASI, flush=True)
+        rc = 3
+    finally:
+        if mount is not None:
+            ayir(mount)
+    print(f"{SONUC_ISARETI} {rc}", flush=True)
+    return rc
+
+
+if __name__ == "__main__" and AYAR:
+    sys.exit(calis())

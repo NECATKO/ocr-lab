@@ -224,3 +224,17 @@ def test_ocr_run_returns_report_outputs_and_syncs_cache(tmp_path, fake_local, mo
     assert not (dp["cache"] / ".ocr-yarim.json").exists()          # yarım yazılmış önbellek Drive'a gitmez
     assert runner.run_ocr(dp["root"], dosya="a.pdf", local_root=fake_local, work_dir=tmp_path / "work") == 0
     assert (dp["output"] / "a_2.docx").exists()
+
+
+def test_phone_flow_only_processes_listed_files(tmp_path):
+    w = PhoneWorld(tmp_path, files=("a.pdf", "b.pdf"))
+    runner.telefon_calistir(w.dp["root"], yalniz=["b.pdf"], **w.kwargs())
+    assert w.calls == ["b.pdf"] and [p.name for p in runner.list_inputs(w.dp["input"])] == ["a.pdf"]
+    w2 = PhoneWorld(tmp_path / "2", files=("a.pdf",))
+    runner.telefon_calistir(w2.dp["root"], yalniz=[], **w2.kwargs())
+    assert w2.setups == [] and w2.notes[0][0] == "OCR: işlenecek dosya yok"
+
+
+def test_topic_parser():
+    assert runner.konu_ayikla("# a\n\n  k-1 \nk-2") == "k-1"
+    assert runner.konu_ayikla("# kapalı\n") == ""

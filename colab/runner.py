@@ -203,7 +203,7 @@ class OcrSonucu:
 
 def _onbellek_esitle(src: Path, dst: Path) -> None:
     """Yalnız tamamlanmış önbellek dosyalarını kopyalar (`.ocr-*` yarım yazılmış geçici dosyalardır)."""
-    subprocess.run(["rsync", "-a", "--exclude=.ocr-*", f"{src}/", f"{dst}/"], check=True)
+    subprocess.run(["rsync", "-rt", "--exclude=.ocr-*", f"{src}/", f"{dst}/"], check=True)
 
 
 def ocr_calistir(
@@ -252,7 +252,7 @@ def ocr_calistir(
 
     local_cache.mkdir(parents=True, exist_ok=True)
     if dp["cache"].is_dir() and any(dp["cache"].iterdir()):
-        subprocess.run(["rsync", "-a", f"{dp['cache']}/", f"{local_cache}/"], check=True)
+        subprocess.run(["rsync", "-rt", f"{dp['cache']}/", f"{local_cache}/"], check=True)
 
     # 2) Seçili girdileri yerel SSD'ye kopyala
     if dosya.strip().upper() == "HEPSI":
@@ -374,15 +374,20 @@ BILDIRIM_ACIKLAMA = """\
 """
 
 
+def konu_ayikla(metin: str) -> str:
+    """`bildirim.txt` içeriğinden ilk yorum olmayan satır; yoksa '' (bildirimler kapalı)."""
+    for line in metin.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
 def bildirim_konusu(dp: dict[str, Path]) -> str:
     """Drive'daki `bildirim.txt` dosyasından ntfy konusunu okur; dosya yoksa gizli bir konu üretir."""
     f = dp["bildirim"]
     if f.is_file():
-        for line in f.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                return line
-        return ""   # dosya var ama konu yok: kullanıcı bildirimleri kapattı
+        return konu_ayikla(f.read_text(encoding="utf-8"))   # konu yoksa kullanıcı bildirimleri kapattı
     konu = f"ocr-lab-{secrets.token_hex(10)}"
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(BILDIRIM_ACIKLAMA + konu + "\n", encoding="utf-8")
@@ -490,6 +495,7 @@ def telefon_calistir(
     *,
     model: str = "dots.mocr",
     gpu_birak: bool = True,
+    yalniz: list[str] | None = None,
     _kur=None,
     _ocr=None,
     _bildir=None,
@@ -498,6 +504,7 @@ def telefon_calistir(
 ) -> int:
     """Telefon akışı: input/'daki dosyaları tek tek okur, taşır, bildirir ve GPU'yu bırakır.
 
+    yalniz: verilirse yalnız bu adlardaki girdiler işlenir (VPS izleyicisi daha önce başarısız olanları ayıklar).
     Dönüş: 0 sorunsuz, 1 kontrol gereken/okunamayan dosya var, 2 akış hatayla durdu.
     """
     kur = _kur or (lambda root, model: setup_env(root, model=model))
@@ -513,6 +520,8 @@ def telefon_calistir(
     cikis_url = klasor_baglantisi(dp["output"])
     try:
         files = bekle(dp)
+        if yalniz is not None:
+            files = [f for f in files if f.name in set(yalniz)]
         if not files:
             durum_yaz(dp, "Gelen kutusu boş: input/ klasöründe dosya yok.")
             gonder(konu, "OCR: işlenecek dosya yok", "input/ klasöründe PDF bulunamadı; GPU bırakıldı.",
