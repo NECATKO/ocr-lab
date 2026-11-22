@@ -28,6 +28,11 @@ from colab import runner  # noqa: E402  (yalnız standart kitaplık kullanır)
 SABLON = Path(__file__).with_name("colab_is.py")
 SONUC_ISARETI = "OCR-VPS-SONUC"
 HAZIR_ISARETI = "Session READY"
+BASLADI_ISARETI = "OCR-VPS-BASLADI"
+# google-colab-cli 0.8: oturum açıldıktan hemen sonra websocket bazen düşüyor ("Connection was lost") ve
+# betiğin ilk satırı bile çalışmıyor. Bu durumda iş güvenle yeniden başlatılabilir.
+KOPMA_ISARETI = "Connection was lost"
+BASLANGIC_DENEME = 3
 GERI_CEKILME = 30 * 60          # GPU açılamazsa yeniden denemeden önce beklenen süre (sn)
 EN_UZUN_IS = 4 * 3600           # tek bir Colab işinin üst sınırı (sn)
 SAKLANAN_KAYIT = 20
@@ -110,6 +115,22 @@ def bildirim_konusu(uzak: str, _run=calistir_komut) -> str:
 
 
 def colab_calistir(colab: list[str], betik: Path, *, oturum: str, gpu: str, log: Path,
+                   en_uzun: float = EN_UZUN_IS, deneme: int = BASLANGIC_DENEME) -> tuple[int, str]:
+    """`colab run`; iş başlamadan bağlantı koparsa (CLI hatası) en fazla `deneme` kez yeniden başlatır."""
+    toplam = ""
+    for i in range(1, deneme + 1):
+        rc, cikti = _colab_bir_kez(colab, betik, oturum=f"{oturum}-{i}" if i > 1 else oturum, gpu=gpu,
+                                   log=log.with_name(f"{log.stem}-{i}{log.suffix}") if i > 1 else log,
+                                   en_uzun=en_uzun)
+        toplam += cikti
+        baslamadan_koptu = rc != 0 and BASLADI_ISARETI not in cikti and KOPMA_ISARETI in cikti
+        if not baslamadan_koptu or i == deneme:
+            return rc, toplam
+        print(f"\nColab bağlantısı iş başlamadan koptu; yeniden deneniyor ({i + 1}/{deneme})...", flush=True)
+    return rc, toplam
+
+
+def _colab_bir_kez(colab: list[str], betik: Path, *, oturum: str, gpu: str, log: Path,
                    en_uzun: float = EN_UZUN_IS) -> tuple[int, str]:
     """`colab run` çıktısını hem günlüğe hem ekrana akıtır. Süre aşılırsa önce Ctrl-C (CLI oturumu
     kapatsın), olmazsa öldürür ve oturumu adıyla ayrıca durdurur."""

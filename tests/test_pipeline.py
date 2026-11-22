@@ -141,6 +141,19 @@ def test_truncated_model_output_warns():
     assert not plain.truncated and not any("kesildi" in w for w in plain.warnings)
 
 
+def test_recovered_page_warns_and_survives_cache(tmp_path):
+    raw = engines.Recovered(blocks_json(("Text", [0, 0, 500, 500], "metin")))
+    job = DocJob("k", [SourcePage(source(tmp_path), 5)])
+    first = process_job(job, Options(mode="duz"), lambda img, m: raw, lambda img: "", progress=lambda m: None)
+    warn = "s. 5: model tekrar döngüsüne girdi; sayfa tekrar cezasıyla yeniden okundu, metni kontrol edin"
+    assert not first[0].truncated and warn in first[0].warnings
+    cached = json.loads(cache_path(job.pages[0], Options(mode="duz")).read_text(encoding="utf-8"))
+    assert cached["recovered"] is True and cached["truncated"] is False
+    again = process_job(job, Options(mode="duz"), lambda img, m: pytest.fail("önbellek"), lambda img: "",
+                        progress=lambda m: None)
+    assert warn in again[0].warnings
+
+
 @pytest.mark.parametrize("raw", ["", " ", "[]", "{}", "null", None, '[{"category":"Picture","bbox":[0,0,10,10]}]',
                                  '[{"category":"Table","text":"<table></table>","bbox":[0,0,10,10]}]',
                                  '[{"category":"Page-footer","text":"412","bbox":[0,0,10,10]}]'])

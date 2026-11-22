@@ -348,3 +348,39 @@ Telefonda yalnız bir ▶ düğmesi için [colab/telefon.ipynb](colab/telefon.ip
 4. Başlangıçta ve bitişte bildirim gelir. "Bitti" bildirimi her dosya için sayfa sayısını, uyarıları ve kontrol
    gereken sayfaları gösterir; dokununca `output/` klasörü açılır. Durum `ocr-lab/DURUM.txt` dosyasında da görülür.
    İş bitince (ya da hata olursa) çalışma zamanı kendiliğinden kapatılır; boşta GPU birimi harcanmaz.
+
+### VPS ile tam otomatik (tarayıcısız)
+
+Telefonun ekranı kapanınca Colab defteri durur, çünkü Google AI Pro'da arka planda çalışma yok. Bu sorun bir VPS ile
+tamamen ortadan kalkar. VPS'te GPU ya da model gerekmez; okuma yine Colab'ın L4'ünde yapılır.
+
+- [vps/izleyici.py](vps/izleyici.py): systemd zamanlayıcısı bunu 3 dakikada bir çalıştırır. rclone ile Drive'daki
+  `ocr-lab/input/` klasörüne bakar. Yeni dosya varsa Google'ın Colab komut satırı aracıyla
+  ([google-colab-cli](https://github.com/googlecolab/google-colab-cli)) `colab run --gpu L4` başlatır.
+- [vps/colab_is.py](vps/colab_is.py): Colab makinesinde çalışır. Drive'ı rclone ile bağlar ve telefon akışını
+  (`runner.telefon_calistir`) kullanır: dosyaları okur, `output/` klasörüne yazar, girdiyi `islenenler/` klasörüne
+  taşır, ntfy bildirimi gönderir. İş bitince oturum kapanır.
+- Güvenlik önlemleri:
+  - Aynı anda tek iş çalışır.
+  - Bitmiş bir işte okunamayan dosya, değişene (yeniden yüklenene) kadar tekrar denenmez.
+  - Yarıda kalan iş bir kez daha denenir.
+  - GPU açılamazsa 30 dakika beklenir.
+  - Colab aracında iş başlamadan bağlantı koparsa iş en fazla 3 kez yeniden başlatılır.
+
+Kurulum (Ubuntu/Debian VPS'te, root ya da sudo yetkili kullanıcıyla):
+
+```bash
+git clone --depth 1 https://github.com/NECATKO/ocr-lab.git ~/ocr-lab
+bash ~/ocr-lab/vps/kur.sh            # paketler, uv, google-colab-cli, systemd zamanlayıcısı
+# Betik iki girişi ister (bir kez):
+rclone config create gdrive drive scope=drive config_is_local=false   # Drive
+PYTHON_KEYRING_BACKEND=keyrings.alt.file.PlaintextKeyring colab usage  # Colab
+bash ~/ocr-lab/vps/kur.sh            # girişlerden sonra zamanlayıcıyı açar
+```
+
+Durum: `systemctl --user list-timers ocr-vps.timer`, kayıtlar: `journalctl --user -u ocr-vps -n 100` ve
+`~/.local/state/ocr-lab/kayitlar/`. Okunamadığı için bekletilen bir dosyayı yeniden denetmek için dosyayı
+yeniden yükleyin ya da `~/.local/state/ocr-lab/izleyici.json` dosyasını silin.
+
+Not: rclone'un ortak Google Drive istemci kimliği 2026 içinde kapatılıyor. Kesinti olmaması için kendi istemci
+kimliğinizi oluşturun: <https://rclone.org/drive/#making-your-own-client-id>

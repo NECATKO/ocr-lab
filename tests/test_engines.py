@@ -453,3 +453,46 @@ def test_high_vram_bf16_updates_serve_resize_and_identity(monkeypatch, tmp_path)
     assert "--quantization fp8" not in engines.serve_command(ENGINES["deepseek-ocr2"])
     id_bf16 = identity.runtime("dots.mocr", tess=tess).profile("duzen")["id"]
     assert id_bf16 != id_fp8
+
+
+def test_vlm_sends_extra_generation_options(monkeypatch, tmp_path):
+    img = tmp_path / "x.png"
+    img.write_bytes(b"png")
+    sent = []
+
+    def urlopen(req, timeout):
+        sent.append(json.loads(req.data))
+        return io.BytesIO(json.dumps({"choices": [{"message": {"content": "m"}, "finish_reason": "stop"}]}).encode())
+    monkeypatch.setattr(engines.urllib.request, "urlopen", urlopen)
+    engines._vlm(img, "http://x/v1", "mdl", "istem", extra={"repetition_penalty": 1.05})
+    assert sent[0]["repetition_penalty"] == 1.05 and sent[0]["temperature"] == engines.TEMPERATURE
+
+
+@pytest.mark.parametrize("second,expected,recovered", [
+    ("tam", "tam", True),                                   # tekrar cezasıyla tamamlandı
+    (engines.Truncated("yine yarım"), "1111", False),       # ikinci deneme de kesildi: ilk (kanonik) çıktı kalır
+])
+def test_vlm_server_retries_truncated_page_with_repetition_penalty(monkeypatch, tmp_path, second, expected, recovered):
+    """bf16 dots.mocr bazı sayfalarda (tarama1 s.75) açgözlü kod çözmede '1111…' döngüsüne girip max_tokens'ta
+    kesiliyor; aynı sayfa repetition_penalty=1.05 ile eksiksiz okunuyor."""
+    calls = []
+
+    def vlm(img, base, model, prompt, extra=None):
+        calls.append(extra)
+        return engines.Truncated("1111") if extra is None else second
+    monkeypatch.setattr(engines, "_start_server", lambda eng, **k: ("http://x/v1", "mdl", None))
+    monkeypatch.setattr(engines, "_vlm", vlm)
+    with server("dots.mocr") as run:
+        out = run(tmp_path / "x.png", "duzen")
+    assert calls == [None, engines.LOOP_RETRY] and out == expected
+    assert isinstance(out, engines.Recovered) is recovered
+    assert isinstance(out, engines.Truncated) is (not recovered)
+
+
+def test_vlm_server_does_not_retry_complete_page(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(engines, "_start_server", lambda eng, **k: ("http://x/v1", "mdl", None))
+    monkeypatch.setattr(engines, "_vlm", lambda img, base, model, prompt, extra=None: calls.append(extra) or "tam")
+    with server("dots.mocr") as run:
+        assert run(tmp_path / "x.png", "duzen") == "tam"
+    assert calls == [None]

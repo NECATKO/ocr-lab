@@ -16,6 +16,7 @@ MOUNT = Path("/content/drive/MyDrive/ocr-lab")
 LOCAL_ROOT = Path("/content/ocr-lab")
 RC_ADDR = "127.0.0.1:5572"
 SONUC_ISARETI = "OCR-VPS-SONUC"
+BASLADI_ISARETI = "OCR-VPS-BASLADI"   # izleyici: bu satır yoksa iş hiç başlamadan koptu (yeniden denenebilir)
 HAZIRLIK_HATASI = "OCR-VPS-HAZIRLIK-HATASI"
 
 
@@ -94,6 +95,7 @@ def repo_hazirla() -> None:
 
 
 def calis() -> int:
+    print(BASLADI_ISARETI, flush=True)
     mount = None
     try:
         rclone_kur()

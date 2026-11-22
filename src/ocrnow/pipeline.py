@@ -31,6 +31,7 @@ REVIEW_WARNING = "kontrol gerekli: model okunabilir metin vermedi"
 PDF_ORDER_WARNING = "kitap sayfa numarası bulunamadı, PDF sırası kullanıldı"
 IMAGE_ORDER_WARNING = "kitap sayfa numarası bulunamadı, görsel sırası kullanıldı"
 TRUNCATED_WARNING = "model çıktısı uzunluk sınırında kesildi, sayfa sonu eksik olabilir"
+RECOVERED_WARNING = "model tekrar döngüsüne girdi; sayfa tekrar cezasıyla yeniden okundu, metni kontrol edin"
 SIDE_WARNING = "sayfanın tarafıyla çelişiyor"
 DUPLICATE_WARNING = "aynı sayfa iki kez taranmış olabilir"
 UNEXPECTED_SCRIPT_WARNING = "beklenmedik yazı karakteri (CJK) bulundu"
@@ -64,6 +65,7 @@ class RawPage:
     width: int
     height: int
     truncated: bool = False   # model cevabı uzunluk sınırında kesildi (engines.Truncated)
+    recovered: bool = False   # kesilen ilk okuma tekrar cezasıyla tamamlandı (engines.Recovered)
 
 
 def page_id(src: SourcePage) -> str:
@@ -91,7 +93,8 @@ def ocr_page(img: Path, opts: Options, run: Callable[[Path, str], str], tsv: Cal
         raw = ""
     if not isinstance(raw, str):
         raise ValueError("model yanıtı metin değil")
-    return RawPage(str(raw), tsv_text, size[0], size[1], isinstance(raw, engines.Truncated))
+    return RawPage(str(raw), tsv_text, size[0], size[1], isinstance(raw, engines.Truncated),
+                   isinstance(raw, engines.Recovered))
 
 
 def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str, str] | None = None) -> Page:
@@ -106,6 +109,8 @@ def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str,
         warnings.append(f"{pid}: {REVIEW_WARNING}")
     if ocr.truncated:    # yoğun sayfada son bloklar (çoğu kez dipnotlar) eksik kalır
         warnings.append(f"{pid}: {TRUNCATED_WARNING}")
+    if ocr.recovered:
+        warnings.append(f"{pid}: {RECOVERED_WARNING}")
     if opts.apostrophes and words is None:
         words = _word_list()
     tlines = parse_tsv(ocr.tsv) if opts.use_tesseract and ocr.tsv else []
@@ -173,7 +178,7 @@ def _load(path: Path, opts: Options, profile: dict) -> RawPage | None:
             return None
         if opts.use_tesseract and not d.get("use_tesseract", True):
             return None
-        ocr = RawPage(d["raw"], d["tsv"], d["width"], d["height"], d["truncated"])
+        ocr = RawPage(d["raw"], d["tsv"], d["width"], d["height"], d["truncated"], d.get("recovered", False) is True)
     except (OSError, ValueError, KeyError, TypeError):
         return None
     ok = (isinstance(ocr.raw, str) and isinstance(ocr.tsv, str) and ocr.truncated is False
@@ -195,6 +200,8 @@ def _save(path: Path, ocr: RawPage, opts: Options, profile: dict) -> None:
               "width": ocr.width, "height": ocr.height, "truncated": ocr.truncated, "raw": ocr.raw, "tsv": ocr.tsv}
     if not opts.use_tesseract:
         record["use_tesseract"] = False
+    if ocr.recovered:
+        record["recovered"] = True
     with paths.atomic_output(path) as tmp:
         tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
 

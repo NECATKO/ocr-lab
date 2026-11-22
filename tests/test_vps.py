@@ -152,6 +152,36 @@ def test_colab_runner_streams_output_to_log(tmp_path):
     assert (tmp_path / "x.log").read_text() == cikti
 
 
+def test_colab_runner_retries_when_connection_drops_before_job_starts(tmp_path):
+    sayac = tmp_path / "sayac"
+    fake = tmp_path / "colab"
+    fake.write_text(f"""#!{sys.executable}
+import sys
+from pathlib import Path
+p = Path({str(sayac)!r}); n = int(p.read_text()) + 1 if p.exists() else 1; p.write_text(str(n))
+print("[colab] Session READY")
+if n == 1:
+    print("RuntimeError: Connection was lost."); sys.exit(1)
+print("OCR-VPS-BASLADI"); print("OCR-VPS-SONUC 0")
+""")
+    fake.chmod(0o755)
+    betik = tmp_path / "b.py"
+    betik.write_text("")
+    rc, cikti = izleyici.colab_calistir([str(fake)], betik, oturum="s", gpu="L4", log=tmp_path / "x.log")
+    assert rc == 0 and sayac.read_text() == "2" and "OCR-VPS-SONUC 0" in cikti
+    assert (tmp_path / "x-2.log").exists()
+
+
+def test_colab_runner_does_not_retry_once_job_started(tmp_path):
+    fake = tmp_path / "colab"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nprint('OCR-VPS-BASLADI');print('Connection was lost.');sys.exit(1)\n")
+    fake.chmod(0o755)
+    betik = tmp_path / "b.py"
+    betik.write_text("")
+    rc, cikti = izleyici.colab_calistir([str(fake)], betik, oturum="s", gpu="L4", log=tmp_path / "x.log")
+    assert rc == 1 and cikti.count("OCR-VPS-BASLADI") == 1
+
+
 def test_old_logs_are_pruned(tmp_path):
     for i in range(25):
         (tmp_path / f"2026{i:04d}.log").write_text("x")

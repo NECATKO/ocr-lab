@@ -62,6 +62,16 @@ class Truncated(str):
     """Model çıktısı max_tokens sınırında kesildi (finish_reason == "length"); metnin kendisi olarak kullanılır."""
 
 
+class Recovered(str):
+    """İlk okuma kesildi (çoğu kez tekrar döngüsü), LOOP_RETRY ile yeniden okunan sayfa tamamlandı."""
+
+
+# Açgözlü kod çözmede bazı sayfalar döngüye girip max_tokens'ta kesiliyor (bf16 dots.mocr, tarama1 s.75:
+# okunamayan bir kelimeden sonra "1111…"). Aynı sayfa hafif tekrar cezasıyla eksiksiz ve belirlenimci okunuyor.
+# Yalnız kesilen sayfanın ikinci denemesinde kullanılır; kesilmeyen sayfalar (ve önbellekleri) değişmez.
+LOOP_RETRY = {"repetition_penalty": 1.05}
+
+
 @dataclass(frozen=True)
 class Mode:
     prompt: str | None
@@ -394,11 +404,13 @@ def _stop_server(proc) -> None:
             proc.wait()
 
 
-def _vlm(img: Path, base: str, model: str, prompt: str | None, *, api_key: str | None = None) -> str:
+def _vlm(img: Path, base: str, model: str, prompt: str | None, *, api_key: str | None = None,
+         extra: dict | None = None) -> str:
     content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(img.read_bytes()).decode()}}]
     if prompt:
         content.append({"type": "text", "text": prompt})
-    body = {"model": model, "messages": [{"role": "user", "content": content}], "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS}
+    body = {"model": model, "messages": [{"role": "user", "content": content}], "temperature": TEMPERATURE,
+            "max_tokens": MAX_TOKENS, **(extra or {})}
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -411,6 +423,16 @@ def _vlm(img: Path, base: str, model: str, prompt: str | None, *, api_key: str |
     if not isinstance(content, str):
         raise ValueError("model yanıtı metin değil")
     return Truncated(content) if choice.get("finish_reason") == "length" else content
+
+
+def _vlm_retrying(img: Path, base: str, model: str, prompt: str | None) -> str:
+    """Yerel vLLM okuması; kesilirse bir kez LOOP_RETRY ile yeniden okur. İkinci deneme de kesilirse ilk
+    (kanonik) çıktı döner."""
+    first = _vlm(img, base, model, prompt)
+    if not isinstance(first, Truncated):
+        return first
+    second = _vlm(img, base, model, prompt, extra=LOOP_RETRY)
+    return first if isinstance(second, Truncated) else Recovered(second)
 
 
 def _mode(eng: Engine, mode: str) -> Mode:
@@ -445,7 +467,7 @@ def server(name: str, *, cancel: threading.Event | None = None, revision: str | 
         base, model, proc = _start_server(eng, cancel=cancel, revision=revision, expect_managed=expect_managed,
                                           external_model=external_model)
         try:
-            yield lambda img, mode: _vlm(img, base, model, _mode(eng, mode).prompt)
+            yield lambda img, mode: _vlm_retrying(img, base, model, _mode(eng, mode).prompt)
         finally:
             _stop_server(proc)
 
