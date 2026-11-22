@@ -12,7 +12,9 @@ import base64
 import fcntl
 import json
 import os
+import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -29,6 +31,8 @@ SABLON = Path(__file__).with_name("colab_is.py")
 SONUC_ISARETI = "OCR-VPS-SONUC"
 HAZIR_ISARETI = "Session READY"
 BASLADI_ISARETI = "OCR-VPS-BASLADI"
+BILDIRIM_ISARETI = "OCR-VPS-BILDIRIM"    # colab_is.py: ntfy'ye giden her bildirim (JSON)
+BELGE_ISARETI = "OCR-VPS-BELGE"          # colab_is.py: bir girdiden Drive output/'a yazılan belgeler (JSON)
 # google-colab-cli 0.8: oturum açıldıktan hemen sonra websocket bazen düşüyor ("Connection was lost") ve
 # betiğin ilk satırı bile çalışmıyor. Bu durumda iş güvenle yeniden başlatılabilir.
 KOPMA_ISARETI = "Connection was lost"
@@ -114,14 +118,90 @@ def bildirim_konusu(uzak: str, _run=calistir_komut) -> str:
     return runner.konu_ayikla(res.stdout) if res.returncode == 0 else ""
 
 
+def isaretli_satirlar(metin: str, isaret: str) -> list[dict]:
+    """`ISARET {json}` satırlarındaki JSON nesneleri (bozuk satırlar atlanır)."""
+    sonuc = []
+    for line in metin.splitlines():
+        veri = isaretli_satir(line, isaret)
+        if veri is not None:
+            sonuc.append(veri)
+    return sonuc
+
+
+def isaretli_satir(line: str, isaret: str) -> dict | None:
+    line = line.strip()
+    if not line.startswith(isaret + " "):
+        return None
+    try:
+        veri = json.loads(line[len(isaret) + 1:])
+    except ValueError:
+        return None
+    return veri if isinstance(veri, dict) else None
+
+
+def hermes_gonder(hedef: str, metin: str, _run=calistir_komut) -> bool:
+    """Hermes Agent'ın `hermes send` komutuyla mesaj gönderir; metindeki `MEDIA:/yol` dosyayı ek yapar.
+    Hedef boşsa (Hermes yoksa) hiçbir şey yapmaz. Hata izleyiciyi durdurmaz."""
+    if not hedef:
+        return False
+    try:
+        res = _run(["hermes", "send", "--to", hedef, "--file", "-"], input=metin, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"UYARI: Hermes mesajı gönderilemedi: {e}", flush=True)
+        return False
+    if res.returncode != 0:
+        print(f"UYARI: Hermes mesajı gönderilemedi: {(res.stderr or res.stdout).strip()[-300:]}", flush=True)
+        return False
+    return True
+
+
+def gonderilecek_belgeler(adlar: list[str]) -> list[str]:
+    """Telegram'a eklenecek belgeler: aynı adlı .docx (ya da başka biçim) varsa ham .txt gönderilmez."""
+    zengin = {Path(a).stem for a in adlar if Path(a).suffix.lower() != ".txt"}
+    return [a for a in adlar if Path(a).suffix.lower() != ".txt" or Path(a).stem not in zengin]
+
+
+def guvenli_ad(ad: str) -> str:
+    """MEDIA etiketi boşlukta bölünmesin diye dosya adındaki boşluk ve denetim karakterlerini atar."""
+    return re.sub(r"[\s/\\]+", "_", ad).strip("_") or "belge"
+
+
+def belgeleri_ilet(cikti: str, *, uzak: str, hedef: str, _run=calistir_komut, _gonder=hermes_gonder) -> None:
+    """İşin yazdığı belgeleri Drive output/'tan indirip Hermes ile Telegram'a ek olarak gönderir."""
+    if not hedef:
+        return
+    for kayit in isaretli_satirlar(cikti, BELGE_ISARETI):
+        girdi = str(kayit.get("girdi") or "?")
+        adlar = gonderilecek_belgeler([str(a) for a in kayit.get("belgeler") or []])
+        if not adlar:
+            continue
+        with tempfile.TemporaryDirectory(prefix="ocr-hermes-") as tmp:
+            yollar: list[Path] = []
+            eksik: list[str] = []
+            for ad in adlar:
+                yerel = Path(tmp) / guvenli_ad(ad)
+                res = _run(["rclone", "copyto", f"{uzak}/output/{ad}", str(yerel)])
+                if res.returncode == 0 and yerel.is_file():
+                    yollar.append(yerel)
+                else:
+                    eksik.append(ad)
+            satirlar = [f"📄 {girdi}"]
+            if eksik:
+                satirlar.append(f"Drive'dan indirilemedi (output/ klasörüne bakın): {', '.join(eksik)}")
+            satirlar += [f"MEDIA:{y}" for y in yollar]
+            _gonder(hedef, "\n".join(satirlar))     # hermes send dosyaları göndermeden dönmez
+
+
 def colab_calistir(colab: list[str], betik: Path, *, oturum: str, gpu: str, log: Path,
-                   en_uzun: float = EN_UZUN_IS, deneme: int = BASLANGIC_DENEME) -> tuple[int, str]:
-    """`colab run`; iş başlamadan bağlantı koparsa (CLI hatası) en fazla `deneme` kez yeniden başlatır."""
+                   en_uzun: float = EN_UZUN_IS, deneme: int = BASLANGIC_DENEME,
+                   satir_isle=None) -> tuple[int, str]:
+    """`colab run`; iş başlamadan bağlantı koparsa (CLI hatası) en fazla `deneme` kez yeniden başlatır.
+    satir_isle: verilirse her çıktı satırı geldiği anda buna da verilir (canlı bildirim için)."""
     toplam = ""
     for i in range(1, deneme + 1):
         rc, cikti = _colab_bir_kez(colab, betik, oturum=f"{oturum}-{i}" if i > 1 else oturum, gpu=gpu,
                                    log=log.with_name(f"{log.stem}-{i}{log.suffix}") if i > 1 else log,
-                                   en_uzun=en_uzun)
+                                   en_uzun=en_uzun, satir_isle=satir_isle)
         toplam += cikti
         baslamadan_koptu = rc != 0 and BASLADI_ISARETI not in cikti and KOPMA_ISARETI in cikti
         if not baslamadan_koptu or i == deneme:
@@ -131,7 +211,7 @@ def colab_calistir(colab: list[str], betik: Path, *, oturum: str, gpu: str, log:
 
 
 def _colab_bir_kez(colab: list[str], betik: Path, *, oturum: str, gpu: str, log: Path,
-                   en_uzun: float = EN_UZUN_IS) -> tuple[int, str]:
+                   en_uzun: float = EN_UZUN_IS, satir_isle=None) -> tuple[int, str]:
     """`colab run` çıktısını hem günlüğe hem ekrana akıtır. Süre aşılırsa önce Ctrl-C (CLI oturumu
     kapatsın), olmazsa öldürür ve oturumu adıyla ayrıca durdurur."""
     cmd = [*colab, "run", "-s", oturum, "--gpu", gpu, "--timeout", "0", str(betik)]
@@ -148,6 +228,11 @@ def _colab_bir_kez(colab: list[str], betik: Path, *, oturum: str, gpu: str, log:
             lf.flush()
             print(line, end="", flush=True)
             satirlar.append(line)
+            if satir_isle is not None:
+                try:
+                    satir_isle(line)
+                except Exception as e:  # noqa: BLE001 - bildirim hatası Colab işini bozmamalı
+                    print(f"UYARI: satır işlenemedi: {e}", flush=True)
             if time.time() > bitis:
                 break
         if proc.poll() is None and time.time() > bitis:
@@ -172,7 +257,20 @@ def eski_kayitlari_sil(klasor: Path, sakla: int = SAKLANAN_KAYIT) -> None:
 
 
 def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calistir, _bildir=runner.bildir,
-            _now=time.time) -> int:
+            _now=time.time, _hermes=hermes_gonder) -> int:
+    hedef = getattr(args, "hermes", "")
+    ntfy = _bildir
+
+    def _bildir(konu, baslik, mesaj, **kw):        # izleyicinin kendi bildirimleri: ntfy + Telegram
+        ntfy(konu, baslik, mesaj, **kw)
+        if hedef:
+            _hermes(hedef, f"{baslik}\n{mesaj}")
+
+    def canli(line: str) -> None:                  # Colab'daki akışın bildirimleri: geldiği anda Telegram'a
+        veri = isaretli_satir(line, BILDIRIM_ISARETI)
+        if veri is not None and hedef:
+            _hermes(hedef, f"{veri.get('baslik', 'OCR')}\n{veri.get('mesaj', '')}".strip())
+
     durum_dosyasi = args.durum_dizini / "izleyici.json"
     durum = durum_oku(durum_dosyasi)
     if _now() < durum["bekle_kadar"]:
@@ -201,8 +299,9 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
         betik.write_text(betik_metni, encoding="utf-8")
         betik.chmod(0o600)                       # içinde Drive anahtarı var
         rc, cikti = _colab(args.colab, betik, oturum=f"ocr-vps-{zaman}", gpu=args.gpu,
-                           log=kayitlar / f"{zaman}.log")
+                           log=kayitlar / f"{zaman}.log", satir_isle=canli)
     eski_kayitlari_sil(kayitlar)
+    belgeleri_ilet(cikti, uzak=args.uzak, hedef=hedef, _run=_run, _gonder=_hermes)
 
     if HAZIR_ISARETI not in cikti:
         durum["bekle_kadar"] = _now() + GERI_CEKILME
@@ -253,6 +352,8 @@ def ayristir(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dal", default=os.environ.get("OCR_VPS_DAL", "main"))
     p.add_argument("--colab", type=shlex.split, default=shlex.split(os.environ.get("OCR_VPS_COLAB", "colab")),
                    help="Colab komut satırı aracı (varsayılan: colab)")
+    p.add_argument("--hermes", default=os.environ.get("OCR_VPS_HERMES", "telegram" if shutil.which("hermes") else ""),
+                   help="Bildirim ve belgelerin Hermes ile gönderileceği hedef (`hermes send --to`); boş: kapalı")
     p.add_argument("--durum-dizini", type=Path,
                    default=Path(os.environ.get("OCR_VPS_DURUM", Path.home() / ".local/state/ocr-lab")))
     return p.parse_args(argv)

@@ -387,6 +387,23 @@ Durum: `systemctl --user list-timers ocr-vps.timer`, kayıtlar: `journalctl --us
 `~/.local/state/ocr-lab/kayitlar/`. Okunamadığı için bekletilen bir dosyayı yeniden denetmek için dosyayı
 yeniden yükleyin ya da `~/.local/state/ocr-lab/izleyici.json` dosyasını silin.
 
+#### Telegram ile (Hermes Agent)
+
+VPS'te [Hermes Agent](https://github.com/NousResearch/hermes-agent) Telegram'a bağlıysa iki yön de Telegram'dan
+yürür:
+
+- **PDF göndermek:** PDF'yi ya da sayfa fotoğrafını Telegram'da Hermes'e gönderip "okut" deyin. Hermes,
+  `ocr-lab` becerisiyle ([vps/hermes/ocr-lab/SKILL.md](vps/hermes/ocr-lab/SKILL.md)) dosyayı
+  [vps/ocr_ekle.py](vps/ocr_ekle.py) betiğine verir. Betik dosyayı Drive'daki `input/` klasörüne yükler ve
+  izleyiciyi zamanlayıcıyı beklemeden başlatır. Telegram botları 20 MB'tan büyük dosyaları indiremez; büyük
+  PDF'leri Drive'a doğrudan atın.
+- **Sonuç almak:** İzleyici başlangıç ve bitiş bildirimlerini `hermes send` ile Telegram'a da gönderir. Okunan her
+  dosyanın Word belgesini (Word yoksa metni) ek olarak yollar. ntfy bildirimi yedek olarak gelmeye devam eder.
+
+`kur.sh`, `~/.hermes/skills` varsa beceriyi oraya bağlar. `hermes` komutu varsa bildirim hedefi `telegram`
+(Hermes'in Telegram ana sohbeti) olur. Başka bir hedef için `OCR_VPS_HERMES` değişkenini verin, kapatmak için boş
+bırakın.
+
 #### Kendi Google istemci kimliği (rclone)
 
 rclone'un ortak Google Drive istemci kimliği 2026 içinde kapatılıyor. Kapanınca VPS Drive'ı göremez. Bu yüzden

@@ -35,7 +35,7 @@ class Drive:
 
 def args(tmp_path):
     return SimpleNamespace(uzak="gdrive:ocr-lab", gpu="L4", model="dots.mocr", repo="R", dal="main",
-                           colab=["colab"], durum_dizini=tmp_path / "durum")
+                           colab=["colab"], durum_dizini=tmp_path / "durum", hermes="")
 
 
 def test_listing_filters_non_inputs(tmp_path):
@@ -65,12 +65,15 @@ class Colab:
         self.drive, self.cikti, self.rc, self.isle = drive, cikti, rc, isle
         self.calls = []
 
-    def __call__(self, colab, betik, *, oturum, gpu, log):
+    def __call__(self, colab, betik, *, oturum, gpu, log, satir_isle=None):
         metin = betik.read_text(encoding="utf-8")
         assert oct(betik.stat().st_mode & 0o777) == "0o600"
         self.calls.append(json.loads(metin.splitlines()[0].removeprefix("AYAR = "))["dosyalar"])
         for ad in self.isle:                       # VM'de işlenen dosya islenenler/'e taşınır
             self.drive.files.pop(ad)
+        if satir_isle is not None:
+            for line in self.cikti.splitlines(keepends=True):
+                satir_isle(line)
         return self.rc, self.cikti
 
 
@@ -197,3 +200,173 @@ def test_lock_prevents_parallel_runs(tmp_path, monkeypatch):
         fcntl.flock(held, fcntl.LOCK_EX)
         monkeypatch.setattr(izleyici, "bir_tur", lambda a: (_ for _ in ()).throw(AssertionError("çalışmamalı")))
         assert izleyici.main(["--durum-dizini", str(d)]) == 0
+
+
+# --- Hermes (Telegram) ---
+
+class Hermes:
+    def __init__(self):
+        self.mesajlar = []
+        self.ekler = []
+
+    def __call__(self, hedef, metin):
+        self.mesajlar.append((hedef, metin))
+        for line in metin.splitlines():            # hermes send dosyayı göndermeden döner; şimdi oku
+            if line.startswith("MEDIA:"):
+                yol = Path(line.removeprefix("MEDIA:"))
+                self.ekler.append((yol.name, yol.read_bytes()))
+        return True
+
+
+def drive_with_output(tmp_path, files, output):
+    d = Drive(tmp_path, files)
+    eski = d.run
+
+    def run(cmd, **kw):
+        if cmd[:2] == ["rclone", "copyto"]:
+            ad = cmd[2].rsplit("/output/", 1)[1]
+            if ad not in output:
+                return done(rc=1, stderr="not found")
+            Path(cmd[3]).write_bytes(output[ad])
+            return done()
+        return eski(cmd, **kw)
+    d.run = run
+    return d
+
+
+def isaret(ad, veri):
+    return f"{ad} {json.dumps(veri, ensure_ascii=False)}\n"
+
+
+def test_notifications_and_documents_go_to_hermes(tmp_path):
+    d = drive_with_output(tmp_path, {"kitap 1.pdf": ("10", "t1")},
+                          {"kitap 1.docx": b"DOCX", "kitap 1.txt": b"TXT"})
+    cikti = ("[colab] Session READY\n"
+             + isaret("OCR-VPS-BILDIRIM", {"baslik": "OCR başladı: 1 dosya", "mesaj": "kitap 1.pdf"})
+             + isaret("OCR-VPS-BELGE", {"girdi": "kitap 1.pdf", "belgeler": ["kitap 1.docx", "kitap 1.txt"]})
+             + isaret("OCR-VPS-BILDIRIM", {"baslik": "OCR bitti", "mesaj": "kitap 1.pdf: 3 sayfa"})
+             + "OCR-VPS-BELGE {bozuk\nOCR-VPS-SONUC 0\n")
+    h = Hermes()
+    a = args(tmp_path)
+    a.hermes = "telegram"
+    assert izleyici.bir_tur(a, _run=d.run, _colab=Colab(d, cikti=cikti, isle=["kitap 1.pdf"]),
+                            _bildir=None, _hermes=h) == 0
+    metinler = [m for _, m in h.mesajlar]
+    assert metinler[0] == "OCR başladı: 1 dosya\nkitap 1.pdf"
+    assert metinler[1] == "OCR bitti\nkitap 1.pdf: 3 sayfa"
+    assert metinler[2].startswith("📄 kitap 1.pdf\nMEDIA:") and len(h.mesajlar) == 3
+    assert h.ekler == [("kitap_1.docx", b"DOCX")]          # .docx varken ham .txt gönderilmez
+    assert {hedef for hedef, _ in h.mesajlar} == {"telegram"}
+
+
+def test_missing_document_is_reported_in_text(tmp_path):
+    d = drive_with_output(tmp_path, {}, {})
+    h = Hermes()
+    izleyici.belgeleri_ilet(isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx"]}),
+                            uzak="gdrive:ocr-lab", hedef="telegram", _run=d.run, _gonder=h)
+    assert h.ekler == [] and "indirilemedi" in h.mesajlar[0][1] and "a.docx" in h.mesajlar[0][1]
+
+
+def test_watcher_notifications_also_go_to_hermes(tmp_path):
+    d = Drive(tmp_path, {"a.pdf": ("10", "t1")})
+    notes, h = [], Hermes()
+    a = args(tmp_path)
+    a.hermes = "telegram"
+    izleyici.bir_tur(a, _run=d.run, _colab=Colab(d, cikti="Error: no L4 capacity\n", rc=1),
+                     _bildir=lambda konu, baslik, *x, **k: notes.append(baslik), _hermes=h)
+    assert notes == ["OCR: Colab L4 açılamadı"]
+    assert h.mesajlar[0][1].startswith("OCR: Colab L4 açılamadı\n")
+
+
+def test_hermes_disabled_sends_nothing(tmp_path):
+    d = drive_with_output(tmp_path, {"a.pdf": ("1", "t")}, {"a.docx": b"x"})
+    cikti = ("Session READY\n" + isaret("OCR-VPS-BILDIRIM", {"baslik": "b", "mesaj": "m"})
+             + isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx"]}) + "OCR-VPS-SONUC 0\n")
+    h = Hermes()
+    izleyici.bir_tur(args(tmp_path), _run=d.run, _colab=Colab(d, cikti=cikti, isle=["a.pdf"]), _bildir=None,
+                     _hermes=h)
+    assert h.mesajlar == []
+
+
+def test_hermes_send_uses_stdin_and_survives_failure():
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append((cmd, kw.get("input")))
+        return done(rc=1, stderr="gateway down")
+    assert izleyici.hermes_gonder("telegram", "-baslik\nMEDIA:/x", run) is False
+    assert calls == [(["hermes", "send", "--to", "telegram", "--file", "-"], "-baslik\nMEDIA:/x")]
+    assert izleyici.hermes_gonder("", "x", run) is False and len(calls) == 1
+
+
+def test_documents_to_send():
+    assert izleyici.gonderilecek_belgeler(["a.docx", "a.txt", "b.txt", "c.pdf"]) == ["a.docx", "b.txt", "c.pdf"]
+    assert izleyici.guvenli_ad("kitap 1 / x.docx") == "kitap_1_x.docx"
+
+
+def test_colab_runner_feeds_lines_live(tmp_path):
+    fake = tmp_path / "colab"
+    fake.write_text(f"#!{sys.executable}\nprint('a');print('b')\n")
+    fake.chmod(0o755)
+    betik = tmp_path / "b.py"
+    betik.write_text("")
+    gelen = []
+    izleyici.colab_calistir([str(fake)], betik, oturum="s", gpu="L4", log=tmp_path / "x.log",
+                            satir_isle=lambda l: gelen.append(l.strip()) or 1 / 0)   # hata işi bozmaz
+    assert gelen[-2:] == ["a", "b"]
+
+
+# --- ocr_ekle.py ---
+
+import ocr_ekle  # noqa: E402
+
+
+class Yukleme:
+    def __init__(self, mevcut=()):
+        self.mevcut = set(mevcut)
+        self.calls = []
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(cmd)
+        if cmd[:2] == ["rclone", "lsf"]:
+            return done("".join(f"{a}\n" for a in self.mevcut) if cmd[-1].endswith("/input") else "")
+        if cmd[:2] == ["rclone", "copyto"]:
+            return done()
+        if cmd[0] == "systemctl":
+            assert kw["env"]["XDG_RUNTIME_DIR"]
+            return done()
+        raise AssertionError(cmd)
+
+
+def test_add_strips_hermes_prefix_avoids_collisions_and_kicks_watcher(tmp_path, capsys):
+    f = tmp_path / "doc_0123456789ab_Kitap s.10.pdf"
+    f.write_bytes(b"%PDF")
+    y = Yukleme(mevcut=["Kitap s.10.pdf"])
+    assert ocr_ekle.ekle([f], uzak="gdrive:ocr-lab", _run=y) == 0
+    assert ["rclone", "copyto", str(f), "gdrive:ocr-lab/input/Kitap s.10_2.pdf"] in y.calls
+    assert y.calls[-1][:4] == ["systemctl", "--user", "start", "--no-block"]
+    assert "input/Kitap s.10_2.pdf" in capsys.readouterr().out
+
+
+def test_add_rejects_non_scans_without_uploading(tmp_path):
+    f = tmp_path / "notlar.txt"
+    f.write_text("x")
+    y = Yukleme()
+    assert ocr_ekle.ekle([f, tmp_path / "yok.pdf"], uzak="gdrive:ocr-lab", _run=y) == 1
+    assert not any(c[:2] == ["rclone", "copyto"] or c[0] == "systemctl" for c in y.calls)
+
+
+def test_hidden_names_are_made_visible():
+    assert ocr_ekle.hedef_ad(Path("doc_0123456789ab_.gizli.pdf")) == "_.gizli.pdf"
+    assert ocr_ekle.bos_ad("a.pdf", {"a.pdf", "a_2.pdf"}) == "a_3.pdf"
+
+
+def test_template_markers_are_parsed_by_watcher(capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("colab_is_sablon", izleyici.SABLON)
+    sablon = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sablon)
+    assert sablon.BELGE_ISARETI == izleyici.BELGE_ISARETI and sablon.BILDIRIM_ISARETI == izleyici.BILDIRIM_ISARETI
+    sablon.isaret_bas(sablon.BELGE_ISARETI, {"girdi": "ğ ü.pdf", "belgeler": ["ğ ü.docx"]})
+    assert izleyici.isaretli_satirlar(capsys.readouterr().out, izleyici.BELGE_ISARETI) == [
+        {"girdi": "ğ ü.pdf", "belgeler": ["ğ ü.docx"]}]

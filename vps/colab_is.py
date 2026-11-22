@@ -18,6 +18,13 @@ RC_ADDR = "127.0.0.1:5572"
 SONUC_ISARETI = "OCR-VPS-SONUC"
 BASLADI_ISARETI = "OCR-VPS-BASLADI"   # izleyici: bu satır yoksa iş hiç başlamadan koptu (yeniden denenebilir)
 HAZIRLIK_HATASI = "OCR-VPS-HAZIRLIK-HATASI"
+# İzleyici bu satırları okuyup bildirimi ve belgeleri Hermes üzerinden Telegram'a iletir (JSON, tek satır).
+BILDIRIM_ISARETI = "OCR-VPS-BILDIRIM"
+BELGE_ISARETI = "OCR-VPS-BELGE"
+
+
+def isaret_bas(isaret: str, veri: dict) -> None:
+    print(f"{isaret} {json.dumps(veri, ensure_ascii=False)}", flush=True)
 
 
 def sh(cmd, **kw):
@@ -102,8 +109,18 @@ def calis() -> int:
         mount = bagla()
         repo_hazirla()
         from colab import runner
+
+        def ocr(root, dosya, model):
+            sonuc = runner.ocr_calistir(root, dosya=dosya, model=model)
+            isaret_bas(BELGE_ISARETI, {"girdi": dosya, "belgeler": [Path(y).name for y in sonuc.yazilanlar]})
+            return sonuc
+
+        def bildir(konu, baslik, mesaj, **kw):
+            runner.bildir(konu, baslik, mesaj, **kw)
+            isaret_bas(BILDIRIM_ISARETI, {"baslik": baslik, "mesaj": mesaj})
+
         rc = runner.telefon_calistir(MOUNT, model=AYAR.get("model", "dots.mocr"), gpu_birak=False,
-                                     yalniz=AYAR["dosyalar"])
+                                     yalniz=AYAR["dosyalar"], _ocr=ocr, _bildir=bildir)
     except Exception:  # noqa: BLE001 - VPS izleyicisi bu işareti görüp bildirim gönderir
         traceback.print_exc()
         print(HAZIRLIK_HATASI, flush=True)

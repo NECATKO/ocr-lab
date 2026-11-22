@@ -61,6 +61,12 @@ OnUnitInactiveSec=$ARALIK
 [Install]
 WantedBy=timers.target
 EOF
+if [ -d "$HOME/.hermes/skills" ]; then
+  echo "== Hermes Agent becerisi (ocr-lab): Telegram'dan PDF al, sonucu Telegram'a gönder"
+  mkdir -p "$HOME/.hermes/skills/productivity"
+  ln -sfn "$DIZIN/vps/hermes/ocr-lab" "$HOME/.hermes/skills/productivity/ocr-lab"
+fi
+
 kok loginctl enable-linger "$(id -un)"
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 systemctl --user daemon-reload

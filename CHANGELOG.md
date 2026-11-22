@@ -19,6 +19,10 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   L4'te `colab run` başlatır. Aynı anda tek iş çalışır. Okunamayan dosya değişene kadar yeniden denenmez.
   Yarıda kalan iş bir kez yeniden denenir. GPU açılamazsa 30 dakika beklenir. Colab aracının başlangıçtaki
   bağlantı kopması yeniden denenir. Kurulum için `vps/kur.sh` çalıştırılır.
+- **Telegram ile OCR (Hermes Agent, `vps/ocr_ekle.py`, `vps/hermes/ocr-lab/`):** PDF Telegram'da VPS'teki Hermes'e
+  gönderilir. Hermes `ocr-lab` becerisiyle dosyayı Drive `input/` klasörüne koyar ve izleyiciyi hemen başlatır.
+  İzleyici bildirimleri `hermes send` ile Telegram'a da iletir, okunan dosyanın Word belgesini ek olarak gönderir.
+  ntfy yedek olarak kalır.
 - **Geliştirilmiş Linux ve Windows (WSL2) kurulumu (`kurulum.sh`, `kurulum.bat`, `kurulum.ps1`, `.gitattributes`):**
   `kurulum.sh` artık `curl`, `tar`, `tesseract` (+ Türkçe `tur` dil paketi) ve `uv` gereksinimlerini denetleyip
   eksikleri (`apt`/`dnf`/`pacman`/`zypper` ve `uv` kurucusu ile) otomatik kurar; NVIDIA GPU/VRAM ve disk alanı

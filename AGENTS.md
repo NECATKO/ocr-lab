@@ -14,7 +14,8 @@ Kullanıcı kitap sayfalarını telefonla olabildiğince net çeker, CamScanner'
 
 - Asıl kullanım: kullanıcı PDF'yi Drive'daki `ocr-lab/input/` klasörüne atar. Kendi VPS'indeki izleyici
   (`vps/izleyici.py`, systemd kullanıcı zamanlayıcısı) dosyayı Colab L4'te okutur. Çıktı `ocr-lab/output/`
-  klasörüne yazılır ve ntfy bildirimi gelir. Okuma her zaman Colab'da bf16 ile yapılır; ev bilgisayarı bu akışa katılmaz.
+  klasörüne yazılır ve ntfy bildirimi gelir. PDF, Telegram'da VPS'teki Hermes Agent'a da gönderilebilir (`ocr-lab`
+  becerisi, `vps/ocr_ekle.py`). Bildirimler ve Word dosyası Hermes üzerinden Telegram'a da gelir. Okuma her zaman Colab'da bf16 ile yapılır; ev bilgisayarı bu akışa katılmaz.
 - `vps/colab_is.py` Colab makinesinde çalışan bir şablondur; `colab/runner.py` içindeki `telefon_calistir`'ı
   kullanır. Bu dosyalardaki değişiklikler ancak push edildikten sonra VPS'e geçer. VPS her çalışmadan önce
   `git pull` yapar.
