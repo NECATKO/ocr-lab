@@ -280,6 +280,7 @@ def _report(results: list[tuple[pages.DocJob, list[Page]]], written: dict[str, l
         multi = len({src.source for src in job.pages if src.source.suffix.lower() == ".pdf"}) > 1
         jobs.append({
             "ad": job.name,
+            "sayfa": len(doc_pages),
             "yazildi": bool(written.get(job.name)),
             "tahmin": [export_txt.page_label(p) for p in doc_pages if p.book_page_inferred and not p.book_page_check],
             "kontrol": [export_txt.page_label(p) for p in doc_pages if p.book_page_check],

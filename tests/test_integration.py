@@ -134,6 +134,7 @@ def test_blank_page_marked_in_both_formats_and_only_it_is_retried(world, tmp_pat
     assert footers(paths.DOCS_OUT / "k.docx") == ["412", "[413]", "414"]
     data = json.loads(report.read_text(encoding="utf-8"))
     assert data["isler"][0]["metin_kontrol"] == ["s. 2"] and not data["okunamayan"]
+    assert data["isler"][0]["sayfa"] == 3
     assert not pipeline.cache_path(SourcePage(world.pdf, 2), pipeline.Options()).exists()
     world.blank.clear()
     assert main(args) == 0

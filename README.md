@@ -332,3 +332,19 @@ Yerel GPU yerine Google Colab (**L4** veya **A100**) ve Google Drive kullanmak i
 - Çıktılar `MyDrive/ocr-lab/output/` klasörüne, sayfa OCR önbelleği `MyDrive/ocr-lab/cache/` klasörüne, model ağırlıkları ise tekrar indirmemek için `MyDrive/ocr-lab/colab-models/hf_cache.tar` dosyasına kaydedilir.
 - `dots.mocr` ve `deepseek-ocr2` için **L4** (önerilen) veya **A100** seçin (T4 `fp8` desteklemez).
 
+
+### Telefondan tek dokunuş
+
+Telefonda yalnız bir ▶ düğmesi için [colab/telefon.ipynb](colab/telefon.ipynb) defterini kullanın:
+
+1. **Bir kez:** Defteri Colab'da açın ([bağlantı](https://colab.research.google.com/github/NECATKO/ocr-lab/blob/main/colab/telefon.ipynb)),
+   *Dosya → Drive'a kopya kaydet* deyin ve kopyayı telefonda tarayıcının *Ana ekrana ekle* seçeneğiyle kısayol yapın.
+   Defter ilk çalıştığında Drive'da `ocr-lab/bildirim.txt` oluşur. Telefona **ntfy** uygulamasını kurup bu dosyadaki
+   gizli konuya abone olun. Bildirimleri kapatmak için konunun başına `#` koyun.
+2. **Her seferinde:** CamScanner'da PDF'yi `MyDrive/ocr-lab/input/` klasörüne yükleyin, kısayolu açıp ▶'ye dokunun.
+3. Defter dosyaları tek tek okur. Her dosyadan sonra, OCR sürerken de iki dakikada bir sayfa önbelleğini Drive'a yazar.
+   Oturum koparsa ▶'ye yeniden basmak yeter, okunmuş sayfalar GPU'ya tekrar gitmez. Belgesi yazılan PDF
+   `input/islenenler/` klasörüne taşınır, okunamayan PDF `input/` içinde kalır.
+4. Başlangıçta ve bitişte bildirim gelir. "Bitti" bildirimi her dosya için sayfa sayısını, uyarıları ve kontrol
+   gereken sayfaları gösterir; dokununca `output/` klasörü açılır. Durum `ocr-lab/DURUM.txt` dosyasında da görülür.
+   İş bitince (ya da hata olursa) çalışma zamanı kendiliğinden kapatılır; boşta GPU birimi harcanmaz.
