@@ -134,6 +134,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   olan kaynak sayfaya ikinci katman eklenmez, uyarı verilir. **Yeni bağımlılık `pikepdf`:** mevcut yerel
   kurulumlarda `./kurulum.sh` yeniden çalıştırılmalıdır; Colab kurulumu (`runner.setup_env`) `.venv` varken de
   proje bağımlılıklarını yeniler. pikepdf eksikse yalnız `.pdf` yazılamaz, Word ve öteki biçimler yine yazılır.
+- **Aranabilir PDF'te kelime düzeyinde yerleşim (`pdf_textlayer.py`, `tesslines.py`):** Görünmez metnin her kelimesi
+  tesseract'ın o kelime için bulduğu kutuya konur; satır yapısı kurulamayan bloklarda da arama vurgusu kelimenin
+  üstüne düşer (önceden metin bloğa yayıldığı için bir satır kayabiliyordu). Tesseract'ın okumadığı kelimeler
+  komşularının arasına, bütün bir satırı kaçırdıysa iki satırın arasına kurulan satıra yerleşir. Kopyada kelimeler
+  tek boşlukla, satırlar okuyucunun satır sonuyla ayrılır; tireyle bölünen kelime ilk satırda bütün yazılır.
+  Tesseract kelimesi olmayan bloklar ve tablolar eski yayma yöntemiyle yerleşir. Word çıktısı değişmez.
 - **Telefon/VPS akışı aranabilir PDF de üretir:** `runner.TELEFON_FORMATLARI` (`docx pdf txt`) telefon defterinin ve
   VPS işinin istediği biçimlerdir. İzleyici Word ile birlikte aranabilir PDF'i de Telegram'a gönderir; 50 MB'tan
   büyük PDF gönderilmez, mesajda "Telegram için çok büyük" notu ve Drive `output/` konumu bildirilir. `ocr_calistir`

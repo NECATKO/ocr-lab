@@ -1,29 +1,35 @@
 """tesseract TSV çıktısından satırlar: satır kutusu (level 4) ve kelimeleri (level 5)."""
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+Box = tuple[int, int, int, int]
 
 
 @dataclass
 class TessLine:
-    box: tuple[int, int, int, int]  # (x1, y1, x2, y2) piksel
+    box: Box  # (x1, y1, x2, y2) piksel
     text: str
+    # kelimeler okuma sırasıyla: (kutu, metin); text bunların boşlukla birleşimi. Eşitliğe katılmaz.
+    words: list[tuple[Box, str]] = field(default_factory=list, compare=False)
 
 
 def parse_tsv(tsv: str) -> list[TessLine]:
     """TSV'deki satırları sırasıyla döndürür; kelimesi olmayan satırlar atlanır."""
-    boxes: dict[tuple, tuple[int, int, int, int]] = {}
-    words: dict[tuple, list[str]] = {}
+    boxes: dict[tuple, Box] = {}
+    words: dict[tuple, list[tuple[Box, str]]] = {}
     for r in csv.DictReader(tsv.splitlines(), delimiter="\t", quoting=csv.QUOTE_NONE):
         key = (r["page_num"], r["block_num"], r["par_num"], r["line_num"])
+        if r["level"] not in ("4", "5"):
+            continue
+        x, y, w, h = (int(r[k]) for k in ("left", "top", "width", "height"))
         if r["level"] == "4":
-            x, y, w, h = (int(r[k]) for k in ("left", "top", "width", "height"))
             boxes[key] = (x, y, x + w, y + h)
             words[key] = []
-        elif r["level"] == "5" and key in words:
+        elif key in words:
             word = (r.get("text") or "").strip()
             if word:
-                words[key].append(word)
-    return [TessLine(boxes[k], " ".join(w)) for k, w in words.items() if w]
+                words[key].append(((x, y, x + w, y + h), word))
+    return [TessLine(boxes[k], " ".join(t for _, t in w), w) for k, w in words.items() if w]
 
 
 def lines_in(block_bbox, lines: list[TessLine], pad: int = 15) -> list[TessLine]:

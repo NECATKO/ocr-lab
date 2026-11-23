@@ -228,3 +228,10 @@ def test_apply_line_structure_fallback_has_no_box():
     b = Block("Text", (0, 0, 400, 100), "birinci satır ikinci satır", [], False)
     assert apply_line_structure(b, []) is not None
     assert b.lines == [Line(0, len(b.text), False)] and b.lines[0].box is None
+
+
+def test_parse_tsv_keeps_word_boxes():
+    tl = parse_tsv(TSV)
+    assert tl[0].words == [((100, 200, 200, 220), "ilk"), ((210, 200, 400, 220), '"satır')]
+    assert tl[1].words == [((100, 230, 350, 250), "ikinci")]
+    assert tl[0].text == " ".join(w for _, w in tl[0].words)

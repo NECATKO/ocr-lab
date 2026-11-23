@@ -174,7 +174,8 @@ def _layer_stream(page: Page, lines: list[LayerLine], page_obj: pikepdf.Dictiona
         if actual_text and ln.block != open_block:
             if open_block is not None:
                 out.append("EMC")
-            whole = " ".join(x.text for x in lines if x.block == ln.block)
+            # kelime parçaları sonlarındaki boşluğu taşır: boşluklar sadeleştirilir
+            whole = " ".join(" ".join(x.text for x in lines if x.block == ln.block).split())
             out.append(f"/Span << /ActualText <FEFF{_utf16_hex(whole)}> >> BDC")
             open_block = ln.block
         x1, y1, x2, y2 = ln.box

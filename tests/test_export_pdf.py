@@ -375,3 +375,64 @@ def test_cli_pdf_exporter_passes_warnings(tmp_path):
     cli.EXPORTERS["pdf"]([page(tmp_path / "yok.pdf")], out, {"warnings": w, "highlight": False, "bold": None})
     assert out.is_file()
     assert any("bulunamadı" in x for x in w)
+
+
+TSV_HEAD = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
+
+
+def tsv_row(n, y1, y2, words) -> list[str]:
+    """Tek tesseract satırı (level 4) ve kelimeleri (level 5); words: (metin, x1, x2)."""
+    x1, x2 = min(w[1] for w in words), max(w[2] for w in words)
+    out = [f"4\t1\t1\t1\t{n}\t0\t{x1}\t{y1}\t{x2 - x1}\t{y2 - y1}\t-1\t"]
+    out += [f"5\t1\t1\t1\t{n}\t{k}\t{a}\t{y1}\t{b - a}\t{y2 - y1}\t95\t{t}" for k, (t, a, b) in enumerate(words, 1)]
+    return out
+
+
+def test_pdf_descartes_lands_on_its_tesseract_word_box(tmp_path):
+    """Satır yapısı kurulamamış blok: aranan kelime tesseract'ın kelime kutusunda vurgulanır."""
+    src = image_pdf(tmp_path / "kaynak.pdf")
+    text = "Batı düşünür Hume, Descartes, Kant, Sartre, Bergson vs."
+    r1 = [("Batı", 100, 180), ("düşünür", 200, 340), ("Hume,", 360, 460), ("Dcscartcs,", 480, 680),
+          ("Kant,", 700, 800), ("Sartre,", 820, 960)]
+    r2 = [("Bergson", 100, 240), ("vs.", 260, 320)]
+    p = page(src, Block("Text", (100, 200, 1000, 300), text, [Line(0, len(text), False)]))
+    p.tess_tsv = "\n".join([TSV_HEAD] + tsv_row(1, 200, 240, r1) + tsv_row(2, 260, 300, r2)) + "\n"
+    out = export_pdf.write_pdf([p], tmp_path / "cikti.pdf")
+    full = extract(out)[0]
+    start = full.index("Descartes")
+    boxes = charboxes(out)[start:start + len("Descartes")]
+    assert "".join(ch for ch, _ in boxes) == "Descartes"
+    # piksel → pt (×0,5, y yukarı): x 240..340, y 680..700; boşluk Kant'a kadar uzandığı için sağda küçük pay
+    for ch, (left, bottom, right, top) in boxes:
+        assert 239 <= left <= right <= 345, (ch, left, right)
+        assert 679 <= bottom <= top <= 701, (ch, bottom, top)
+
+
+def test_pdf_rtl_words_copy_in_logical_order(tmp_path):
+    src = image_pdf(tmp_path / "kaynak.pdf")
+    p = page(src, Block("Text", (100, 200, 1000, 240), "بسم الله الرحمن", [Line(0, 15, False)]))
+    words = [("بسم", 800, 900), ("الله", 650, 760), ("الرحمن", 450, 610)]
+    p.tess_tsv = "\n".join([TSV_HEAD] + tsv_row(1, 200, 240, words)) + "\n"
+    out = export_pdf.write_pdf([p], tmp_path / "cikti.pdf")
+    assert extract(out) == ["بسم الله الرحمن"]
+
+
+def test_pdf_actual_text_has_single_spaces_with_word_layer(tmp_path):
+    src = image_pdf(tmp_path / "kaynak.pdf")
+    p = page(src, Block("Text", (100, 200, 1000, 300), "bir iki üç", [Line(0, 10, False)]))
+    p.tess_tsv = "\n".join([TSV_HEAD] + tsv_row(1, 200, 240, [("bir", 100, 160), ("iki", 180, 240)])
+                           + tsv_row(2, 260, 300, [("üç", 100, 140)])) + "\n"
+    out = export_pdf.write_pdf([p], tmp_path / "cikti.pdf", actual_text=True)
+    assert "bir iki üç".encode("utf-16-be").hex().upper().encode() in _content(out).upper()
+
+
+def test_pdf_arabic_words_inside_turkish_line_keep_spaces(tmp_path):
+    """Türkçe satırdaki Arapça kelimeler sağdan sola çizilir; boşlukları komşu kelimeye yapışmamalı."""
+    src = image_pdf(tmp_path / "kaynak.pdf")
+    text = "Farsça’daki ماه روز sözcüğünden alındığı"
+    p = page(src, Block("Text", (100, 200, 1000, 240), text, [Line(0, len(text), False)]))
+    words = [("Farsça'daki", 100, 280), ("ماه", 300, 360), ("روز", 380, 440), ("sözcüğünden", 460, 660),
+             ("alındığı", 680, 800)]
+    p.tess_tsv = "\n".join([TSV_HEAD] + tsv_row(1, 200, 240, words)) + "\n"
+    out = export_pdf.write_pdf([p], tmp_path / "cikti.pdf")
+    assert extract(out)[0].split() == text.split()
