@@ -125,6 +125,15 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   `.docx`'te italik/kalın yazılıyor, `.txt`'de düz metin oluyor. Tek başına duran yıldıza dokunulmuyor.
 
 ### Değişti
+- **Aranabilir PDF yazıcısı baştan yazıldı (`export_pdf.py`, `pdf_textlayer.py`):** Kaynak PDF sayfası pikepdf ile
+  olduğu gibi kopyalanır; görüntü yeniden kodlanmaz, kalite ve dosya boyutu korunur. Görsel girdide JPEG de yeniden
+  kodlanmaz. Okunan metin sayfanın üstüne satır satır görünmez katman olarak eklenir; satır kutusu yoksa satırlar
+  sayfanın satır aralığına göre blok kutusuna yayılır. Satır sonunda tireyle bölünen kelime aramada ve kopyalamada
+  bütün gelir. Arapça/Osmanlıca satırlar mantıksal sırayla yazılır. Okuma `--dpi` ile varsayılandan farklı
+  çözünürlükte yapıldığında katmanın kayması giderildi. Çıktı, kaynak PDF'in sürümünü korur. Zaten metin katmanı
+  olan kaynak sayfaya ikinci katman eklenmez, uyarı verilir. **Yeni bağımlılık `pikepdf`:** mevcut yerel
+  kurulumlarda `./kurulum.sh` yeniden çalıştırılmalıdır; Colab kurulumu (`runner.setup_env`) `.venv` varken de
+  proje bağımlılıklarını yeniler. pikepdf eksikse yalnız `.pdf` yazılamaz, Word ve öteki biçimler yine yazılır.
 - **Telefon/VPS akışı aranabilir PDF de üretir:** `runner.TELEFON_FORMATLARI` (`docx pdf txt`) telefon defterinin ve
   VPS işinin istediği biçimlerdir. İzleyici Word ile birlikte aranabilir PDF'i de Telegram'a gönderir; 50 MB'tan
   büyük PDF gönderilmez, mesajda "Telegram için çok büyük" notu ve Drive `output/` konumu bildirilir. `ocr_calistir`

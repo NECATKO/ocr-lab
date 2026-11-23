@@ -381,7 +381,9 @@ def test_add_strips_hermes_prefix_avoids_collisions_and_kicks_watcher(tmp_path, 
     assert ocr_ekle.ekle([f], uzak="gdrive:ocr-lab", _run=y) == 0
     assert ["rclone", "copyto", str(f), "gdrive:ocr-lab/input/Kitap s.10_2.pdf"] in y.calls
     assert y.calls[-1][:4] == ["systemctl", "--user", "start", "--no-block"]
-    assert "input/Kitap s.10_2.pdf" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "input/Kitap s.10_2.pdf" in out
+    assert "Word dosyası ve aranabilir PDF Telegram'a" in out
 
 
 def test_add_rejects_non_scans_without_uploading(tmp_path):

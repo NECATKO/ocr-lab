@@ -2,8 +2,8 @@
 """Bir PDF'yi ya da sayfa görselini Drive'daki `ocr-lab/input/` klasörüne koyar ve izleyiciyi hemen dürter.
 
 Hermes Agent (Telegram) bu betiği `ocr-lab` becerisiyle çağırır: kullanıcı Telegram'dan PDF gönderir, Hermes
-dosyayı yerel önbelleğine indirir, bu betik onu Drive'a yükler. Okuma, bildirim ve Word dosyasının Telegram'a
-dönmesi izleyicinin (vps/izleyici.py) işidir. Yalnız standart kitaplık kullanır.
+dosyayı yerel önbelleğine indirir, bu betik onu Drive'a yükler. Okuma, bildirim ve Word dosyası ile aranabilir
+PDF'nin Telegram'a dönmesi izleyicinin (vps/izleyici.py) işidir. Yalnız standart kitaplık kullanır.
 
     python3 ~/ocr-lab/vps/ocr_ekle.py /yol/dosya.pdf [başka.pdf ...]
 """
@@ -91,7 +91,8 @@ def ekle(dosyalar: list[Path], *, uzak: str, _run=calistir_komut) -> int:
     if eklenen:
         durtuldu = izleyiciyi_durt(_run)
         print("Okuma " + ("birkaç dakika içinde başlar" if durtuldu else "en geç birkaç dakika içinde başlar")
-              + ". Başlayınca ve bitince bildirim gelir; Word dosyası Telegram'a ek olarak gönderilir.")
+              + ". Başlayınca ve bitince bildirim gelir; Word dosyası ve aranabilir PDF Telegram'a ek olarak "
+                "gönderilir.")
     return 1 if hatalar else 0
 
 
