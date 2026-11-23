@@ -20,6 +20,7 @@ class Line:
     start: int
     end: int
     hyphen: bool  # satır sonuna tire EKLENECEK (metinde yok)
+    box: tuple[int, int, int, int] | None = None  # (x1, y1, x2, y2) piksel, okunan görüntüde; kurulamadıysa None
 
 
 @dataclass
@@ -61,7 +62,7 @@ def page_from_json(s: str) -> Page:
     blocks = []
     for b in d.pop("blocks"):
         bbox = b.pop("bbox")
-        lines = [Line(**x) for x in b.pop("lines")]
+        lines = [Line(**{**x, "box": tuple(x["box"]) if x.get("box") is not None else None}) for x in b.pop("lines")]
         marks = [Mark(**x) for x in b.pop("marks")]
         blocks.append(Block(bbox=tuple(bbox) if bbox is not None else None, lines=lines, marks=marks, **b))
     return Page(blocks=blocks, **d)

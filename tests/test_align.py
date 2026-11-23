@@ -215,3 +215,16 @@ def test_banded_align_map_matches_full_levenshtein_on_random_strings():
         assert dist == distance(a, b)
         assert len(amap) == len(a) + 1 and amap[-1] == len(b)
         assert amap == sorted(amap) and 0 <= amap[0] <= len(b)
+
+
+def test_apply_line_structure_sets_line_boxes():
+    b = Block("Text", (0, 0, 400, 100), "birinci satır ikinci satır", [], False)
+    tl = [TessLine((10, 10, 300, 30), "birinci satır"), TessLine((10, 40, 200, 60), "ikinci satır")]
+    assert apply_line_structure(b, tl) is None
+    assert [l.box for l in b.lines] == [(10, 10, 300, 30), (10, 40, 200, 60)]
+
+
+def test_apply_line_structure_fallback_has_no_box():
+    b = Block("Text", (0, 0, 400, 100), "birinci satır ikinci satır", [], False)
+    assert apply_line_structure(b, []) is not None
+    assert b.lines == [Line(0, len(b.text), False)] and b.lines[0].box is None

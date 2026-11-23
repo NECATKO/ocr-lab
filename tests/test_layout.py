@@ -281,3 +281,18 @@ def test_parse_output_respects_custom_and_none_resize():
     rh, rw = smart_resize(4678, 3306, 28, 3136, 1_000_000)
     assert scaled.bbox == (round(100 * 3306 / rw), round(200 * 4678 / rh),
                            round(300 * 3306 / rw), round(400 * 4678 / rh))
+
+
+def test_page_json_roundtrip_keeps_line_box():
+    p = Page("a.pdf", 1, 10, 10, "dots.mocr", "duzen",
+             [Block("Text", (0, 0, 1, 1), "x y", [Line(0, 1, False, (1, 2, 30, 40)), Line(2, 3, False)])])
+    q = page_from_json(page_to_json(p))
+    assert q == p and q.blocks[0].lines[0].box == (1, 2, 30, 40)
+    assert isinstance(q.blocks[0].lines[0].box, tuple) and q.blocks[0].lines[1].box is None
+
+
+def test_old_json_without_line_box_loads():
+    p = Page("a.pdf", 1, 10, 10, "dots.mocr", "duzen", [Block("Text", None, "x", [Line(0, 1, False)])])
+    d = json.loads(page_to_json(p))
+    del d["blocks"][0]["lines"][0]["box"]
+    assert page_from_json(json.dumps(d)).blocks[0].lines[0].box is None

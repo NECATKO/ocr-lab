@@ -152,6 +152,8 @@ def apply_line_structure(block: Block, tlines: list[TessLine]) -> str | None:
         elif long := _overlong(lines):
             reason = long
         else:
+            for line, tl in zip(lines, tlines):       # rebreak her TessLine için bir satır döndürür
+                line.box = tl.box
             block.lines = lines
             median_h = statistics.median(max(1, l.box[3] - l.box[1]) for l in tlines)
             indent_px = max(INDENT_PX, round(median_h))
