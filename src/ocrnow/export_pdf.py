@@ -4,16 +4,26 @@ Kaynak PDF sayfası pikepdf ile kopyalanır; içerik akışlarına ve görüntü
 akışlar eklenir (başa `q`, sona `Q` + katman). Görsel kaynaktan yeni sayfa kurulur (JPEG yeniden kodlanmaz).
 Katman glifsiz bir Type0/Identity-H fonttur: ToUnicode CMap sayesinde Türkçe/Arapça metin seçilir, aranır, kopyalanır;
 `3 Tr` ile görünmez. Satır yerleşimi `pdf_textlayer.layer_lines`'tan gelir.
+
+pikepdf yoksa (yeni bağımlılık; kurulumu yenilenmemiş eski .venv) modül yine yüklenir: yalnız `write_pdf` hata verir,
+öteki biçimler yazılmaya devam eder.
 """
+from __future__ import annotations
+
 import unicodedata
 import zlib
 from contextlib import ExitStack
 from pathlib import Path
 
-import pikepdf
 import pypdfium2 as pdfium
-from pikepdf import Array, Dictionary, Name
 from PIL import Image
+
+try:
+    import pikepdf
+    from pikepdf import Array, Dictionary, Name
+except ImportError as _e:   # yalnız .pdf yazılamaz; cli ve öteki biçimler etkilenmez
+    pikepdf = None
+    _PIKEPDF_ERROR = f"pikepdf kurulu değil ({_e}); kurulumu yenileyin: ./kurulum.sh"
 
 from ocrnow import pages as page_loader
 from ocrnow import paths
@@ -258,6 +268,8 @@ def _version_key(version: str) -> tuple[int, ...]:
 def write_pdf(pages: list[Page], out: Path, warnings: list[str] | None = None, *,
               actual_text: bool = False) -> Path:
     """Sayfaları sırayla orijinal görünümüyle yazar; okunan her satır görüntüdeki yerine görünmez metin olarak oturur."""
+    if pikepdf is None:
+        raise ModuleNotFoundError(_PIKEPDF_ERROR)
     warnings = warnings if warnings is not None else []
     with ExitStack() as stack:
         pdf = stack.enter_context(pikepdf.new())

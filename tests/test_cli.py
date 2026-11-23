@@ -572,3 +572,24 @@ def test_report_is_written_if_output_directory_cannot_be_opened(fake_env, tmp_pa
     errors = data["isler"][0]["yazma_hatalari"]
     assert [error.split()[0] for error in errors] == ["k.docx", "k.txt"]
     assert paths.DOCS_OUT.read_text() == "bu yol zaten dosya"
+
+
+def test_missing_pikepdf_only_fails_pdf_format(tmp_path, monkeypatch):
+    """pikepdf'siz eski bir .venv'de (git pull, yeniden kurulum yok) CLI açılır; yalnız .pdf yazılamaz."""
+    import importlib
+
+    import ocrnow
+    for name in ("ocrnow.cli", "ocrnow.export_pdf"):
+        monkeypatch.delitem(sys.modules, name)
+        monkeypatch.delattr(ocrnow, name.split(".")[1])              # `from ocrnow import x` önce buna bakar
+    monkeypatch.setitem(sys.modules, "pikepdf", None)               # import pikepdf → ImportError
+    fresh = importlib.import_module("ocrnow.cli")
+    assert fresh is not cli and fresh.export_pdf is not export_pdf
+    monkeypatch.setattr(paths, "DOCS_OUT", tmp_path / "belgeler")
+    page = Page(source=str(tmp_path / "k.png"), index=1, width=10, height=10, engine="dots.mocr", mode="duzen",
+                blocks=[])
+    settings = {"highlight": False, "bold": None}
+    written, errors = fresh._write_job("k", [page], ["docx", "txt", "pdf"], settings, [])
+    assert [p.name for p in written] == ["k.docx", "k.txt"] and all(p.is_file() for p in written)
+    assert len(errors) == 1 and errors[0].startswith("k.pdf yazılamadı (") and "pikepdf" in errors[0]
+    assert not (tmp_path / "belgeler" / "k.pdf").exists()

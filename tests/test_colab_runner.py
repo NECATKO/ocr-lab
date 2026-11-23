@@ -258,3 +258,42 @@ def test_phone_flow_only_processes_listed_files(tmp_path):
 def test_topic_parser():
     assert runner.konu_ayikla("# a\n\n  k-1 \nk-2") == "k-1"
     assert runner.konu_ayikla("# kapalı\n") == ""
+
+
+def _setup_env_commands(tmp_path, monkeypatch, *, venv_exists):
+    """setup_env'i sahte komutlarla çalıştırır, çalıştırılan komutları döndürür."""
+    root = tmp_path / "local"
+    (root / ".venv/bin").mkdir(parents=True)
+    (root / "ayarlar").mkdir()
+    if venv_exists:
+        (root / ".venv/bin/ocr-now").write_text("")
+    uv = tmp_path / "uv"
+    uv.write_text("")
+    ran = []
+
+    def fake_run(cmd, *a, **k):
+        ran.append(cmd)
+        return runner.subprocess.CompletedProcess(cmd, 0, stdout="NVIDIA L4, 23034 MiB\n", stderr="")
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner.shutil, "which", lambda name: str(uv))
+    monkeypatch.setattr(runner, "_has_tesseract_tur", lambda: True)
+    runner.setup_env(tmp_path / "drive", model="tesseract", local_root=root, local_hf=tmp_path / "hf")
+    return ran, root
+
+
+def _pip_installs(ran, root):
+    return [c for c in ran if isinstance(c, list) and c[:3] == ["uv", "pip", "install"] and c[-1] == str(root)]
+
+
+def test_setup_env_refreshes_dependencies_of_existing_venv(tmp_path, monkeypatch):
+    """git pull yeni bağımlılık (ör. pikepdf) getirebilir: .venv varken de proje yeniden kurulur."""
+    ran, root = _setup_env_commands(tmp_path, monkeypatch, venv_exists=True)
+    assert not [c for c in ran if isinstance(c, list) and c[:2] == ["uv", "venv"]]
+    assert len(_pip_installs(ran, root)) == 1
+
+
+def test_setup_env_creates_missing_venv(tmp_path, monkeypatch):
+    ran, root = _setup_env_commands(tmp_path, monkeypatch, venv_exists=False)
+    venvs = [i for i, c in enumerate(ran) if isinstance(c, list) and c[:2] == ["uv", "venv"]]
+    installs = [i for i, c in enumerate(ran) if c in _pip_installs(ran, root)]
+    assert len(venvs) == 1 and len(installs) == 1 and venvs[0] < installs[0]

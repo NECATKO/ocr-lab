@@ -141,14 +141,15 @@ def setup_env(
     if local_bin not in os.environ.get("PATH", "").split(":"):
         os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
 
-    # Ana Python ortamı (.venv)
+    # Ana Python ortamı (.venv). Proje her seferinde yeniden kurulur: git pull yeni bir bağımlılık (ör. pikepdf)
+    # getirmiş olabilir; her şey kuruluysa uv bunu birkaç saniyede geçer.
     if not (root / ".venv/bin/ocr-now").exists():
         print("\n== Ana ortam (.venv) kuruluyor...")
         subprocess.run(["uv", "venv", str(root / ".venv"), "--python", "3.12", "-q"], check=True)
-        subprocess.run(
-            ["uv", "pip", "install", "-q", "--python", str(root / ".venv/bin/python"), "-e", str(root)],
-            check=True,
-        )
+    subprocess.run(
+        ["uv", "pip", "install", "-q", "--python", str(root / ".venv/bin/python"), "-e", str(root)],
+        check=True,
+    )
 
     # Hugging Face önbelleği: Drive'daki .tar arşivinden yerel SSD'ye aç (symlink'leri korur)
     hf_dir.mkdir(parents=True, exist_ok=True)
