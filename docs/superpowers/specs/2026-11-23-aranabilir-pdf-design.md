@@ -184,3 +184,22 @@ Yapıştırılan metin **alıntıya hazır** olmalı. Satır sonunda tireyle bö
 - Glifsiz fontun tam yapısı. Bugünkü yapı yeniden kullanılabilir ya da küçük bir TrueType gömülebilir.
 - Görsel girdilerin gömülme biçimi.
 - Modül yapısı. Mevcut `export_pdf.py` yeniden yazılır, eski elle yazılmış PDF kodu kaldırılır.
+
+## Ek (2026-11-23): Kelime düzeyinde yerleşim
+
+**Neden:** Kullanıcı Windows'ta deneme yaptı. Satır kutusu kurulamayan bloklarda (gerçek taramada 188 bloğun 25'i)
+arama vurgusu kelimenin bir satır altına kaydı. Bu bloklarda tesseract bir satırı kaçırıyor ya da kenardaki süs
+okumayı bozuyor; metin bloğa yaklaşık yayıldığı için kelimeler satır içinde kayıyordu. Kopyalama ve tireli kelime
+birleştirme doğru çalıştı. Kullanıcı satırı esnetmek yerine kelime kelime yerleştirmeyi seçti.
+
+**Karar:**
+- Ana modelin her kelimesi, tesseract TSV'deki karşılık gelen kelime kutusuna (level 5) konur.
+- Eşleşme, blok metni ile bloğa atanmış tesseract kelimeleri arasında karakter düzeyinde Levenshtein hizalamasıyla
+  (`align._align_map`) bulunur.
+- Bu yerleşim, kutusu olan ve olmayan bütün metin bloklarında kullanılır. Word çıktısı değişmez.
+- Tireyle bölünmüş kelime bütün olarak yalnız ilk satırdaki kutuya yazılır.
+- Eşleşmeyen kelimeler komşu kelimelerin arasına yerleştirilir. Tesseract bütün bir satırı kaçırdıysa, iki satırın
+  arasına sentetik bir satır kurulur.
+- Hiç tesseract kelimesi olmayan bloklar eski yayma yöntemiyle yerleştirilir.
+- Kopyada kelimeler arası boşluk korunur: her kelimenin sonuna bir boşluk eklenir ve kutusu sonraki kelimeye kadar
+  uzatılır.
