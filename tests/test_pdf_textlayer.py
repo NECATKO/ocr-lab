@@ -383,3 +383,77 @@ def test_zero_width_tesseract_box_still_written():
     p = tess_page(flowing("bir iki", (100, 100, 900, 140)), rows=[(100, 140, tess)])
     last = layer_lines(p)[-1]
     assert last.text == "iki" and last.box[2] > last.box[0]
+
+
+def test_narrow_gap_group_stays_between_neighbours():
+    tess = [("bir", 100, 160), ("dört", 165, 240)]
+    p = tess_page(flowing("bir iki üç dört", (100, 100, 900, 140)), rows=[(100, 140, tess)])
+    out = layer_lines(p)
+    assert [t.text.strip() for t in out] == ["bir", "iki", "üç", "dört"]
+    for t in out[1:3]:
+        assert 160 <= t.box[0] < t.box[2] <= 165, t
+    assert out[3].box[0] == 165
+    boxes = [t.box for t in out]
+    assert all(b1[2] <= b2[0] for b1, b2 in zip(boxes, boxes[1:]))   # çakışma yok, sıra soldan sağa
+
+
+def test_zero_gap_group_gets_room_without_overlap():
+    tess = [("bir", 100, 160), ("dört", 160, 240)]
+    p = tess_page(flowing("bir iki dört", (100, 100, 900, 140)), rows=[(100, 140, tess)])
+    out = layer_lines(p)
+    assert [t.text.strip() for t in out] == ["bir", "iki", "dört"]
+    boxes = [t.box for t in out]
+    assert all(x2 > x1 for x1, _, x2, _ in boxes)
+    assert all(b1[2] <= b2[0] for b1, b2 in zip(boxes, boxes[1:]))
+
+
+def test_word_beside_neighbour_never_leaves_block():
+    tess1, tess2 = words_at("bir iki", x=100), words_at("dört beş")   # "iki" blok kenarına dayalı; "üç" okunmamış
+    bbox = (100, 100, 240, 203)
+    p = tess_page(flowing("bir iki üç dört beş", bbox), rows=[(100, 140, tess1), (163, 203, tess2)])
+    out = layer_lines(p)
+    uc = [t for t in out if t.text.strip() == "üç"][0]
+    assert bbox[0] <= uc.box[0] < uc.box[2] <= bbox[2], uc
+
+
+def boxed_block(text, rows, bbox):
+    """apply_line_structure'ın kurduğu gibi satır kutulu blok: rows = (y1, y2, words_at(...))."""
+    lines, pos = [], 0
+    for y1, y2, words in rows:
+        piece = " ".join(w for w, _, _ in words)
+        lines.append(Line(pos, pos + len(piece), False, (words[0][1], y1, words[-1][2], y2)))
+        pos += len(piece) + 1
+    return Block("Text", bbox, text, lines)
+
+
+def test_boxed_block_with_tsv_uses_word_boxes():
+    r1, r2 = words_at("bu senâkâr geldi"), words_at("ve gitti")
+    rows = [(100, 140, r1), (163, 203, r2)]
+    p = tess_page(boxed_block("bu senâkâr geldi ve gitti", rows, (100, 100, 900, 203)), rows=rows)
+    out = layer_lines(p)
+    assert [t.text for t in out] == ["bu ", "senâkâr ", "geldi", "ve ", "gitti"]
+    assert [t.box[0] for t in out] == [x1 for _, x1, _ in r1 + r2]
+
+
+def test_boxed_block_with_poor_word_match_keeps_line_boxes():
+    """Satır kutuları kesin ama kelimelerin yarısından azı tesseract'la eşleşiyor: satır satır eski yol."""
+    r1 = [("xq", 100, 140), ("zzkw", 160, 240), ("geldi", 260, 360)]
+    r2 = [("ve", 100, 140), ("qqqqq", 160, 260)]
+    text = "bu senâkâr geldi ve gitti"
+    b = Block("Text", (100, 100, 900, 203), text,
+              [Line(0, 16, False, (100, 100, 360, 140)), Line(17, 25, False, (100, 163, 260, 203))])
+    p = tess_page(b, rows=[(100, 140, r1), (163, 203, r2)])
+    out = layer_lines(p)
+    assert [(t.text, t.box) for t in out] == [("bu senâkâr geldi", (100, 100, 360, 140)),
+                                              ("ve gitti", (100, 163, 260, 203))]
+
+
+def test_missing_last_line_never_wider_than_block():
+    r1 = words_at("Kendimizi dahi başladık", x=100, cw=18)
+    text = "Kendimizi dahi başladık kendi tarihimizi de öğrenebildik."
+    bbox = (100, 100, 500, 205)
+    ref, ref_rows = reference_rows()
+    p = tess_page(flowing(text, bbox), ref, rows=[(100, 140, r1)] + ref_rows)
+    last = [t for t in layer_lines(p) if t.block == 0][3:]
+    assert [t.text.strip() for t in last] == ["kendi", "tarihimizi", "de", "öğrenebildik."]
+    assert all(bbox[0] <= t.box[0] < t.box[2] <= bbox[2] for t in last), last

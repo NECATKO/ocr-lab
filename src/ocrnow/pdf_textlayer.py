@@ -20,7 +20,9 @@ PITCH_PER_HEIGHT = 1.5      # sayfada ardışık satır yoksa satır aralığı 
 MAX_GAP = 3                 # bundan (× satır yüksekliği) büyük üst-üste aralık satır aralığı sayılmaz (sütun/boşluk)
 PAGE_MARGIN = 0.05          # blok kutusu da yoksa sayfanın her kenarından bırakılan pay
 MISSING_ROW = 1.5           # ardışık eşleşen iki kelimenin satır üstleri arası > bu × satır aralığı: satır kaçmış
-NO_WORDS = frozenset({"Picture", "Table"})   # kelime yerleşimi yapılmayan kategoriler
+NO_WORDS = frozenset({"Picture", "Table"})
+MIN_MATCHED = 0.5           # satır kutulu blokta eşleşen kelime payı bundan azsa satır satır yerleşir
+MIN_GAP = 2.0               # dar boşluğa konan kelime grubunun en küçük genişliği, piksel   # kelime yerleşimi yapılmayan kategoriler
 _WORD = re.compile(r"\S+")
 
 
@@ -122,8 +124,13 @@ class Word:
     """Yerleştirilmiş bir model kelimesi (katmana yazılmadan önce)."""
     text: str
     box: tuple[float, float, float, float]   # piksel (x1, y1, x2, y2), y aşağı
-    row: object                              # tesseract satırının bloktaki sırası ya da ("sentetik", n)
-    how: str     # "tess" (kendi kutusu) | "ara" | "kenar" (komşusunun yanında) | "okunamayan" (satırı) | "sentetik"
+    # Satır kimliği: tesseract satırının bloktaki sırası (int; place_words'ün `rows`/`rtl` sözlüklerinin anahtarı) ya
+    # da ("sentetik", n). Eşleşen kelimeler ve gruplanacak komşular (P/N) her zaman int satırdadır; sentetik satırlar
+    # yalnız grup kelimelerine verilir ve `rows`'ta aranmaz. _word_lines yalnız eşitliğe bakar (aynı satır mı).
+    row: int | tuple[str, int]
+    # Kelimenin nasıl yerleştiği: "tess" (kendi kutusu) | "ara" | "kenar" (komşusunun yanında) | "okunamayan" (satırı)
+    # | "sentetik". Yerleşime etkisi yoktur; yalnız ölçüm ve hata ayıklama içindir.
+    how: str
 
 
 def _rtl_text(text: str) -> bool:
@@ -286,14 +293,16 @@ def _rematch(spans: list[str], owners: list[dict[int, list[int]] | None], flat: 
 FULL_ROW = 0.8              # tahmini genişlik satırın bu kadarını aşıyorsa metin bütün satıra yayılır (iki yana yaslı)
 
 
-def _fit(x1: float, x2: float, need: float, rtl: bool) -> tuple[float, float]:
+def _fit(x1: float, x2: float, need: float, rtl: bool, lo: float, hi: float) -> tuple[float, float]:
     """Satırdaki metnin yatay aralığı: tahmini genişlik (need) satırı neredeyse dolduruyorsa bütün satır, değilse
-    satırın başından (sağdan sola yazıda sağından) need kadar; satır need'den kısaysa need kadar uzatılır."""
-    if need >= FULL_ROW * (x2 - x1):
-        width = max(need, x2 - x1)
-    else:
-        width = need
-    return (x2 - width, x2) if rtl else (x1, x1 + width)
+    satırın başından (sağdan sola yazıda sağından) need kadar; satır need'den kısaysa need kadar uzatılır. Sonuç hiçbir
+    zaman [lo, hi] (blok kutusu) dışına taşmaz."""
+    width = max(need, x2 - x1) if need >= FULL_ROW * (x2 - x1) else need
+    if rtl:
+        start = min(x2, hi)
+        return max(lo, start - width), start
+    start = max(x1, lo)
+    return start, min(hi, start + width)
 
 
 def _matched(spans: list[str], owners: list[dict[int, list[int]] | None], flat: Flat,
@@ -347,6 +356,8 @@ def place_words(block: Block, tlines: list[TessLine], page: Page, lh: float, pit
     _rematch(spans, owners, flat)
     if not any(owners):
         return None
+    if _boxed(block) and sum(o is not None for o in owners) < MIN_MATCHED * len(owners):
+        return None     # satır kutuları kesin, kelime eşleşmesi zayıf: satır satır yerleşim daha güvenilir
     rows = {li: tl.box for li, tl in enumerate(tlines)}
     placed = _matched(spans, owners, flat, rows)
     matched_rows = {w.row for w in placed if w is not None}
@@ -367,7 +378,7 @@ def place_words(block: Block, tlines: list[TessLine], page: Page, lh: float, pit
         for top, piece in zip(tops, _split_words(" ".join(group), len(tops))):
             ws = piece.split()
             synthetic += 1
-            a, b = _fit(x1, x2, (len(piece) + 1) * cw, is_rtl) if natural and top == tops[-1] else (x1, x2)
+            a, b = _fit(x1, x2, (len(piece) + 1) * cw, is_rtl, x1, x2) if natural and top == tops[-1] else (x1, x2)
             out += [Word(w, (wa, top, wb, top + lh), ("sentetik", synthetic), "sentetik")
                     for w, (wa, wb) in zip(ws, _lay(ws, a, b, is_rtl, False, False))]
         return out
@@ -377,17 +388,23 @@ def place_words(block: Block, tlines: list[TessLine], page: Page, lh: float, pit
         out = []
         for li, piece in zip(free, _split_words(" ".join(group), len(free))):
             ws = piece.split()
-            a, b = _fit(rows[li][0], rows[li][2], (len(piece) + 1) * cw, rtl[li])
+            a, b = _fit(rows[li][0], rows[li][2], (len(piece) + 1) * cw, rtl[li], left, right)
             out += on_row(ws, li, a, b, rtl[li], False, False, "okunamayan")
         return out
 
     def beside(group, ref, after, room, need):
         """Grubu ref'in satırında ondan sonra (after) ya da önce, satırın yönüne göre dizer."""
         is_rtl = rtl[ref.row]
-        width = min(need, room)
-        width = need if width < cw else width
-        x1, _, x2, _ = ref.box
-        if after != is_rtl:          # sağa doğru
+        rightward = after != is_rtl
+        width = max(min(need, room), MIN_GAP)   # blok kutusunun içinde kalır; dar olabilir (Tz sıkıştırır)
+        x1, y1, x2, y2 = ref.box
+        if room < MIN_GAP:                      # komşu blok kenarına dayalı: kırpılarak kenarın içinde yer açılır
+            if rightward:
+                x2 = max(x1 + 1, right - MIN_GAP)
+            else:
+                x1 = min(x2 - 1, left + MIN_GAP)
+            ref.box = (x1, y1, x2, y2)
+        if rightward:
             return on_row(group, ref.row, x2, x2 + width, is_rtl, after, not after, "kenar")
         return on_row(group, ref.row, x1 - width, x1, is_rtl, after, not after, "kenar")
 
@@ -413,10 +430,18 @@ def place_words(block: Block, tlines: list[TessLine], page: Page, lh: float, pit
         first_row = prev.row + 1 if prev else 0
         free = [li for li in range(first_row, nxt.row if nxt else len(rows)) if li not in matched_rows]
         if prev and nxt and prev.row == nxt.row:                                   # satır içindeki boşluk
+            # grup dar da olsa komşuların arasında kalır (Tz sıkıştırır): komşu kutuya taşan metin pdfium'da
+            # kopya sırasını bozar. Boşluk yoksa komşulardan biri kırpılarak yer açılır.
             is_rtl = rtl[prev.row]
             a, b = (nxt.box[2], prev.box[0]) if is_rtl else (prev.box[2], nxt.box[0])
-            if b - a < cw:
-                a, b = a - need / 2, b + need / 2
+            if b - a < MIN_GAP:
+                left_word, right_word = (nxt, prev) if is_rtl else (prev, nxt)
+                if left_word.box[2] - left_word.box[0] >= right_word.box[2] - right_word.box[0]:
+                    a = b - MIN_GAP
+                    left_word.box = (left_word.box[0], left_word.box[1], min(left_word.box[2], a), left_word.box[3])
+                else:
+                    b = a + MIN_GAP
+                    right_word.box = (max(right_word.box[0], b), *right_word.box[1:])
             new = on_row(group, prev.row, a, b, is_rtl, True, True, "ara")
         elif free and (bool(prev and nxt) or (room_after if prev else room_before) < need):   # okunamayan satır
             new = unread_rows(group, free)

@@ -436,3 +436,13 @@ def test_pdf_arabic_words_inside_turkish_line_keep_spaces(tmp_path):
     p.tess_tsv = "\n".join([TSV_HEAD] + tsv_row(1, 200, 240, words)) + "\n"
     out = export_pdf.write_pdf([p], tmp_path / "cikti.pdf")
     assert extract(out)[0].split() == text.split()
+
+
+def test_pdf_narrow_gap_keeps_copy_order(tmp_path):
+    """Tesseract iki kelimeyi okumamış ve aradaki boşluk dar: grup komşu kutulara taşmamalı, kopya sırası korunur."""
+    src = image_pdf(tmp_path / "kaynak.pdf")
+    text = "bir iki üç dört"
+    p = page(src, Block("Text", (100, 200, 1000, 240), text, [Line(0, len(text), False)]))
+    p.tess_tsv = "\n".join([TSV_HEAD] + tsv_row(1, 200, 240, [("bir", 100, 160), ("dört", 165, 240)])) + "\n"
+    out = export_pdf.write_pdf([p], tmp_path / "cikti.pdf")
+    assert extract(out)[0].split() == text.split()
