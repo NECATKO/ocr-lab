@@ -70,7 +70,7 @@ def test_unboxed_block_spread_inside_bbox():
 def test_unboxed_block_with_empty_lines_list():
     b = Block("Text", (100, 100, 500, 400), "bir iki üç", [])
     out = layer_lines(page_of(b))
-    assert [t.text for t in out] == ["bir iki üç"]
+    assert " ".join(t.text for t in out) == "bir iki üç"   # 300 px kutu ≈ 10 satır; kelime sayısı kadar satır
 
 
 def test_unboxed_block_without_bbox_uses_page_margin():
@@ -82,7 +82,9 @@ def test_unboxed_block_without_bbox_uses_page_margin():
 
 def test_mixed_boxed_and_unboxed_lines_use_fallback():
     b = Block("Text", (0, 0, 100, 50), "bir iki", [Line(0, 3, False, B1), Line(4, 7, False)])
-    assert texts(page_of(b)) == ["bir iki"]
+    out = layer_lines(page_of(b))
+    assert [t.text for t in out] == ["bir", "iki"]          # 50 px kutu, 20 px satır → 2 satır
+    assert out[0].box[1] == 0 and out[1].box[3] == 50
 
 
 def test_picture_and_empty_blocks_skipped():
@@ -95,4 +97,44 @@ def test_picture_and_empty_blocks_skipped():
 
 def test_table_uses_plain_text():
     t = Block("Table", (0, 0, 400, 100), "<table><tr><td>a</td><td>b</td></tr></table>", [])
-    assert texts(page_of(t)) == ["a b"]
+    assert " ".join(texts(page_of(t))) == "a b"
+
+
+def reference_block(n=3, top=0, pitch=63, h=42):
+    """Satır kutulu bir blok: satır aralığı (pitch) ve satır yüksekliği (h) sayfadan buradan tahmin edilir."""
+    words = [f"s{i}" for i in range(n)]
+    text, lines, pos = " ".join(words), [], 0
+    for i, w in enumerate(words):
+        lines.append(Line(pos, pos + len(w), False, (0, top + i * pitch, 400, top + i * pitch + h)))
+        pos += len(w) + 1
+    return Block("Text", (0, top, 400, top + (n - 1) * pitch + h), text, lines)
+
+
+def test_unboxed_two_line_block_gets_two_rows_spread_over_bbox():
+    bbox = (100, 500, 900, 500 + 2 * 63)
+    unboxed = Block("Text", bbox, "bir iki üç dört beş altı yedi sekiz", [Line(0, 35, False)])
+    mine = [t for t in layer_lines(page_of(reference_block(), unboxed)) if t.block == 1]
+    assert len(mine) == 2
+    mid = (bbox[1] + bbox[3]) / 2
+    assert mine[0].box[1] == bbox[1] and mine[0].box[3] <= mid
+    assert mid <= mine[1].box[1] < mine[1].box[3] <= bbox[3]
+    assert " ".join(t.text for t in mine) == unboxed.text
+
+
+def test_unboxed_paragraph_rows_follow_page_line_pitch():
+    text = " ".join(["kelime"] * 120)
+    bbox = (100, 300, 900, 300 + 12 * 63 + 42)       # 13 basılı satır
+    unboxed = Block("Text", bbox, text, [Line(0, len(text), False)])
+    mine = [t for t in layer_lines(page_of(reference_block(), unboxed)) if t.block == 1]
+    assert len(mine) == 13
+    tops = [t.box[1] for t in mine]
+    assert all(abs((b - a) - 63) < 1 for a, b in zip(tops, tops[1:]))
+    assert all(t.box[3] - t.box[1] <= 42 for t in mine)
+    assert mine[-1].box[3] <= bbox[3]
+    assert " ".join(t.text for t in mine) == text
+
+
+def test_unboxed_rows_never_exceed_word_count():
+    b = Block("Text", (100, 100, 500, 1000), "tek", [])
+    out = layer_lines(page_of(reference_block(), b))
+    assert [t.text for t in out if t.block == 1] == ["tek"]
