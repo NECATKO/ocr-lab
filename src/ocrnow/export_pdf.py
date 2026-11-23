@@ -231,14 +231,28 @@ def _source_page(stack: ExitStack, sources: dict[Path, list[tuple[pikepdf.Pdf, s
     return handle.pages[index - 1]
 
 
-def _has_text(path: Path, index: int) -> bool:
+def _text_doc(stack: ExitStack, docs: dict[Path, pdfium.PdfDocument], src: Path) -> pdfium.PdfDocument:
+    """Metin denetimi için kaynak pdfium ile bir kez açılır; yazım bitince kapanır."""
+    if src not in docs:
+        with page_loader._PDFIUM_LOCK:
+            docs[src] = pdfium.PdfDocument(str(src))
+        stack.callback(_close_locked, docs[src])
+    return docs[src]
+
+
+def _close_locked(doc: pdfium.PdfDocument) -> None:
     with page_loader._PDFIUM_LOCK:
-        doc = pdfium.PdfDocument(str(path))
-        try:
-            text = doc[index - 1].get_textpage().get_text_range()
-        finally:
-            doc.close()
+        doc.close()
+
+
+def _has_text(doc: pdfium.PdfDocument, index: int) -> bool:
+    with page_loader._PDFIUM_LOCK:
+        text = doc[index - 1].get_textpage().get_text_range()
     return sum(not c.isspace() for c in text) >= TEXT_MIN_CHARS
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split(".") if part.isdigit())
 
 
 def write_pdf(pages: list[Page], out: Path, warnings: list[str] | None = None, *,
@@ -249,6 +263,7 @@ def write_pdf(pages: list[Page], out: Path, warnings: list[str] | None = None, *
         pdf = stack.enter_context(pikepdf.new())
         font = _HiddenFont(pdf)
         sources: dict[Path, list[tuple[pikepdf.Pdf, set[int]]]] = {}
+        text_docs: dict[Path, pdfium.PdfDocument] = {}
         for page in pages:
             src = Path(page.source)
             layer = True
@@ -260,7 +275,7 @@ def write_pdf(pages: list[Page], out: Path, warnings: list[str] | None = None, *
             elif src.suffix.lower() == ".pdf":
                 pdf.pages.append(_source_page(stack, sources, src, page.index))
                 target = pdf.pages[-1]
-                if _has_text(src, page.index):
+                if _has_text(_text_doc(stack, text_docs, src), page.index):
                     layer = False
                     warnings.append(f"pdf: {src.name} s. {page.index} zaten metin katmanı içeriyor; "
                                     "aranabilir katman eklenmedi")
@@ -270,11 +285,16 @@ def write_pdf(pages: list[Page], out: Path, warnings: list[str] | None = None, *
             lines = layer_lines(page) if layer and page.width > 0 and page.height > 0 else []
             if lines:
                 name = font.attach(target.obj)
+                # Kaynak akışlarının q/Q'sunun dengeli olduğu varsayılır; katman böylece varsayılan durumla başlar
                 target.contents_add(pdf.make_stream(b"q\n"), prepend=True)
                 target.contents_add(_flate(pdf, b"Q\n" + _layer_stream(
                     page, lines, target.obj, font, name, actual_text)))
         font.finish()
+        # Çıktı sürümü en az en yüksek kaynak sürümü olur; kaynağın sürüm gerektiren özellikleri geçerli kalır
+        version = max((h.pdf_version for hs in sources.values() for h, _ in hs), key=_version_key,
+                      default=pdf.pdf_version)
         with paths.atomic_output(out) as tmp:
             # Kaynak akışlar olduğu gibi kopyalansın: açılıp yeniden sıkıştırılmaz
-            pdf.save(tmp, compress_streams=False, stream_decode_level=pikepdf.StreamDecodeLevel.none)
+            pdf.save(tmp, compress_streams=False, stream_decode_level=pikepdf.StreamDecodeLevel.none,
+                     min_version=version)
     return out

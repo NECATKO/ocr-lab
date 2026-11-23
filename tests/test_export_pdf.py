@@ -52,6 +52,31 @@ def text_pdf(path: Path) -> Path:
     return path
 
 
+def inherited_pdf(path: Path) -> Path:
+    """Elle yazılmış PDF: MediaBox [0 0 600 800], /Rotate 90 ve Resources (görüntü) /Pages düğümünde, sayfada değil."""
+    pixels = bytes(range(0, 256, 64)) * 2      # 4×2 gri
+    content = b"q 600 0 0 800 0 0 cm /Im1 Do Q"
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] /Rotate 90 "
+        b"/Resources << /XObject << /Im1 5 0 R >> >> >>",
+        b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>",
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        b"<< /Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceGray "
+        b"/BitsPerComponent 8 /Length %d >>\nstream\n" % len(pixels) + pixels + b"\nendstream",
+    ]
+    data, offsets = b"%PDF-1.4\n", []
+    for i, obj in enumerate(objs, 1):
+        offsets.append(len(data))
+        data += b"%d 0 obj\n" % i + obj + b"\nendobj\n"
+    xref = len(data)
+    data += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    data += b"".join(b"%010d 00000 n \n" % off for off in offsets)
+    data += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    path.write_bytes(data)
+    return path
+
+
 def block(text: str, box, lines=None) -> Block:
     return Block("Text", box, text, lines if lines is not None else [Line(0, len(text), False, box)])
 
@@ -209,6 +234,73 @@ def test_pdf_same_source_page_twice_gets_own_layer(tmp_path):
     out = export_pdf.write_pdf([page(src, block("birinci kopya", BOX)), page(src, block("ikinci kopya", BOX))],
                                tmp_path / "cikti.pdf")
     assert extract(out) == ["birinci kopya", "ikinci kopya"]
+
+
+def test_pdf_keeps_source_pdf_version(tmp_path):
+    src = image_pdf(tmp_path / "kaynak.pdf")
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        pdf.save(src, min_version="1.7")
+    out = export_pdf.write_pdf([page(src)], tmp_path / "cikti.pdf")
+    with pikepdf.open(out) as pdf:
+        assert tuple(map(int, pdf.pdf_version.split("."))) >= (1, 7)
+    assert out.read_bytes()[:8] >= b"%PDF-1.7"
+
+
+def test_pdf_font_name_does_not_collide_with_source(tmp_path):
+    """Kaynak sayfada /OcrNowF0 adlı (görünür) bir font zaten varsa katmanın fontu başka ad alır."""
+    src = tmp_path / "kaynak.pdf"
+    pdf = pikepdf.new()
+    helv = pdf.make_indirect(pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                                                BaseFont=pikepdf.Name.Helvetica))
+    for i in range(2):
+        content = pdf.make_stream(b"BT /OcrNowF0 1 Tf 72 700 Td (x) Tj ET")   # 1 karakter: metinli sayılmaz
+        pdf.pages.append(pikepdf.Page(pikepdf.Dictionary(
+            Type=pikepdf.Name.Page, MediaBox=pikepdf.Array([0, 0, 600, 800]),
+            Resources=pikepdf.Dictionary(Font=pikepdf.Dictionary(OcrNowF0=helv)), Contents=content)))
+    pdf.save(src)
+    out = export_pdf.write_pdf([page(src, block("birinci sayfa", BOX)),
+                                page(src, block("ikinci sayfa", BOX), index=2)], tmp_path / "cikti.pdf")
+    texts = extract(out)
+    assert "birinci sayfa" in texts[0] and "ikinci sayfa" in texts[1]
+    with pikepdf.open(out) as pdf:
+        for pg in pdf.pages:
+            fonts = pg.obj.Resources.Font
+            assert fonts.OcrNowF0.BaseFont == pikepdf.Name.Helvetica
+            assert any(k != "/OcrNowF0" and v.Subtype == pikepdf.Name.Type0 for k, v in fonts.items())
+
+
+def test_pdf_inherited_page_attributes(tmp_path):
+    """MediaBox, Rotate ve Resources /Pages düğümünde (sayfada değil): çıktı geçerli, katman yerinde, görüntü var."""
+    src = inherited_pdf(tmp_path / "kaynak.pdf")
+    # pikepdf açarken öznitelikleri sayfaya iter; önkoşul dosyanın kendisinde denetlenir
+    assert b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>" in src.read_bytes()
+    src_imgs = [bytes(range(0, 256, 64)) * 2]
+    out = export_pdf.write_pdf([page(src, width=1600, height=1200)], tmp_path / "cikti.pdf")
+    with pikepdf.open(out) as pdf:
+        assert pdf.check_pdf_syntax() == []
+        pg = pdf.pages[0]
+        assert [im.read_raw_bytes() for im in pg.get_images().values()] == src_imgs
+        assert "/Im1" in pg.obj.Resources.XObject and list(pg.mediabox) == [0, 0, 600, 800]
+    assert TEXT in extract(out)[0]
+    # görünen 800×600: u 50..350, v (yukarı) 480..500 → X = 600 - v, Y = u
+    assert_boxes_within(out, (98, 122), (48, 352))
+
+
+def test_pdf_opens_each_source_once_for_text_check(tmp_path, monkeypatch):
+    src = image_pdf(tmp_path / "kaynak.pdf")
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        pdf.pages.append(pdf.pages[0])
+        pdf.save(src)
+    opened = []
+    real = pdfium.PdfDocument
+
+    def counting(path, *args, **kwargs):
+        opened.append(Path(str(path)))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(export_pdf.pdfium, "PdfDocument", counting)
+    export_pdf.write_pdf([page(src), page(src, index=2)], tmp_path / "cikti.pdf")
+    assert opened.count(src) == 1
 
 
 def test_pdf_png_source_embedded_losslessly(tmp_path):
