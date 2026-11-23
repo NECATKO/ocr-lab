@@ -7,7 +7,7 @@ name = "ocr-now"
 version = "0.1.0"
 description = "Taranmış kitap sayfalarını Word/TXT'ye çeviren yerel OCR hattı"
 requires-python = ">=3.12"
-dependencies = ["pypdfium2", "pillow", "python-docx"]
+dependencies = ["pypdfium2", "pillow", "python-docx", "pikepdf"]
 
 [project.optional-dependencies]
 lab = ["marimo"]

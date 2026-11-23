@@ -26,7 +26,7 @@ EXPORTERS: dict[str, Callable[[list[Page], Path, dict], object]] = {
     "md": lambda doc_pages, out, settings: export_md.write_md(doc_pages, out),
     "json": lambda doc_pages, out, settings: export_structured.write_json(doc_pages, out),
     "csv": lambda doc_pages, out, settings: export_structured.write_csv(doc_pages, out),
-    "pdf": lambda doc_pages, out, settings: export_pdf.write_pdf(doc_pages, out),
+    "pdf": lambda doc_pages, out, settings: export_pdf.write_pdf(doc_pages, out, warnings=settings["warnings"]),
 }
 PREVIEW_LIMIT = 32_000
 MODE_LABELS = {"duz": "duz — düz metin", "duzen": "duzen — başlık, dipnot ve sütunları ayırarak"}
