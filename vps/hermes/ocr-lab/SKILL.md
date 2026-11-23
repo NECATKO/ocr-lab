@@ -13,9 +13,9 @@ metadata:
 # OCR Lab: taranmış PDF'yi okut
 
 Bu VPS'te OCR Lab izleyicisi çalışır (`~/ocr-lab/vps/izleyici.py`, systemd kullanıcı zamanlayıcısı
-`ocr-vps.timer`). Drive'daki `gdrive:ocr-lab/input/` klasörüne gelen PDF'leri Colab L4 GPU'da okur, Word ve
-metin dosyasını `output/` klasörüne yazar. Başlangıç ve bitiş bildirimlerini ve Word dosyasını Telegram'a
-kendisi gönderir. Senin işin yalnız dosyayı Drive'a koymak.
+`ocr-vps.timer`). Drive'daki `gdrive:ocr-lab/input/` klasörüne gelen PDF'leri Colab L4 GPU'da okur, Word, aranabilir PDF
+ve metin dosyasını `output/` klasörüne yazar. Başlangıç ve bitiş bildirimlerini, Word dosyasını ve aranabilir PDF'i
+Telegram'a kendisi gönderir (50 MB'tan büyük PDF gönderilmez, Drive'da kalır). Senin işin yalnız dosyayı Drive'a koymak.
 
 ## Ne zaman
 
@@ -39,7 +39,7 @@ dosyayı yükler ve izleyiciyi hemen başlatır. Çıktısını kullanıcıya k�
 - OCR'ı kendin yapmaya çalışma (vision, tesseract vb.). Okuma yalnız Colab'da bf16 ile yapılır.
 - Colab'ı kendin başlatma (`colab run`), izleyici durumunu ya da `~/.local/state/ocr-lab` dosyalarını değiştirme.
   Bunlar Colab birimi harcar ya da izleyiciyi bozar.
-- Sonucu bekleyip yoklama. Sonuç ve Word dosyası iş bitince Telegram'a kendiliğinden gelir (birkaç dakika ile
+- Sonucu bekleyip yoklama. Sonuç, Word dosyası ve aranabilir PDF iş bitince Telegram'a kendiliğinden gelir (birkaç dakika ile
   bir saat arası, sayfa sayısına göre).
 - Telegram botları 20 MB'tan büyük dosyaları indiremez. Dosya sana ulaşmadıysa kullanıcıya PDF'yi doğrudan
   Drive'daki `ocr-lab/input/` klasörüne atmasını söyle; gerisi aynı şekilde işler.

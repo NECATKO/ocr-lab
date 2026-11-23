@@ -125,6 +125,10 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   `.docx`'te italik/kalın yazılıyor, `.txt`'de düz metin oluyor. Tek başına duran yıldıza dokunulmuyor.
 
 ### Değişti
+- **Telefon/VPS akışı aranabilir PDF de üretir:** `runner.TELEFON_FORMATLARI` (`docx pdf txt`) telefon defterinin ve
+  VPS işinin istediği biçimlerdir. İzleyici Word ile birlikte aranabilir PDF'i de Telegram'a gönderir; 50 MB'tan
+  büyük PDF gönderilmez, mesajda "Telegram için çok büyük" notu ve Drive `output/` konumu bildirilir. `ocr_calistir`
+  varsayılanı (`docx txt`) ve `ocr_now.ipynb` aynı kalır.
 - Ham OCR önbelleği ve benchmark kaydı aynı OCR ayar kimliğini kullanır. Bilinen vLLM model revizyonu
   açılışta sabitlenir; doğrulanamayan VLM okumaları ham önbelleğe alınmaz. Eski önbellek dosyaları silinmez.
 - Benchmark ortak tamamlanan sayfalarda karşılaştırır. Tam, kesik, boş ve okunamayan denemeler ayrı

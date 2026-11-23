@@ -47,7 +47,7 @@ Her sayfa için şu adımlar sırayla yapılır:
 5. **Şüpheli kelimeler işaretlenir.** Ana model ile tesseract'ın farklı okuduğu kelimeler sarıya boyanır.
 6. **Kitap sayfa numarası bulunur.** Sayfadan okunan numaraya güvenilir. Okunamazsa, yalnız güvenli olduğunda
    komşu sayfalardan tahmin edilir.
-7. **Dışa aktarılır.** Yazılan biçimler `.docx` ve `.txt`'dir. Adım 1–2'nin çıktısı önbelleğe yazılır; sonraki
+7. **Dışa aktarılır.** Yazılan biçimler `-f` ile seçilir (`.docx`, `.txt`, `.md`, `.json`, `.csv`, `.pdf`). Adım 1–2'nin çıktısı önbelleğe yazılır; sonraki
    adımlar her çalıştırmada yeniden yapılır (bkz. Önbellek).
 
 dots.mocr'da adım 1–2 sayfalar arasında paralel yürür: modele en çok 8 sayfa aynı anda gönderilir, sunucu (vLLM)
@@ -107,7 +107,7 @@ yoksa soru sorulmaz: `docx` yazılır, işaretleme açık olur.
 | `-p`, `--sayfalar` | Değerler: `hepsi` (varsayılan), `5`, `1,3,7`, `10-25`, `ilk10`; karışık da olur (`1-3,7`). Birden fazla PDF'te hepsine uygulanır. PDF'i aşan kısım kırpılır ve uyarı verilir |
 | `-m`, `--model` | Kullanılacak motor (varsayılan profile göre; yerel motorlar ya da harici OpenAI-uyumlu `api`) |
 | `-o`, `--okuma` | Okuma modu: `duzen` ya da `duz`. Düz modda başlık, dipnot ve sayfa numarası ayrılamaz |
-| `-f`, `--format` | `docx`, `txt`, `md`, `json`, `csv`, `pdf` (aranabilir PDF) ya da birkaçı |
+| `-f`, `--format` | `docx`, `txt`, `md`, `json`, `csv`, `pdf` ya da birkaçı. `pdf`, **aranabilir PDF**'tir: orijinal (CamScanner) sayfa olduğu gibi kalır, okunan metin üstüne satır satır görünmez katman olarak eklenir. Satır sonunda tireyle bölünen kelime aramada ve kopyalamada bütün gelir. Çok satırlı kopya okuyucuya göre satır satır gelir. Arapça/Osmanlıca satırlar mantıksal sırayla yazılır; Türkçe satırın içine karışan rakam ya da Arapça kelime pdfium tabanlı okuyucularda (Chrome, Edge) ters kopyalanabilir |
 | `--isaretle` / `--isaretleme` | Şüpheli kelimeleri sarı işaretle / işaretleme |
 | `--kesme` / `--kesme-yok` | Ayın/hemze geri getirme adımını açar / kapatır |
 | `--dil KOD` | Tesseract dili (ör. `tur`, `tur+eng`, `eng`, `ara`) |
@@ -347,7 +347,7 @@ Telefonda yalnız bir ▶ düğmesi için [colab/telefon.ipynb](colab/telefon.ip
    Defter ilk çalıştığında Drive'da `ocr-lab/bildirim.txt` oluşur. Telefona **ntfy** uygulamasını kurup bu dosyadaki
    gizli konuya abone olun. Bildirimleri kapatmak için konunun başına `#` koyun.
 2. **Her seferinde:** CamScanner'da PDF'yi `MyDrive/ocr-lab/input/` klasörüne yükleyin, kısayolu açıp ▶'ye dokunun.
-3. Defter dosyaları tek tek okur. Her dosyadan sonra, OCR sürerken de iki dakikada bir sayfa önbelleğini Drive'a yazar.
+3. Defter dosyaları tek tek okur ve her biri için Word, aranabilir PDF ve düz metin yazar. Her dosyadan sonra, OCR sürerken de iki dakikada bir sayfa önbelleğini Drive'a yazar.
    Oturum koparsa ▶'ye yeniden basmak yeter, okunmuş sayfalar GPU'ya tekrar gitmez. Belgesi yazılan PDF
    `input/islenenler/` klasörüne taşınır, okunamayan PDF `input/` içinde kalır.
 4. Başlangıçta ve bitişte bildirim gelir. "Bitti" bildirimi her dosya için sayfa sayısını, uyarıları ve kontrol
@@ -398,7 +398,8 @@ yürür:
   izleyiciyi zamanlayıcıyı beklemeden başlatır. Telegram botları 20 MB'tan büyük dosyaları indiremez; büyük
   PDF'leri Drive'a doğrudan atın.
 - **Sonuç almak:** İzleyici başlangıç ve bitiş bildirimlerini `hermes send` ile Telegram'a da gönderir. Okunan her
-  dosyanın Word belgesini (Word yoksa metni) ek olarak yollar. ntfy bildirimi yedek olarak gelmeye devam eder.
+  dosyanın Word belgesini ve aranabilir PDF'ini (Word yoksa metni) ek olarak yollar. 50 MB'tan büyük PDF Telegram'a
+  gönderilmez; mesajda bildirilir ve Drive'daki `output/` klasöründe kalır. ntfy bildirimi yedek olarak gelmeye devam eder.
 
 `kur.sh`, `~/.hermes/skills` varsa beceriyi oraya bağlar. `hermes` komutu varsa bildirim hedefi `telegram`
 (Hermes'in Telegram ana sohbeti) olur. Başka bir hedef için `OCR_VPS_HERMES` değişkenini verin, kapatmak için boş

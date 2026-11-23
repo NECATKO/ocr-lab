@@ -259,6 +259,42 @@ def test_notifications_and_documents_go_to_hermes(tmp_path):
     assert {hedef for hedef, _ in h.mesajlar} == {"telegram"}
 
 
+def test_belgeleri_ilet_sends_pdf(tmp_path):
+    d = drive_with_output(tmp_path, {}, {"a.docx": b"DOCX", "a.pdf": b"%PDF", "a.txt": b"TXT"})
+    h = Hermes()
+    izleyici.belgeleri_ilet(isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx", "a.pdf", "a.txt"]}),
+                            uzak="gdrive:ocr-lab", hedef="telegram", _run=d.run, _gonder=h)
+    medya = [s for s in h.mesajlar[0][1].splitlines() if s.startswith("MEDIA:")]
+    assert [Path(m).suffix for m in medya] == [".docx", ".pdf"]      # ham .txt gönderilmez
+    assert h.ekler == [("a.docx", b"DOCX"), ("a.pdf", b"%PDF")]
+
+
+def test_belgeleri_ilet_skips_oversized_pdf(tmp_path, monkeypatch):
+    assert izleyici.TELEGRAM_SINIRI == 50 * 1024 * 1024
+    monkeypatch.setattr(izleyici, "TELEGRAM_SINIRI", 1000)           # testte 50 MB yazmamak için
+    d = drive_with_output(tmp_path, {}, {"a.docx": b"DOCX", "a.pdf": b"x" * 1001})
+    indirilen = []
+    eski = d.run
+
+    def run(cmd, **kw):
+        if cmd[:2] == ["rclone", "copyto"]:
+            indirilen.append(Path(cmd[3]))
+        return eski(cmd, **kw)
+    h = Hermes()
+    gonderimde_var = []
+
+    def gonder(hedef, metin):
+        gonderimde_var.append(indirilen[1].exists())          # büyük dosya gönderimden önce silinmiş olmalı
+        return h(hedef, metin)
+    izleyici.belgeleri_ilet(isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx", "a.pdf"]}),
+                            uzak="gdrive:ocr-lab", hedef="telegram", _run=run, _gonder=gonder)
+    metin = h.mesajlar[0][1]
+    assert [s for s in metin.splitlines() if s.startswith("MEDIA:")] == [f"MEDIA:{Path(indirilen[0]).parent / 'a.docx'}"]
+    assert "Telegram için çok büyük" in metin and "output/" in metin and "a.pdf" in metin
+    assert h.ekler == [("a.docx", b"DOCX")]
+    assert gonderimde_var == [False]
+
+
 def test_missing_document_is_reported_in_text(tmp_path):
     d = drive_with_output(tmp_path, {}, {})
     h = Hermes()

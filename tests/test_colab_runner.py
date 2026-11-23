@@ -136,6 +136,26 @@ class PhoneWorld:
                     _birak=lambda: self.released.append(True), _bekle=lambda dp: runner.list_inputs(dp["input"]))
 
 
+def test_telefon_default_ocr_asks_pdf(tmp_path, monkeypatch):
+    assert runner.TELEFON_FORMATLARI == "docx pdf txt"
+    w = PhoneWorld(tmp_path, files=("a.pdf",))
+    istenen = []
+
+    def sahte(root, *, dosya, model, formatlar="docx txt"):
+        istenen.append(formatlar)
+        return sonuc(isler=[job()])
+    monkeypatch.setattr(runner, "ocr_calistir", sahte)
+    kw = w.kwargs()
+    del kw["_ocr"]
+    assert runner.telefon_calistir(w.dp["root"], **kw) == 0
+    assert istenen == ["docx pdf txt"]
+
+
+def test_colab_is_requests_pdf():
+    kaynak = (ROOT / "vps/colab_is.py").read_text(encoding="utf-8")
+    assert "formatlar=runner.TELEFON_FORMATLARI" in kaynak
+
+
 def test_phone_flow_processes_each_file_moves_it_notifies_and_releases_gpu(tmp_path):
     w = PhoneWorld(tmp_path)
     w.results["b.pdf"] = sonuc(rc=1, isler=[job(metin_kontrol=["s. 3"])])

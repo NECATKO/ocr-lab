@@ -490,6 +490,11 @@ def calisma_zamanini_kapat() -> None:
     runtime.unassign()
 
 
+# Telefon akışının istediği çıktılar: Word, aranabilir PDF ve ham metin.
+# (ocr_calistir'ın kendi varsayılanı "docx txt" kalır; ocr_now.ipynb onu kullanır.)
+TELEFON_FORMATLARI = "docx pdf txt"
+
+
 def telefon_calistir(
     drive_root: str | Path,
     *,
@@ -508,7 +513,8 @@ def telefon_calistir(
     Dönüş: 0 sorunsuz, 1 kontrol gereken/okunamayan dosya var, 2 akış hatayla durdu.
     """
     kur = _kur or (lambda root, model: setup_env(root, model=model))
-    ocr = _ocr or (lambda root, dosya, model: ocr_calistir(root, dosya=dosya, model=model))
+    ocr = _ocr or (lambda root, dosya, model: ocr_calistir(root, dosya=dosya, model=model,
+                                                           formatlar=TELEFON_FORMATLARI))
     gonder = _bildir or bildir
     birak = _birak or calisma_zamanini_kapat
     bekle = _bekle or girdi_bekle

@@ -40,6 +40,7 @@ BASLANGIC_DENEME = 3
 GERI_CEKILME = 30 * 60          # GPU açılamazsa yeniden denemeden önce beklenen süre (sn)
 EN_UZUN_IS = 4 * 3600           # tek bir Colab işinin üst sınırı (sn)
 SAKLANAN_KAYIT = 20
+TELEGRAM_SINIRI = 50 * 1024 * 1024   # Telegram bot dosya sınırı; aranabilir PDF bundan büyükse yalnız Drive'da kalır
 EN_FAZLA_KOPMA = 2              # iş yarıda kalırsa (bağlantı koptu vb.) dosya bu kadar kez denenir
 
 
@@ -178,16 +179,22 @@ def belgeleri_ilet(cikti: str, *, uzak: str, hedef: str, _run=calistir_komut, _g
         with tempfile.TemporaryDirectory(prefix="ocr-hermes-") as tmp:
             yollar: list[Path] = []
             eksik: list[str] = []
+            buyuk: list[str] = []
             for ad in adlar:
                 yerel = Path(tmp) / guvenli_ad(ad)
                 res = _run(["rclone", "copyto", f"{uzak}/output/{ad}", str(yerel)])
                 if res.returncode == 0 and yerel.is_file():
-                    yollar.append(yerel)
+                    if yerel.stat().st_size > TELEGRAM_SINIRI:
+                        yerel.unlink()
+                        buyuk.append(ad)
+                    else:
+                        yollar.append(yerel)
                 else:
                     eksik.append(ad)
             satirlar = [f"📄 {girdi}"]
             if eksik:
                 satirlar.append(f"Drive'dan indirilemedi (output/ klasörüne bakın): {', '.join(eksik)}")
+            satirlar += [f"Telegram için çok büyük, Drive'daki output/ klasöründe: {ad}" for ad in buyuk]
             satirlar += [f"MEDIA:{y}" for y in yollar]
             _gonder(hedef, "\n".join(satirlar))     # hermes send dosyaları göndermeden dönmez
 

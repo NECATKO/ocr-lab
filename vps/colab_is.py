@@ -111,7 +111,7 @@ def calis() -> int:
         from colab import runner
 
         def ocr(root, dosya, model):
-            sonuc = runner.ocr_calistir(root, dosya=dosya, model=model)
+            sonuc = runner.ocr_calistir(root, dosya=dosya, model=model, formatlar=runner.TELEFON_FORMATLARI)
             isaret_bas(BELGE_ISARETI, {"girdi": dosya, "belgeler": [Path(y).name for y in sonuc.yazilanlar]})
             return sonuc
 
