@@ -20,9 +20,9 @@ PITCH_PER_HEIGHT = 1.5      # sayfada ardışık satır yoksa satır aralığı 
 MAX_GAP = 3                 # bundan (× satır yüksekliği) büyük üst-üste aralık satır aralığı sayılmaz (sütun/boşluk)
 PAGE_MARGIN = 0.05          # blok kutusu da yoksa sayfanın her kenarından bırakılan pay
 MISSING_ROW = 1.5           # ardışık eşleşen iki kelimenin satır üstleri arası > bu × satır aralığı: satır kaçmış
-NO_WORDS = frozenset({"Picture", "Table"})
+NO_WORDS = frozenset({"Picture", "Table"})   # kelime yerleşimi yapılmayan kategoriler
 MIN_MATCHED = 0.5           # satır kutulu blokta eşleşen kelime payı bundan azsa satır satır yerleşir
-MIN_GAP = 2.0               # dar boşluğa konan kelime grubunun en küçük genişliği, piksel   # kelime yerleşimi yapılmayan kategoriler
+MIN_GAP = 2.0               # dar boşluğa konan kelime grubunun en küçük genişliği, piksel
 _WORD = re.compile(r"\S+")
 
 
