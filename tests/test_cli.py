@@ -619,3 +619,8 @@ def test_review_reasons_cover_page_flags():
     p.needs_review = True
     assert pipeline.review_reasons(p) == ["metin çıkmadı", "sayfa numarası çelişkili", "iki kez taranmış olabilir"]
     assert pipeline.review_reasons(fake_page(3, ["s. 3, blok 2: satır yapısı kurulamadı"])) == []
+
+
+def test_review_reason_for_possibly_missing_text():
+    p = fake_page(1, [f"s. 1: {pipeline.MISSING_TEXT_WARNING}: 2 satır, alt bölüm"])
+    assert pipeline.review_reasons(p) == ["olası eksik metin (alt bölüm)"]

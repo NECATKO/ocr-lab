@@ -729,3 +729,14 @@ def test_cjk_hallucination_warns_and_highlights_even_without_tesseract():
                       lambda img: tsv, (1000, 1000), words={})
     yellow2 = [p2.blocks[0].text[m.start:m.end] for m in p2.blocks[0].marks if m.kind == "belirsiz"]
     assert yellow2 == ["sev常Ouriz"]
+
+
+def test_footnote_seen_only_by_tesseract_is_flagged():
+    raw = blocks_json(("Text", [50, 50, 950, 300], "Tarih ilmi insanların geçmişini anlatır"))
+    tsv = tsv_rows(((60, 60, 900, 90), "Tarih ilmi insanların geçmişini anlatır"),
+                   ((60, 880, 900, 905), "12 Bkz. İbn Haldun Mukaddime"),
+                   ((60, 915, 900, 940), "Beyrut baskısı tarihsiz sayfa"))
+    p = process_page(Path("x.png"), SourcePage(Path("k.pdf"), 3), Options(apostrophes=False),
+                     lambda img, m: raw, lambda img: tsv, (1000, 1000))
+    assert f"s. 3: {pipeline.MISSING_TEXT_WARNING}: 2 satır, alt bölüm" in p.warnings
+    assert "Mukaddime" not in "".join(b.text for b in p.blocks)       # metin Word'e kendiliğinden eklenmez

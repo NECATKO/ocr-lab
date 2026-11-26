@@ -21,7 +21,7 @@ from ocrnow.export_txt import plain_text
 from ocrnow.layout import Mark, Page, parse_output
 from ocrnow.pagenum import infer, read_book_page
 from ocrnow.pages import DEFAULT_DPI, DocJob, InputError, SourceFingerprint, SourcePage, fingerprint_source, render
-from ocrnow.tesslines import assign_lines, parse_tsv
+from ocrnow.tesslines import assign_lines, parse_tsv, uncovered_text
 from ocrnow.uncertain import flag_uncertain
 
 TEXT_CATEGORIES = frozenset({"Text", "Title", "Section-header", "List-item", "Footnote"})   # tam işlem
@@ -35,6 +35,7 @@ RECOVERED_WARNING = "model tekrar döngüsüne girdi; sayfa tekrar cezasıyla ye
 SIDE_WARNING = "sayfanın tarafıyla çelişiyor"
 DUPLICATE_WARNING = "aynı sayfa iki kez taranmış olabilir"
 UNEXPECTED_SCRIPT_WARNING = "beklenmedik yazı karakteri (CJK) bulundu"
+MISSING_TEXT_WARNING = "olası eksik metin (tesseract'ın gördüğü satırlar model çıktısında yok)"
 _CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
 _NONSPACE = re.compile(r"\S+")
 CACHE_VERSION = 4   # ham OCR çıktısı ve onu üreten ayarların kimliği
@@ -73,6 +74,13 @@ def page_id(src: SourcePage) -> str:
     return f"s. {src.index}" if _is_pdf(src) else src.source.name
 
 
+def _regions(lines, height: int) -> str:
+    """Satırların sayfadaki bölgesi: üst/orta/alt bölüm (yukarıdan aşağı, tekrarsız)."""
+    names = ("üst bölüm", "orta bölüm", "alt bölüm")
+    found = [names[min(2, int(3 * (l.box[1] + l.box[3]) / 2 / max(1, height)))] for l in lines]
+    return ", ".join(dict.fromkeys(found))
+
+
 def review_reasons(page: Page) -> list[str]:
     """Kullanıcının bu sayfada neye bakması gerektiği: kısa nedenler, en ağırı başta (yoksa boş)."""
     joined = "\n".join(page.warnings)
@@ -83,6 +91,8 @@ def review_reasons(page: Page) -> list[str]:
         reasons.append("sayfa sonu eksik olabilir")
     if page.needs_review:
         reasons.append("metin çıkmadı")
+    if m := re.search(re.escape(MISSING_TEXT_WARNING) + r": \d+ satır, ([^\n]+)", joined):
+        reasons.append(f"olası eksik metin ({m.group(1)})")
     if RECOVERED_WARNING in joined:
         reasons.append("tekrar döngüsü")
     if m := re.search(re.escape(UNEXPECTED_SCRIPT_WARNING) + r" \((.*?)\)", joined):
@@ -94,7 +104,7 @@ def review_reasons(page: Page) -> list[str]:
     return reasons
 
 
-REVIEW_ORDER = ("okunamadı", "sayfa sonu eksik olabilir", "metin çıkmadı", "tekrar döngüsü", "beklenmedik karakter",
+REVIEW_ORDER = ("okunamadı", "sayfa sonu eksik olabilir", "metin çıkmadı", "olası eksik metin", "tekrar döngüsü", "beklenmedik karakter",
                 "sayfa numarası çelişkili", "iki kez taranmış olabilir")
 
 
@@ -173,6 +183,8 @@ def build_page(ocr: RawPage, src: SourcePage, opts: Options, *, words: dict[str,
         block.marks = sorted(marks, key=lambda m: (m.start, m.end))
         if opts.use_tesseract and (warning := apply_line_structure(block, mine)):
             warnings.append(f"{pid}, blok {k}: {warning}")
+    if opts.use_tesseract and (missing := uncovered_text(blocks, tlines, size)):
+        warnings.append(f"{pid}: {MISSING_TEXT_WARNING}: {len(missing)} satır, {_regions(missing, size[1])}")
     if cjk_chars:
         sample = "".join(dict.fromkeys(cjk_chars))[:8]
         warnings.append(f"{pid}: {UNEXPECTED_SCRIPT_WARNING} ({sample}), kontrol edin")
