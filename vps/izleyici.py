@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -219,39 +220,58 @@ def colab_calistir(colab: list[str], betik: Path, *, oturum: str, gpu: str, log:
 
 def _colab_bir_kez(colab: list[str], betik: Path, *, oturum: str, gpu: str, log: Path,
                    en_uzun: float = EN_UZUN_IS, satir_isle=None) -> tuple[int, str]:
-    """`colab run` çıktısını hem günlüğe hem ekrana akıtır. Süre aşılırsa önce Ctrl-C (CLI oturumu
-    kapatsın), olmazsa öldürür ve oturumu adıyla ayrıca durdurur."""
+    """`colab run` çıktısını hem günlüğe hem ekrana akıtır. Süre aşılırsa (iş hiç çıktı vermese bile) önce
+    Ctrl-C (CLI oturumu kapatsın), olmazsa öldürür ve oturumu adıyla ayrıca durdurur."""
     cmd = [*colab, "run", "-s", oturum, "--gpu", gpu, "--timeout", "0", str(betik)]
     print("Komut:", " ".join(cmd), flush=True)
     satirlar: list[str] = []
-    with open(log, "w", encoding="utf-8") as lf:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                text=True, bufsize=1)
-        assert proc.stdout is not None
-        bitis = time.time() + en_uzun
-        os.set_blocking(proc.stdout.fileno(), True)
-        for line in proc.stdout:
-            lf.write(line)
-            lf.flush()
-            print(line, end="", flush=True)
-            satirlar.append(line)
-            if satir_isle is not None:
-                try:
-                    satir_isle(line)
-                except Exception as e:  # noqa: BLE001 - bildirim hatası Colab işini bozmamalı
-                    print(f"UYARI: satır işlenemedi: {e}", flush=True)
-            if time.time() > bitis:
-                break
-        if proc.poll() is None and time.time() > bitis:
-            print("\nSüre aşıldı: Colab işi durduruluyor...", flush=True)
-            proc.send_signal(signal.SIGINT)
-            try:
-                proc.wait(timeout=120)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            subprocess.run([*colab, "stop", "-s", oturum], stdin=subprocess.DEVNULL)
-        rc = proc.wait()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                            text=True, bufsize=1)
+    assert proc.stdout is not None
+    os.set_blocking(proc.stdout.fileno(), True)
+
+    def oku() -> None:   # süreyi bu okuyucu değil ana iş parçacığı ölçer: sessiz/kilitlenen iş de durdurulur
+        with open(log, "w", encoding="utf-8") as lf:
+            for line in proc.stdout:
+                lf.write(line)
+                lf.flush()
+                print(line, end="", flush=True)
+                satirlar.append(line)
+                if satir_isle is not None:
+                    try:
+                        satir_isle(line)
+                    except Exception as e:  # noqa: BLE001 - bildirim hatası Colab işini bozmamalı
+                        print(f"UYARI: satır işlenemedi: {e}", flush=True)
+
+    okuyucu = threading.Thread(target=oku, daemon=True)
+    okuyucu.start()
+    try:
+        proc.wait(timeout=en_uzun)
+    except subprocess.TimeoutExpired:
+        print("\nSüre aşıldı: Colab işi durduruluyor...", flush=True)
+        proc.send_signal(signal.SIGINT)
+        try:
+            proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        try:
+            subprocess.run([*colab, "stop", "-s", oturum], stdin=subprocess.DEVNULL, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"UYARI: Colab oturumu {oturum} durdurulamadı, elle kontrol edin: {e}", flush=True)
+    rc = proc.wait()
+    okuyucu.join(timeout=60)     # kalan satırlar günlüğe yazılsın (çıktıyı tutan alt süreç kaldıysa beklemez)
     return rc, "".join(satirlar)
+
+
+def sonuc_kodu(metin: str) -> int | None:
+    """Colab işinin `OCR-VPS-SONUC <n>` satırındaki sayı (son geçerli satır; yoksa None).
+    0 sorunsuz, 1 kontrol gereken/okunamayan dosya var, 2 akış durdu, 3 hazırlık (kurulum) hatası."""
+    kod = None
+    for line in metin.splitlines():
+        m = re.fullmatch(re.escape(SONUC_ISARETI) + r" (\d+)", line.strip())
+        if m:
+            kod = int(m.group(1))
+    return kod
 
 
 def son_satirlar(metin: str, n: int = 12) -> str:
@@ -322,7 +342,10 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
 
     durum["bildirildi"] = False
     durum["bekle_kadar"] = 0.0
-    tamamlandi = SONUC_ISARETI in cikti
+    kod = sonuc_kodu(cikti)
+    tamamlandi = kod in (0, 1)              # 2/3: akış veya kurulum hatası — işlenmemiş dosyaların suçu yok
+    if kod in (2, 3):
+        durum["bekle_kadar"] = _now() + GERI_CEKILME    # altyapı düzelsin diye hemen yeniden GPU açma
 
     kalanlar = {g.ad: g for g in girdileri_listele(args.uzak, _run)}
     durum["basarisiz"] = {k: v for k, v in durum["basarisiz"].items() if k in kalanlar}
@@ -341,7 +364,7 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
         durum["kopmalar"].pop(g.ad, None)
         print(f"İşlenemedi, değişene kadar yeniden denenmeyecek: {g.ad}", flush=True)
     if not tamamlandi and vazgecilen:
-        _bildir(konu, "OCR: Colab işi yarıda kaldı",
+        _bildir(konu, "OCR: Colab işi hazırlanamadı" if kod in (2, 3) else "OCR: Colab işi yarıda kaldı",
                 f"{', '.join(vazgecilen)} {EN_FAZLA_KOPMA} kez denendi; dosyayı yeniden yükleyince tekrar denenir.\n"
                 + son_satirlar(cikti), etiketler=["x"], oncelik=4)
     durum_yaz(durum_dosyasi, durum)

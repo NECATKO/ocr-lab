@@ -143,6 +143,56 @@ def test_successful_run_clears_interrupt_count(tmp_path):
     assert izleyici.durum_oku(a.durum_dizini / "izleyici.json")["kopmalar"] == {}
 
 
+KURULUM_HATASI = ("[colab] Session READY (x).\nOCR-VPS-BASLADI\nTraceback ...\nRuntimeError: rclone mount açılamadı\n"
+                  "OCR-VPS-HAZIRLIK-HATASI\nOCR-VPS-SONUC 3\n")
+
+
+def test_setup_failure_keeps_unstarted_files_and_retries_after_backoff(tmp_path):
+    d = Drive(tmp_path, {"a.pdf": ("10", "t1"), "b.pdf": ("20", "t1")})
+    colab = Colab(d, cikti=KURULUM_HATASI, rc=0)
+    now = [1000.0]
+    a = args(tmp_path)
+    kw = dict(_run=d.run, _colab=colab, _bildir=None, _now=lambda: now[0])
+    assert izleyici.bir_tur(a, **kw) == 1
+    durum = izleyici.durum_oku(a.durum_dizini / "izleyici.json")
+    assert durum["basarisiz"] == {}                                   # dosyaların suçu yok
+    now[0] += 60
+    izleyici.bir_tur(a, **kw)
+    assert len(colab.calls) == 1                                      # altyapı beklemesi uygulanır
+    now[0] += izleyici.GERI_CEKILME
+    colab.cikti, colab.isle = OK, ["a.pdf", "b.pdf"]
+    assert izleyici.bir_tur(a, **kw) == 0
+    assert colab.calls == [["a.pdf", "b.pdf"], ["a.pdf", "b.pdf"]]   # aynı iki dosya yeniden denendi
+
+
+def test_repeated_setup_failure_gives_up_and_notifies(tmp_path):
+    d = Drive(tmp_path, {"a.pdf": ("10", "t1")})
+    colab = Colab(d, cikti=KURULUM_HATASI)
+    notes, now = [], [1000.0]
+    a = args(tmp_path)
+    kw = dict(_run=d.run, _colab=colab, _now=lambda: now[0],
+              _bildir=lambda konu, baslik, mesaj, **k: notes.append((baslik, mesaj)))
+    izleyici.bir_tur(a, **kw)
+    assert notes == []
+    now[0] += izleyici.GERI_CEKILME + 1
+    izleyici.bir_tur(a, **kw)
+    assert len(colab.calls) == 2 and len(notes) == 1 and "rclone mount" in notes[0][1]
+    now[0] += izleyici.GERI_CEKILME + 1
+    izleyici.bir_tur(a, **kw)
+    assert len(colab.calls) == 2                                      # birim yakmaya devam etmez
+
+
+def test_result_code_is_read_from_its_own_line_only(tmp_path):
+    d = Drive(tmp_path, {"a.pdf": ("10", "t1")})
+    cikti = "[colab] Session READY\n$ grep OCR-VPS-SONUC 0 günlük\nConnection was lost\n"
+    a = args(tmp_path)
+    izleyici.bir_tur(a, _run=d.run, _colab=Colab(d, cikti=cikti, rc=1), _bildir=None)
+    durum = izleyici.durum_oku(a.durum_dizini / "izleyici.json")
+    assert durum["basarisiz"] == {} and durum["kopmalar"] == {"a.pdf": 1}   # yarıda kalmış sayılır
+    assert izleyici.sonuc_kodu("x\nOCR-VPS-SONUC 1\n") == 1
+    assert izleyici.sonuc_kodu("OCR-VPS-SONUC bozuk\n") is None
+
+
 def test_colab_runner_streams_output_to_log(tmp_path):
     fake = tmp_path / "colab"
     fake.write_text(f"#!{sys.executable}\nimport sys\nprint('[colab] Session READY');print(' '.join(sys.argv[1:]))\n")
@@ -183,6 +233,51 @@ def test_colab_runner_does_not_retry_once_job_started(tmp_path):
     betik.write_text("")
     rc, cikti = izleyici.colab_calistir([str(fake)], betik, oturum="s", gpu="L4", log=tmp_path / "x.log")
     assert rc == 1 and cikti.count("OCR-VPS-BASLADI") == 1
+
+
+def sessiz_colab(tmp_path, govde: str) -> tuple[Path, Path]:
+    """`run` çağrısında govde'yi çalıştıran, `stop -s AD` çağrısını dosyaya yazan sahte colab."""
+    durdur = tmp_path / "durdurulan"
+    fake = tmp_path / "colab"
+    fake.write_text(f"""#!{sys.executable}
+import sys, time
+from pathlib import Path
+if sys.argv[1] == "stop":
+    Path({str(durdur)!r}).write_text(sys.argv[3]); sys.exit(0)
+{govde}
+""")
+    fake.chmod(0o755)
+    return fake, durdur
+
+
+def calistir_suresiz(tmp_path, fake, en_uzun):
+    import time
+    betik = tmp_path / "b.py"
+    betik.write_text("")
+    bas = time.monotonic()
+    rc, cikti = izleyici.colab_calistir([str(fake)], betik, oturum="ocr-vps-1", gpu="L4", log=tmp_path / "x.log",
+                                        en_uzun=en_uzun)
+    return rc, cikti, time.monotonic() - bas
+
+
+def test_silent_job_is_stopped_when_time_runs_out(tmp_path):
+    fake, durdur = sessiz_colab(tmp_path, "print('[colab] Session READY', flush=True); time.sleep(60)")
+    rc, cikti, sure = calistir_suresiz(tmp_path, fake, en_uzun=1)
+    assert sure < 20 and "Session READY" in cikti
+    assert durdur.read_text() == "ocr-vps-1"
+
+
+def test_job_stuck_mid_line_is_stopped_when_time_runs_out(tmp_path):
+    fake, durdur = sessiz_colab(tmp_path, "print('Session READY'); print('yarım', end='', flush=True); time.sleep(60)")
+    rc, cikti, sure = calistir_suresiz(tmp_path, fake, en_uzun=1)
+    assert sure < 20 and durdur.read_text() == "ocr-vps-1"
+
+
+def test_job_finishing_in_time_is_not_stopped(tmp_path):
+    fake, durdur = sessiz_colab(tmp_path, "print('Session READY'); time.sleep(0.3); print('OCR-VPS-SONUC 0')")
+    rc, cikti, sure = calistir_suresiz(tmp_path, fake, en_uzun=10)
+    assert rc == 0 and cikti.endswith("OCR-VPS-SONUC 0\n") and not durdur.exists()
+    assert (tmp_path / "x.log").read_text() == cikti
 
 
 def test_old_logs_are_pruned(tmp_path):
