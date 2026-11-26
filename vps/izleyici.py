@@ -43,6 +43,7 @@ GERI_CEKILME = 30 * 60          # GPU açılamazsa yeniden denemeden önce bekle
 EN_UZUN_IS = 4 * 3600           # tek bir Colab işinin üst sınırı (sn)
 SAKLANAN_KAYIT = 20
 TELEGRAM_SINIRI = 50 * 1024 * 1024   # Telegram bot dosya sınırı; aranabilir PDF bundan büyükse yalnız Drive'da kalır
+EN_FAZLA_TESLIM = 3             # Telegram'a gönderilemeyen belge en fazla bu kadar tur denenir
 EN_FAZLA_KOPMA = 2              # iş yarıda kalırsa (bağlantı koptu vb.) dosya bu kadar kez denenir
 
 
@@ -86,6 +87,7 @@ def durum_oku(path: Path) -> dict:
     d.setdefault("bekle_kadar", 0.0)
     d.setdefault("bildirildi", False)
     d.setdefault("kopmalar", {})
+    d.setdefault("telegram", [])      # Telegram'a henüz teslim edilemeyen belgeler (GPU'suz yeniden denenir)
     return d
 
 
@@ -169,36 +171,68 @@ def guvenli_ad(ad: str) -> str:
     return re.sub(r"[\s/\\]+", "_", ad).strip("_") or "belge"
 
 
-def belgeleri_ilet(cikti: str, *, uzak: str, hedef: str, _run=calistir_komut, _gonder=hermes_gonder) -> None:
-    """İşin yazdığı belgeleri Drive output/'tan indirip Hermes ile Telegram'a ek olarak gönderir."""
-    if not hedef:
-        return
-    for kayit in isaretli_satirlar(cikti, BELGE_ISARETI):
-        girdi = str(kayit.get("girdi") or "?")
-        adlar = gonderilecek_belgeler([str(a) for a in kayit.get("belgeler") or []])
-        if not adlar:
-            continue
-        with tempfile.TemporaryDirectory(prefix="ocr-hermes-") as tmp:
-            yollar: list[Path] = []
-            eksik: list[str] = []
-            buyuk: list[str] = []
-            for ad in adlar:
-                yerel = Path(tmp) / guvenli_ad(ad)
-                res = _run(["rclone", "copyto", f"{uzak}/output/{ad}", str(yerel)])
-                if res.returncode == 0 and yerel.is_file():
-                    if yerel.stat().st_size > TELEGRAM_SINIRI:
-                        yerel.unlink()
-                        buyuk.append(ad)
-                    else:
-                        yollar.append(yerel)
+def belge_teslim(kayit: dict, *, uzak: str, hedef: str, _run=calistir_komut, _gonder=hermes_gonder) -> dict | None:
+    """Bir girdinin belgelerini Drive output/'tan indirip Hermes ile Telegram'a ek olarak gönderir.
+    Gönderilemeyen ya da Drive'da henüz görünmeyen belgeler için bir sonraki denemenin kaydını döndürür
+    (EN_FAZLA_TESLIM denemeden sonra vazgeçilir; belgeler Drive'da kalır)."""
+    girdi = str(kayit.get("girdi") or "?")
+    deneme = int(kayit.get("deneme", 0)) + 1
+    son = deneme >= EN_FAZLA_TESLIM
+    with tempfile.TemporaryDirectory(prefix="ocr-hermes-") as tmp:
+        yollar: list[tuple[str, Path]] = []
+        eksik: list[str] = []
+        buyuk: list[str] = []
+        for ad in kayit.get("belgeler") or []:
+            yerel = Path(tmp) / guvenli_ad(ad)
+            res = _run(["rclone", "copyto", f"{uzak}/output/{ad}", str(yerel)])
+            if res.returncode == 0 and yerel.is_file():
+                if yerel.stat().st_size > TELEGRAM_SINIRI:
+                    yerel.unlink()
+                    buyuk.append(ad)
                 else:
-                    eksik.append(ad)
-            satirlar = [f"📄 {girdi}"]
-            if eksik:
-                satirlar.append(f"Drive'dan indirilemedi (output/ klasörüne bakın): {', '.join(eksik)}")
-            satirlar += [f"Telegram için çok büyük, Drive'daki output/ klasöründe: {ad}" for ad in buyuk]
-            satirlar += [f"MEDIA:{y}" for y in yollar]
-            _gonder(hedef, "\n".join(satirlar))     # hermes send dosyaları göndermeden dönmez
+                    yollar.append((ad, yerel))
+            else:
+                eksik.append(ad)
+        if not yollar and not buyuk and not son:      # gönderecek bir şey yok: sessizce sonra yeniden dene
+            return {"girdi": girdi, "belgeler": eksik, "deneme": deneme}
+        satirlar = [f"📄 {girdi}"]
+        if eksik:
+            satirlar.append(f"Drive'dan indirilemedi (output/ klasörüne bakın): {', '.join(eksik)}" if son else
+                            f"Drive'dan henüz indirilemedi, yeniden denenecek: {', '.join(eksik)}")
+        satirlar += [f"Telegram için çok büyük, Drive'daki output/ klasöründe: {ad}" for ad in buyuk]
+        satirlar += [f"MEDIA:{y}" for _, y in yollar]
+        gitti = _gonder(hedef, "\n".join(satirlar))     # hermes send dosyaları göndermeden dönmez
+    kalan = ([] if gitti else [ad for ad, _ in yollar]) + eksik
+    if kalan and son:
+        print(f"UYARI: {girdi} belgeleri {EN_FAZLA_TESLIM} denemede Telegram'a gönderilemedi; Drive output/'ta: "
+              f"{', '.join(kalan)}", flush=True)
+        return None
+    return {"girdi": girdi, "belgeler": kalan, "deneme": deneme} if kalan else None
+
+
+def bekleyenleri_ilet(bekleyenler: list[dict], *, uzak: str, hedef: str, _run=calistir_komut,
+                      _gonder=hermes_gonder) -> list[dict]:
+    """Kayıtlı teslimleri dener; hâlâ bekleyenleri döndürür."""
+    if not hedef:
+        return list(bekleyenler)
+    sonuc = []
+    for kayit in bekleyenler:
+        kalan = belge_teslim(kayit, uzak=uzak, hedef=hedef, _run=_run, _gonder=_gonder)
+        if kalan is not None:
+            sonuc.append(kalan)
+    return sonuc
+
+
+def belgeleri_ilet(cikti: str, *, uzak: str, hedef: str, _run=calistir_komut, _gonder=hermes_gonder) -> list[dict]:
+    """İşin yazdığı belgeleri Telegram'a gönderir; teslim edilemeyenleri (yeniden denemek için) döndürür."""
+    if not hedef:
+        return []
+    kayitlar = []
+    for kayit in isaretli_satirlar(cikti, BELGE_ISARETI):
+        adlar = gonderilecek_belgeler([str(a) for a in kayit.get("belgeler") or []])
+        if adlar:
+            kayitlar.append({"girdi": str(kayit.get("girdi") or "?"), "belgeler": adlar, "deneme": 0})
+    return bekleyenleri_ilet(kayitlar, uzak=uzak, hedef=hedef, _run=_run, _gonder=_gonder)
 
 
 def colab_calistir(colab: list[str], betik: Path, *, oturum: str, gpu: str, log: Path,
@@ -301,6 +335,10 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
 
     durum_dosyasi = args.durum_dizini / "izleyici.json"
     durum = durum_oku(durum_dosyasi)
+    if hedef and durum["telegram"]:     # önce bekleyen teslimler: GPU beklemesi ya da boş kuyruk bunu engellemez
+        durum["telegram"] = bekleyenleri_ilet(durum["telegram"], uzak=args.uzak, hedef=hedef, _run=_run,
+                                              _gonder=_hermes)
+        durum_yaz(durum_dosyasi, durum)
     if _now() < durum["bekle_kadar"]:
         print("GPU açılamadığı için bekleniyor; bu tur atlandı.")
         return 0
@@ -329,7 +367,7 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
         rc, cikti = _colab(args.colab, betik, oturum=f"ocr-vps-{zaman}", gpu=args.gpu,
                            log=kayitlar / f"{zaman}.log", satir_isle=canli)
     eski_kayitlari_sil(kayitlar)
-    belgeleri_ilet(cikti, uzak=args.uzak, hedef=hedef, _run=_run, _gonder=_hermes)
+    durum["telegram"] += belgeleri_ilet(cikti, uzak=args.uzak, hedef=hedef, _run=_run, _gonder=_hermes)
 
     if HAZIR_ISARETI not in cikti:
         durum["bekle_kadar"] = _now() + GERI_CEKILME

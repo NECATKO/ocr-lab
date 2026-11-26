@@ -390,12 +390,89 @@ def test_belgeleri_ilet_skips_oversized_pdf(tmp_path, monkeypatch):
     assert gonderimde_var == [False]
 
 
-def test_missing_document_is_reported_in_text(tmp_path):
+def test_missing_document_is_reported_in_text_on_last_attempt(tmp_path):
     d = drive_with_output(tmp_path, {}, {})
     h = Hermes()
-    izleyici.belgeleri_ilet(isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx"]}),
-                            uzak="gdrive:ocr-lab", hedef="telegram", _run=d.run, _gonder=h)
+    kw = dict(uzak="gdrive:ocr-lab", hedef="telegram", _run=d.run, _gonder=h)
+    bekleyen = izleyici.belgeleri_ilet(isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx"]}), **kw)
+    assert h.mesajlar == [] and bekleyen == [{"girdi": "a.pdf", "belgeler": ["a.docx"], "deneme": 1}]
+    son = {"girdi": "a.pdf", "belgeler": ["a.docx"], "deneme": izleyici.EN_FAZLA_TESLIM - 1}
+    assert izleyici.bekleyenleri_ilet([son], **kw) == []
     assert h.ekler == [] and "indirilemedi" in h.mesajlar[0][1] and "a.docx" in h.mesajlar[0][1]
+
+
+class BozukHermes(Hermes):
+    def __init__(self, bozuk=1):
+        super().__init__()
+        self.bozuk = bozuk
+
+    def __call__(self, hedef, metin):
+        if self.bozuk:
+            self.bozuk -= 1
+            return False
+        return super().__call__(hedef, metin)
+
+
+BELGELI = ("[colab] Session READY\n" + isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx", "a.pdf"]})
+           + "OCR-VPS-SONUC 0\n")
+
+
+def test_failed_telegram_delivery_is_retried_without_gpu(tmp_path):
+    d = drive_with_output(tmp_path, {"a.pdf": ("1", "t")}, {"a.docx": b"DOCX", "a.pdf": b"%PDF"})
+    h = BozukHermes(bozuk=1)
+    a = args(tmp_path)
+    a.hermes = "telegram"
+    colab = Colab(d, cikti=BELGELI, isle=["a.pdf"])
+    izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=None, _hermes=h)
+    assert h.ekler == [] and izleyici.durum_oku(a.durum_dizini / "izleyici.json")["telegram"]
+    assert izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=None, _hermes=h) == 0
+    assert len(colab.calls) == 1                                       # yeni GPU işi yok
+    assert h.ekler == [("a.docx", b"DOCX"), ("a.pdf", b"%PDF")]
+    assert izleyici.durum_oku(a.durum_dizini / "izleyici.json")["telegram"] == []
+    izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=None, _hermes=h)
+    assert len(h.ekler) == 2                                           # bir kez gönderilir
+
+
+def test_pending_delivery_is_retried_during_gpu_backoff(tmp_path):
+    d = drive_with_output(tmp_path, {"b.pdf": ("1", "t")}, {"a.docx": b"DOCX"})
+    a = args(tmp_path)
+    a.hermes = "telegram"
+    durum = izleyici.durum_oku(a.durum_dizini / "izleyici.json")
+    durum["bekle_kadar"] = 10 ** 12
+    durum["telegram"] = [{"girdi": "a.pdf", "belgeler": ["a.docx"], "deneme": 1}]
+    izleyici.durum_yaz(a.durum_dizini / "izleyici.json", durum)
+    h = Hermes()
+    colab = Colab(d, cikti=OK)
+    izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=None, _hermes=h)
+    assert h.ekler == [("a.docx", b"DOCX")] and colab.calls == []
+
+
+def test_delivery_gives_up_after_limit(tmp_path):
+    d = drive_with_output(tmp_path, {}, {"a.docx": b"DOCX"})
+    h = BozukHermes(bozuk=99)
+    a = args(tmp_path)
+    a.hermes = "telegram"
+    colab = Colab(d, cikti=BELGELI.replace(', "a.pdf"]', ']'))
+    d.files["a.pdf"] = ("1", "t")
+    colab.isle = ["a.pdf"]
+    izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=None, _hermes=h)
+    for _ in range(5):
+        izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=None, _hermes=h)
+    assert h.bozuk == 99 - izleyici.EN_FAZLA_TESLIM
+    assert izleyici.durum_oku(a.durum_dizini / "izleyici.json")["telegram"] == []
+
+
+def test_document_not_yet_on_drive_is_sent_later_alone(tmp_path):
+    cikis = {"a.docx": b"DOCX"}
+    d = drive_with_output(tmp_path, {}, cikis)
+    h = Hermes()
+    kw = dict(uzak="gdrive:ocr-lab", hedef="telegram", _run=d.run, _gonder=h)
+    bekleyen = izleyici.belgeleri_ilet(
+        isaret("OCR-VPS-BELGE", {"girdi": "a.pdf", "belgeler": ["a.docx", "a.pdf"]}), **kw)
+    assert h.ekler == [("a.docx", b"DOCX")] and "yeniden denenecek" in h.mesajlar[0][1]
+    cikis["a.pdf"] = b"%PDF"                                           # Drive'da göründü
+    assert izleyici.bekleyenleri_ilet(bekleyen, **kw) == []
+    assert h.ekler == [("a.docx", b"DOCX"), ("a.pdf", b"%PDF")]
 
 
 def test_watcher_notifications_also_go_to_hermes(tmp_path):
