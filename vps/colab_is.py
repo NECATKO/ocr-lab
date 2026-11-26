@@ -18,6 +18,7 @@ RC_ADDR = "127.0.0.1:5572"
 SONUC_ISARETI = "OCR-VPS-SONUC"
 BASLADI_ISARETI = "OCR-VPS-BASLADI"   # izleyici: bu satır yoksa iş hiç başlamadan koptu (yeniden denenebilir)
 HAZIRLIK_HATASI = "OCR-VPS-HAZIRLIK-HATASI"
+YUKLEME_DOGRULANAMADI = "OCR-VPS-YUKLEME-DOGRULANAMADI"   # bağlantı kaldırılırken bekleyen yükleme kalmış olabilir
 # İzleyici bu satırları okuyup bildirimi ve belgeleri Hermes üzerinden Telegram'a iletir (JSON, tek satır).
 BILDIRIM_ISARETI = "OCR-VPS-BILDIRIM"
 BELGE_ISARETI = "OCR-VPS-BELGE"
@@ -71,25 +72,34 @@ def bagla() -> subprocess.Popen:
     raise RuntimeError("rclone mount açılamadı:\n" + Path("/content/rclone-mount.log").read_text()[-2000:])
 
 
-def bekleyen_yukleme() -> int:
-    res = subprocess.run(["rclone", "rc", "--rc-addr", RC_ADDR, "vfs/stats"], capture_output=True, text=True)
-    if res.returncode != 0:
-        return 0
-    disk = json.loads(res.stdout).get("diskCache") or {}
-    return int(disk.get("uploadsInProgress", 0)) + int(disk.get("uploadsQueued", 0))
+def bekleyen_yukleme() -> int | None:
+    """Drive'a gitmeyi bekleyen dosya sayısı; sorgulanamazsa None (bilinmiyor — boş kuyruk sayılmaz)."""
+    try:
+        res = subprocess.run(["rclone", "rc", "--rc-addr", RC_ADDR, "vfs/stats"], capture_output=True, text=True,
+                             timeout=60)
+        if res.returncode != 0:
+            return None
+        disk = json.loads(res.stdout).get("diskCache") or {}
+        return int(disk.get("uploadsInProgress", 0)) + int(disk.get("uploadsQueued", 0))
+    except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+        return None
 
 
-def ayir(proc: subprocess.Popen, en_fazla: float = 1800) -> None:
-    """Önbellekte bekleyen yazılar Drive'a gidene kadar bekler, sonra bağlantıyı kaldırır."""
+def ayir(proc: subprocess.Popen, en_fazla: float = 1800) -> bool:
+    """Önbellekte bekleyen yazılar Drive'a gidene kadar bekler, sonra bağlantıyı kaldırır.
+    Dönüş: bütün yüklemelerin bittiği doğrulandıysa True."""
     bitis = time.time() + en_fazla
-    while (kalan := bekleyen_yukleme()) and time.time() < bitis:
-        print(f"Drive'a yükleniyor: {kalan} dosya...", flush=True)
+    while (kalan := bekleyen_yukleme()) != 0 and time.time() < bitis:
+        print(f"Drive'a yükleniyor: {kalan} dosya..." if kalan else "Drive yükleme durumu sorgulanamadı...",
+              flush=True)
         time.sleep(5)
+    tamam = kalan == 0
     subprocess.run(["fusermount3" if shutil.which("fusermount3") else "fusermount", "-u", str(MOUNT)])
     try:
         proc.wait(timeout=120)
     except subprocess.TimeoutExpired:
         proc.terminate()
+    return tamam
 
 
 def repo_hazirla() -> None:
@@ -126,8 +136,8 @@ def calis() -> int:
         print(HAZIRLIK_HATASI, flush=True)
         rc = 3
     finally:
-        if mount is not None:
-            ayir(mount)
+        if mount is not None and not ayir(mount):
+            print(YUKLEME_DOGRULANAMADI, flush=True)
     print(f"{SONUC_ISARETI} {rc}", flush=True)
     return rc
 

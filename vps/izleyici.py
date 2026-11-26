@@ -34,6 +34,7 @@ HAZIR_ISARETI = "Session READY"
 BASLADI_ISARETI = "OCR-VPS-BASLADI"
 BILDIRIM_ISARETI = "OCR-VPS-BILDIRIM"    # colab_is.py: ntfy'ye giden her bildirim (JSON)
 BELGE_ISARETI = "OCR-VPS-BELGE"          # colab_is.py: bir girdiden Drive output/'a yazılan belgeler (JSON)
+YUKLEME_DOGRULANAMADI = "OCR-VPS-YUKLEME-DOGRULANAMADI"   # colab_is.py: Drive yüklemesi bitmeden bağlantı kalktı
 # google-colab-cli 0.8: oturum açıldıktan hemen sonra websocket bazen düşüyor ("Connection was lost") ve
 # betiğin ilk satırı bile çalışmıyor. Bu durumda iş güvenle yeniden başlatılabilir.
 KOPMA_ISARETI = "Connection was lost"
@@ -346,6 +347,11 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
     tamamlandi = kod in (0, 1)              # 2/3: akış veya kurulum hatası — işlenmemiş dosyaların suçu yok
     if kod in (2, 3):
         durum["bekle_kadar"] = _now() + GERI_CEKILME    # altyapı düzelsin diye hemen yeniden GPU açma
+
+    if any(l.strip() == YUKLEME_DOGRULANAMADI for l in cikti.splitlines()):
+        _bildir(konu, "OCR: Drive'a yükleme doğrulanamadı",
+                "Colab bağlantısı kaldırılırken bütün dosyaların Drive'a gittiği doğrulanamadı. "
+                "output/ klasöründeki belgeleri açıp kontrol edin.", etiketler=["warning"], oncelik=4)
 
     kalanlar = {g.ad: g for g in girdileri_listele(args.uzak, _run)}
     durum["basarisiz"] = {k: v for k, v in durum["basarisiz"].items() if k in kalanlar}

@@ -496,6 +496,12 @@ def calisma_zamanini_kapat() -> None:
 TELEFON_FORMATLARI = "docx pdf txt"
 
 
+def eksik_bicimler(yazilanlar: list[Path], formatlar: str) -> list[str]:
+    """İstenen biçimlerden Drive'a hiç yazılmamış olanlar (ad çakışmasındaki `_2` ekleri önemsizdir)."""
+    var = {Path(y).suffix.lower().lstrip(".") for y in yazilanlar}
+    return [b for b in formatlar.split() if b not in var]
+
+
 def telefon_calistir(
     drive_root: str | Path,
     *,
@@ -553,9 +559,13 @@ def telefon_calistir(
                 sorunlu = True
                 continue
             satir, kotu = is_ozeti(f.name, sonuc)
+            eksik = eksik_bicimler(sonuc.yazilanlar, TELEFON_FORMATLARI) if sonuc.yazilanlar else []
+            if eksik:                     # kaynak input/'ta kalır: hazır biçimler Drive'da, iş yarım sayılır
+                satir += f" · eksik biçim: {', '.join(eksik)}"
+                kotu = True
             satirlar.append(satir)
             sorunlu |= kotu
-            if sonuc.yazilanlar:
+            if sonuc.yazilanlar and not eksik:
                 dp["islenenler"].mkdir(parents=True, exist_ok=True)
                 shutil.move(str(f), str(unique_dest(dp["islenenler"], f.name)))
 

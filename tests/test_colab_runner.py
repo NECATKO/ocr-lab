@@ -114,6 +114,9 @@ def test_job_summary_clean_and_problem_cases():
     assert runner.is_ozeti("a.pdf", sonuc(isler=[job(yazildi=False)], okunamayan=True, yazilanlar=()))[1]
 
 
+TAM = ("x.docx", "x.pdf", "x.txt")
+
+
 class PhoneWorld:
     def __init__(self, tmp_path, files=("a.pdf", "b.pdf")):
         self.dp = runner.drive_paths(tmp_path / "drive")
@@ -125,7 +128,7 @@ class PhoneWorld:
 
     def ocr(self, drive_root, *, dosya, model):
         self.calls.append(dosya)
-        r = self.results.get(dosya, sonuc(isler=[job()]))
+        r = self.results.get(dosya, sonuc(isler=[job()], yazilanlar=TAM))
         if isinstance(r, Exception):
             raise r
         return r
@@ -143,7 +146,7 @@ def test_telefon_default_ocr_asks_pdf(tmp_path, monkeypatch):
 
     def sahte(root, *, dosya, model, formatlar="docx txt"):
         istenen.append(formatlar)
-        return sonuc(isler=[job()])
+        return sonuc(isler=[job()], yazilanlar=TAM)
     monkeypatch.setattr(runner, "ocr_calistir", sahte)
     kw = w.kwargs()
     del kw["_ocr"]
@@ -158,7 +161,7 @@ def test_colab_is_requests_pdf():
 
 def test_phone_flow_processes_each_file_moves_it_notifies_and_releases_gpu(tmp_path):
     w = PhoneWorld(tmp_path)
-    w.results["b.pdf"] = sonuc(rc=1, isler=[job(metin_kontrol=["s. 3"])])
+    w.results["b.pdf"] = sonuc(rc=1, isler=[job(metin_kontrol=["s. 3"])], yazilanlar=TAM)
     assert runner.telefon_calistir(w.dp["root"], **w.kwargs()) == 1
     assert w.setups == ["dots.mocr"] and w.calls == ["a.pdf", "b.pdf"] and w.released == [True]
     assert runner.list_inputs(w.dp["input"]) == []
@@ -177,6 +180,21 @@ def test_phone_flow_keeps_unwritten_or_crashed_files_in_inbox(tmp_path):
     assert [p.name for p in runner.list_inputs(w.dp["input"])] == ["a.pdf", "b.pdf"]
     assert "b.pdf: HATA — vLLM açılmadı" in w.notes[-1][1]
     assert w.released == [True]
+
+
+def test_phone_flow_keeps_source_when_a_format_is_missing(tmp_path):
+    w = PhoneWorld(tmp_path, files=("a.pdf", "b.pdf"))
+    w.results["a.pdf"] = sonuc(isler=[job()], yazilanlar=("a_2.pdf", "a_2.txt"))    # Word yazılamadı
+    assert runner.telefon_calistir(w.dp["root"], **w.kwargs()) == 1
+    assert [p.name for p in runner.list_inputs(w.dp["input"])] == ["a.pdf"]        # yeniden denenebilsin
+    assert (w.dp["input"] / "islenenler" / "b.pdf").is_file()
+    assert w.notes[-1][0] == "OCR bitti — kontrol gerekli"
+    assert "a.pdf: 40 sayfa · eksik biçim: docx" in w.notes[-1][1]
+
+
+def test_missing_formats_ignore_unique_name_suffixes():
+    assert runner.eksik_bicimler([Path("k_2.docx"), Path("k_2.PDF"), Path("k_2.txt")], "docx pdf txt") == []
+    assert runner.eksik_bicimler([Path("k.txt")], "docx pdf txt") == ["docx", "pdf"]
 
 
 def test_phone_flow_empty_inbox_skips_setup(tmp_path):

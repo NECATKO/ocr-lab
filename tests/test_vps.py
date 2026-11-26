@@ -503,3 +503,69 @@ def test_template_markers_are_parsed_by_watcher(capsys):
     sablon.isaret_bas(sablon.BELGE_ISARETI, {"girdi": "ğ ü.pdf", "belgeler": ["ğ ü.docx"]})
     assert izleyici.isaretli_satirlar(capsys.readouterr().out, izleyici.BELGE_ISARETI) == [
         {"girdi": "ğ ü.pdf", "belgeler": ["ğ ü.docx"]}]
+
+
+def sablon_modulu():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("colab_is_sablon", izleyici.SABLON)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_upload_query_failure_is_unknown_not_zero(monkeypatch):
+    m = sablon_modulu()
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: done(rc=1))
+    assert m.bekleyen_yukleme() is None
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: done("bozuk"))
+    assert m.bekleyen_yukleme() is None
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: done('{"diskCache": {"uploadsQueued": 2}}'))
+    assert m.bekleyen_yukleme() == 2
+
+
+class SahteMount:
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_unmount_waits_while_upload_state_is_unknown(monkeypatch):
+    m = sablon_modulu()
+    durumlar = iter([None, None, 1, 0])
+    monkeypatch.setattr(m, "bekleyen_yukleme", lambda: next(durumlar))
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: done())
+    assert m.ayir(SahteMount(), en_fazla=60) is True
+
+
+def test_unmount_reports_unconfirmed_upload(monkeypatch):
+    m = sablon_modulu()
+    saat = [0.0]
+    monkeypatch.setattr(m, "bekleyen_yukleme", lambda: None)
+    monkeypatch.setattr(m.time, "time", lambda: saat[0])
+    monkeypatch.setattr(m.time, "sleep", lambda s: saat.__setitem__(0, saat[0] + s))
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: done())
+    assert m.ayir(SahteMount(), en_fazla=60) is False
+
+
+def test_job_prints_upload_warning_before_result(monkeypatch, capsys):
+    m = sablon_modulu()
+    m.AYAR.update(dosyalar=["a.pdf"], model="dots.mocr")
+    from colab import runner as gercek
+    for ad in ("rclone_kur", "repo_hazirla"):
+        monkeypatch.setattr(m, ad, lambda: None)
+    monkeypatch.setattr(m, "bagla", lambda: SahteMount())
+    monkeypatch.setattr(m, "ayir", lambda proc: False)
+    monkeypatch.setattr(gercek, "telefon_calistir", lambda *a, **k: 0)
+    assert m.calis() == 0
+    cikti = capsys.readouterr().out.splitlines()
+    assert cikti[-2:] == [m.YUKLEME_DOGRULANAMADI, "OCR-VPS-SONUC 0"]
+    assert m.YUKLEME_DOGRULANAMADI == izleyici.YUKLEME_DOGRULANAMADI
+
+
+def test_watcher_warns_when_upload_was_not_confirmed(tmp_path):
+    d = Drive(tmp_path, {"a.pdf": ("10", "t1")})
+    cikti = OK.replace("OCR-VPS-SONUC", f"{izleyici.YUKLEME_DOGRULANAMADI}\nOCR-VPS-SONUC")
+    notes = []
+    izleyici.bir_tur(args(tmp_path), _run=d.run, _colab=Colab(d, cikti=cikti, isle=["a.pdf"]),
+                     _bildir=lambda konu, baslik, mesaj, **k: notes.append(baslik))
+    assert notes == ["OCR: Drive'a yükleme doğrulanamadı"]
