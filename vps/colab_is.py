@@ -22,6 +22,7 @@ YUKLEME_DOGRULANAMADI = "OCR-VPS-YUKLEME-DOGRULANAMADI"   # bağlantı kaldırı
 # İzleyici bu satırları okuyup bildirimi ve belgeleri Hermes üzerinden Telegram'a iletir (JSON, tek satır).
 BILDIRIM_ISARETI = "OCR-VPS-BILDIRIM"
 BELGE_ISARETI = "OCR-VPS-BELGE"
+DOSYA_ISARETI = "OCR-VPS-DOSYA"       # bir girdinin okunmasına başlandı; kesintide yalnız o dosyanın hakkı düşer
 
 
 def isaret_bas(isaret: str, veri: dict) -> None:
@@ -121,6 +122,7 @@ def calis() -> int:
         from colab import runner
 
         def ocr(root, dosya, model):
+            isaret_bas(DOSYA_ISARETI, {"girdi": dosya})
             sonuc = runner.ocr_calistir(root, dosya=dosya, model=model, formatlar=runner.TELEFON_FORMATLARI)
             isaret_bas(BELGE_ISARETI, {"girdi": dosya, "belgeler": [Path(y).name for y in sonuc.yazilanlar]})
             return sonuc

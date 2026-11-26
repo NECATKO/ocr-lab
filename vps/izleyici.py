@@ -34,6 +34,7 @@ HAZIR_ISARETI = "Session READY"
 BASLADI_ISARETI = "OCR-VPS-BASLADI"
 BILDIRIM_ISARETI = "OCR-VPS-BILDIRIM"    # colab_is.py: ntfy'ye giden her bildirim (JSON)
 BELGE_ISARETI = "OCR-VPS-BELGE"          # colab_is.py: bir girdiden Drive output/'a yazılan belgeler (JSON)
+DOSYA_ISARETI = "OCR-VPS-DOSYA"          # colab_is.py: bir girdinin okunmasına başlandı (JSON)
 YUKLEME_DOGRULANAMADI = "OCR-VPS-YUKLEME-DOGRULANAMADI"   # colab_is.py: Drive yüklemesi bitmeden bağlantı kalktı
 # google-colab-cli 0.8: oturum açıldıktan hemen sonra websocket bazen düşüyor ("Connection was lost") ve
 # betiğin ilk satırı bile çalışmıyor. Bu durumda iş güvenle yeniden başlatılabilir.
@@ -394,9 +395,15 @@ def bir_tur(args: argparse.Namespace, *, _run=calistir_komut, _colab=colab_calis
     kalanlar = {g.ad: g for g in girdileri_listele(args.uzak, _run)}
     durum["basarisiz"] = {k: v for k, v in durum["basarisiz"].items() if k in kalanlar}
     durum["kopmalar"] = {k: v for k, v in durum["kopmalar"].items() if k in kalanlar}
+    # Kesintide yalnız okunmasına başlanan dosyanın hakkı düşer. Hiçbir dosya bildirilmediyse (eski şablon ya da
+    # okuma öncesi kesinti) hepsi sayılır: aksi hâlde sürekli kesilen bir oturum birim yakmaya devam ederdi.
+    baslayanlar = {str(k.get("girdi")) for k in isaretli_satirlar(cikti, DOSYA_ISARETI)}
     vazgecilen = []
     for g in secilen:
         if g.ad not in kalanlar or kalanlar[g.ad].kimlik != g.kimlik:
+            continue
+        if not tamamlandi and baslayanlar and g.ad not in baslayanlar:
+            print(f"İş bu dosyaya gelmeden kesildi, sonraki turda denenecek: {g.ad}", flush=True)
             continue
         if not tamamlandi:                  # iş yarıda kaldı: dosyanın suçu olmayabilir, bir tur sonra yeniden
             durum["kopmalar"][g.ad] = durum["kopmalar"].get(g.ad, 0) + 1

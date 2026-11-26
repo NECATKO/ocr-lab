@@ -646,3 +646,41 @@ def test_watcher_warns_when_upload_was_not_confirmed(tmp_path):
     izleyici.bir_tur(args(tmp_path), _run=d.run, _colab=Colab(d, cikti=cikti, isle=["a.pdf"]),
                      _bildir=lambda konu, baslik, mesaj, **k: notes.append(baslik))
     assert notes == ["OCR: Drive'a yükleme doğrulanamadı"]
+
+
+def test_interrupt_counts_only_against_the_file_that_was_being_read(tmp_path):
+    d = Drive(tmp_path, {"a.pdf": ("10", "t1"), "b.pdf": ("20", "t1")})
+    cikti = ("[colab] Session READY\nOCR-VPS-BASLADI\n" + isaret("OCR-VPS-DOSYA", {"girdi": "a.pdf"})
+             + "RuntimeError: Connection was lost.\n")
+    colab = Colab(d, cikti=cikti, rc=1)
+    a = args(tmp_path)
+    izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=lambda *x, **k: None)
+    assert izleyici.durum_oku(a.durum_dizini / "izleyici.json")["kopmalar"] == {"a.pdf": 1}
+    izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=lambda *x, **k: None)       # a.pdf ikinci kez kesildi: vazgeç
+    durum = izleyici.durum_oku(a.durum_dizini / "izleyici.json")
+    assert list(durum["basarisiz"]) == ["a.pdf"] and durum["kopmalar"] == {}
+    colab.cikti, colab.isle = OK, ["b.pdf"]
+    izleyici.bir_tur(a, _run=d.run, _colab=colab, _bildir=lambda *x, **k: None)
+    assert colab.calls[-1] == ["b.pdf"]                               # b.pdf'nin hakkı düşmedi
+
+
+def test_template_reports_each_file_before_reading_it(monkeypatch, capsys):
+    m = sablon_modulu()
+    m.AYAR.update(dosyalar=["a.pdf"], model="dots.mocr")
+    from colab import runner as gercek
+    for ad in ("rclone_kur", "repo_hazirla"):
+        monkeypatch.setattr(m, ad, lambda: None)
+    monkeypatch.setattr(m, "bagla", lambda: SahteMount())
+    monkeypatch.setattr(m, "ayir", lambda proc: True)
+
+    def okuma(root, *, dosya, model, formatlar):
+        print("okunuyor", dosya)
+        return gercek.OcrSonucu(rc=0, rapor=None)
+    monkeypatch.setattr(gercek, "ocr_calistir", okuma)
+    monkeypatch.setattr(gercek, "telefon_calistir",
+                        lambda root, *, _ocr, **k: _ocr(root, dosya="a.pdf", model="m") and 0)
+    m.calis()
+    satirlar = capsys.readouterr().out.splitlines()
+    i = satirlar.index("okunuyor a.pdf")
+    assert izleyici.isaretli_satir(satirlar[i - 1], izleyici.DOSYA_ISARETI) == {"girdi": "a.pdf"}
+    assert m.DOSYA_ISARETI == izleyici.DOSYA_ISARETI
