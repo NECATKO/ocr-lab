@@ -315,3 +315,22 @@ def test_setup_env_creates_missing_venv(tmp_path, monkeypatch):
     venvs = [i for i, c in enumerate(ran) if isinstance(c, list) and c[:2] == ["uv", "venv"]]
     installs = [i for i, c in enumerate(ran) if c in _pip_installs(ran, root)]
     assert len(venvs) == 1 and len(installs) == 1 and venvs[0] < installs[0]
+
+
+def test_job_summary_names_pages_and_reasons():
+    inceleme = [{"sayfa": "s. 4", "kitap": "", "nedenler": ["sayfa sonu eksik olabilir"]},
+                {"sayfa": "s. 2", "kitap": "75", "nedenler": ["tekrar döngüsü", "beklenmedik karakter (总数)"]},
+                {"sayfa": "s. 6", "kitap": "[79]", "nedenler": ["metin çıkmadı"]}]
+    satir, kotu = runner.is_ozeti("a.pdf", sonuc(isler=[job(sayfa=3, uyarilar=["u"] * 3, kesilen=["s. 4"],
+                                                             inceleme=inceleme)]))
+    assert kotu
+    assert satir == ("a.pdf: 3 sayfa · 3 uyarı\n"
+                     "  PDF s. 4 · sayfa sonu eksik olabilir\n"
+                     "  PDF s. 2 · kitap s. 75 · tekrar döngüsü, beklenmedik karakter (总数)\n"
+                     "  PDF s. 6 · kitap s. [79] · metin çıkmadı")
+
+
+def test_job_summary_caps_review_list():
+    inceleme = [{"sayfa": f"s. {i}", "kitap": str(i), "nedenler": ["tekrar döngüsü"]} for i in range(1, 9)]
+    satir, _ = runner.is_ozeti("a.pdf", sonuc(isler=[job(inceleme=inceleme)]))
+    assert satir.count("\n  PDF s.") == 5 and satir.endswith("\n  …ve 3 sayfa daha")

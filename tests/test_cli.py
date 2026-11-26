@@ -593,3 +593,29 @@ def test_missing_pikepdf_only_fails_pdf_format(tmp_path, monkeypatch):
     assert [p.name for p in written] == ["k.docx", "k.txt"] and all(p.is_file() for p in written)
     assert len(errors) == 1 and errors[0].startswith("k.pdf yazılamadı (") and "pikepdf" in errors[0]
     assert not (tmp_path / "belgeler" / "k.pdf").exists()
+
+
+def test_report_lists_pages_to_review_with_book_page_and_reasons():
+    sayfalar = [
+        fake_page(1, label="74", inferred=False),
+        fake_page(2, [f"s. 2: {pipeline.RECOVERED_WARNING}",
+                      f"s. 2: {pipeline.UNEXPECTED_SCRIPT_WARNING} (总数), kontrol edin"], label="75", inferred=False),
+        fake_page(3, label="[76]"),
+        fake_page(4, [f"s. 4: {pipeline.TRUNCATED_WARNING}"], label="[PDF s. 4]"),
+    ]
+    sayfalar[3].truncated = True
+    job = DocJob("k", [SourcePage(Path("k.pdf"), i) for i in range(1, 5)])
+    rapor = cli._report([(job, sayfalar)], {"k": [Path("k.docx")]}, {}, {})
+    assert rapor["isler"][0]["inceleme"] == [
+        {"sayfa": "s. 4", "kitap": "", "nedenler": ["sayfa sonu eksik olabilir"]},
+        {"sayfa": "s. 2", "kitap": "75", "nedenler": ["tekrar döngüsü", "beklenmedik karakter (总数)"]},
+    ]
+
+
+def test_review_reasons_cover_page_flags():
+    p = fake_page(1, failed=True)
+    assert pipeline.review_reasons(p) == ["okunamadı"]
+    p = fake_page(2, [f"s. 2: 5 numarası s. 3 sayfasında da okundu ({pipeline.DUPLICATE_WARNING})"], check=True)
+    p.needs_review = True
+    assert pipeline.review_reasons(p) == ["metin çıkmadı", "sayfa numarası çelişkili", "iki kez taranmış olabilir"]
+    assert pipeline.review_reasons(fake_page(3, ["s. 3, blok 2: satır yapısı kurulamadı"])) == []

@@ -73,6 +73,36 @@ def page_id(src: SourcePage) -> str:
     return f"s. {src.index}" if _is_pdf(src) else src.source.name
 
 
+def review_reasons(page: Page) -> list[str]:
+    """Kullanıcının bu sayfada neye bakması gerektiği: kısa nedenler, en ağırı başta (yoksa boş)."""
+    joined = "\n".join(page.warnings)
+    reasons = []
+    if page.failed:
+        reasons.append("okunamadı")
+    if page.truncated:
+        reasons.append("sayfa sonu eksik olabilir")
+    if page.needs_review:
+        reasons.append("metin çıkmadı")
+    if RECOVERED_WARNING in joined:
+        reasons.append("tekrar döngüsü")
+    if m := re.search(re.escape(UNEXPECTED_SCRIPT_WARNING) + r" \((.*?)\)", joined):
+        reasons.append(f"beklenmedik karakter ({m.group(1)})")
+    if page.book_page_check:
+        reasons.append("sayfa numarası çelişkili")
+    if DUPLICATE_WARNING in joined:
+        reasons.append("iki kez taranmış olabilir")
+    return reasons
+
+
+REVIEW_ORDER = ("okunamadı", "sayfa sonu eksik olabilir", "metin çıkmadı", "tekrar döngüsü", "beklenmedik karakter",
+                "sayfa numarası çelişkili", "iki kez taranmış olabilir")
+
+
+def review_rank(reasons: list[str]) -> int:
+    """En ağır nedenin sırası (sayfaları önem sırasına dizmek için)."""
+    return min(next(i for i, r in enumerate(REVIEW_ORDER) if reason.startswith(r)) for reason in reasons)
+
+
 def _word_list() -> dict[str, str]:
     return build_word_list(paths.GT, paths.SETTINGS / "kesme.txt")
 

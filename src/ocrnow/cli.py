@@ -290,11 +290,25 @@ def _report(results: list[tuple[pages.DocJob, list[Page]]], written: dict[str, l
                         for src, p in zip(job.pages, doc_pages) if p.truncated],
             "yazma_hatalari": export_errors.get(job.name, []),
             "uyarilar": [w for p in doc_pages for w in p.warnings] + export_warnings.get(job.name, []),
+            "inceleme": _review(job, doc_pages, multi),
             "onizleme": _preview_text(doc_pages, formats),
             "rtl": rtl,
         })
     return {"belgeler": [str(path) for files in written.values() for path in files], "isler": jobs,
             "okunamayan": any(p.failed for _, doc_pages in results for p in doc_pages)}
+
+
+def _review(job: pages.DocJob, doc_pages: list[Page], multi: bool) -> list[dict]:
+    """Bakılması gereken sayfalar, en ağır neden başta: PDF sırası, kitap numarası ([..] tahmin) ve kısa nedenler."""
+    rows = []
+    for pos, (src, p) in enumerate(zip(job.pages, doc_pages)):
+        if reasons := pipeline.review_reasons(p):
+            label = export_txt.page_label(p)
+            rows.append((pipeline.review_rank(reasons), pos, {
+                "sayfa": pipeline.job_page_id(src, multi),
+                "kitap": "" if "PDF s." in label or "görsel" in label else label,
+                "nedenler": reasons}))
+    return [row for _, _, row in sorted(rows, key=lambda r: r[:2])]
 
 
 def _summary(report: dict) -> None:

@@ -462,6 +462,7 @@ def is_ozeti(dosya_adi: str, sonuc: OcrSonucu) -> tuple[str, bool]:
         return f"{dosya_adi}: OCR çalışmadı, belge yazılmadı (çıkış kodu {sonuc.rc})", True
     sorunlu = bool(sonuc.rapor.get("okunamayan")) or not sonuc.yazilanlar
     parcalar = []
+    sayfa_satirlari: list[str] = []
     for job in isler:
         parcalar.append(f"{job.get('sayfa', '?')} sayfa")
         if not job.get("yazildi"):
@@ -469,15 +470,38 @@ def is_ozeti(dosya_adi: str, sonuc: OcrSonucu) -> tuple[str, bool]:
             sorunlu = True
         if job.get("uyarilar"):
             parcalar.append(f"{len(job['uyarilar'])} uyarı")
-        for anahtar, ad in (("metin_kontrol", "metin kontrolü"), ("kesilen", "kesilen"),
-                            ("kontrol", "sayfa no kontrolü")):
-            if job.get(anahtar):
-                parcalar.append(f"{ad}: {_kisalt(job[anahtar])}")
-                sorunlu = True
+        inceleme = job.get("inceleme")
+        if inceleme is None:              # eski rapor: sayfa listeleri tek satırda
+            for anahtar, ad in (("metin_kontrol", "metin kontrolü"), ("kesilen", "kesilen"),
+                                ("kontrol", "sayfa no kontrolü")):
+                if job.get(anahtar):
+                    parcalar.append(f"{ad}: {_kisalt(job[anahtar])}")
+                    sorunlu = True
+        elif inceleme:
+            sorunlu = True
+            sayfa_satirlari += [_inceleme_satiri(k) for k in inceleme]
         if job.get("yazma_hatalari"):
             parcalar.append(f"yazma hatası: {len(job['yazma_hatalari'])}")
             sorunlu = True
-    return f"{dosya_adi}: " + " · ".join(parcalar), sorunlu
+    satir = f"{dosya_adi}: " + " · ".join(parcalar)
+    for s in sayfa_satirlari[:INCELEME_SINIRI]:
+        satir += f"\n  {s}"
+    if len(sayfa_satirlari) > INCELEME_SINIRI:
+        satir += f"\n  …ve {len(sayfa_satirlari) - INCELEME_SINIRI} sayfa daha"
+    return satir, sorunlu
+
+
+INCELEME_SINIRI = 5   # bildirimde en fazla bu kadar sayfa ayrıntısı
+
+
+def _inceleme_satiri(kayit: dict) -> str:
+    """'PDF s. 2 · kitap s. 75 · tekrar döngüsü, beklenmedik karakter (总数)'"""
+    sayfa = str(kayit.get("sayfa", "?"))
+    parcalar = [f"PDF {sayfa}" if sayfa.startswith("s. ") else sayfa]
+    if kayit.get("kitap"):
+        parcalar.append(f"kitap s. {kayit['kitap']}")
+    parcalar.append(", ".join(kayit.get("nedenler") or []))
+    return " · ".join(parcalar)
 
 
 def calisma_zamanini_kapat() -> None:
