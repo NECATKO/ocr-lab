@@ -1,5 +1,8 @@
 # OCR Lab geliştirme yol haritası
 
+> **2026-11-28:** Colab, VPS ve Telegram akışı kaldırıldı. Okuma artık yalnız yerelde (8 GB GPU, fp8) yapılıyor.
+> Aşağıdaki akış anlatımı ve 1–8 numaralı VPS düzeltmeleri geçmiş kaydıdır.
+
 Akış: CamScanner PDF'si Drive `input/` veya Telegram üzerinden gelir, Colab L4'te bf16 ile okunur, Word, aranabilir
 PDF ve TXT olarak Drive'a ve Telegram'a teslim edilir. İlk taslak 2026-11-26'da yazıldı; aynı gün kodla
 karşılaştırıldı, ana hatalar düzeltildi ve uçtan uca canlı denendi. Bu belge artık durumu ve kalan işleri tutar.
@@ -45,8 +48,8 @@ alarm 0. Dipnot blokları silinerek taklit edilen kayıplarda 33 sayfanın 32'si
    satır atlanması şu an yakalanmıyor.
 3. **Yalnız eksik biçimi üretmek.** Word yazılamazsa kullanıcı PDF'yi yeniden yüklemek zorunda; PDF ve TXT `_2`
    ekiyle ikinci kez oluşuyor. Önbellekten yalnız eksik biçimi dışa aktarmak GPU okuması gerektirmez.
-4. **200 / 300 DPI kararı (Colab birimi harcar; önce kullanıcıya sorulur).** Değerlendirme setinin geliştirme
-   yarısında aynı model ve bf16 ile; değişken yalnız DPI. Karar ölçütü: kurtarılan dipnotlar, yeni kayıplar, yanlış
+4. **200 / 300 DPI kararı.** Değerlendirme setinin geliştirme
+   yarısında aynı model ve ayarlarla (yerel fp8); değişken yalnız DPI. Karar ölçütü: kurtarılan dipnotlar, yeni kayıplar, yanlış
    sayfa numaraları ve ortanca ek süre. Kazanç yalnız küçük puntolu dipnotlarda ise seçili sayfaları 300 DPI'da
    yeniden okumak ayrıca değerlendirilir.
 5. **Bilinen model hatası.** `tarama1` kitap s. 75'te bf16 açgözlü kod çözme "terör" yerine "总数" yazıyor; tekrar

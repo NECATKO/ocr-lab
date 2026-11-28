@@ -6,23 +6,12 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
 
 ## [Yayımlanmadı]
 
+### Kaldırıldı
+- **Bulut GPU kullanımı:** Google Colab defterleri (`colab/`), VPS izleyicisi, Telegram/Hermes becerisi ve
+  Drive üzerinden telefon akışı (`vps/`) kaldırıldı. Okuma yalnız yerel GPU'da (`ocr-now`, `ocr-gui`) ya da isteğe
+  bağlı harici API motoruyla (`-m api`) yapılır.
+
 ### Eklendi
-- **Google Colab + Drive (`colab/ocr_now.ipynb`, `colab/runner.py`):** OCR, Colab'ın L4/A100 GPU'sunda
-  çalışır. Girdi, çıktı, sayfa önbelleği ve model ağırlıkları Drive'daki `ocr-lab/` klasöründe tutulur.
-  16 GB ve üzeri GPU'larda `OCR_BF16=1` tam kalite bf16 ve yüksek çözünürlükle okur.
-- **Telefondan tek dokunuş (`colab/telefon.ipynb`):** Tek hücreli L4 defteri, `input/` klasöründeki dosyaları tek tek
-  okur. İş sürerken önbelleği Drive'a eşitler. Okunan girdiyi `input/islenenler/` klasörüne taşır ve
-  `DURUM.txt` dosyasını günceller. Başlangıçta ve bitişte ntfy bildirimi gönderir (konu: `bildirim.txt`). İş bitince
-  GPU'yu hemen bırakır.
-- **VPS izleyicisi (`vps/`):** Tarayıcı gerektirmez, telefon ekranı kapalıyken de çalışır. systemd zamanlayıcısı
-  3 dakikada bir Drive `input/` klasörüne rclone ile bakar. Yeni dosya varsa Google'ın Colab komut satırı aracıyla
-  L4'te `colab run` başlatır. Aynı anda tek iş çalışır. Okunamayan dosya değişene kadar yeniden denenmez.
-  Yarıda kalan iş bir kez yeniden denenir. GPU açılamazsa 30 dakika beklenir. Colab aracının başlangıçtaki
-  bağlantı kopması yeniden denenir. Kurulum için `vps/kur.sh` çalıştırılır.
-- **Telegram ile OCR (Hermes Agent, `vps/ocr_ekle.py`, `vps/hermes/ocr-lab/`):** PDF Telegram'da VPS'teki Hermes'e
-  gönderilir. Hermes `ocr-lab` becerisiyle dosyayı Drive `input/` klasörüne koyar ve izleyiciyi hemen başlatır.
-  İzleyici bildirimleri `hermes send` ile Telegram'a da iletir, okunan dosyanın Word belgesini ek olarak gönderir.
-  ntfy yedek olarak kalır.
 - **Geliştirilmiş Linux ve Windows (WSL2) kurulumu (`kurulum.sh`, `kurulum.bat`, `kurulum.ps1`, `.gitattributes`):**
   `kurulum.sh` artık `curl`, `tar`, `tesseract` (+ Türkçe `tur` dil paketi) ve `uv` gereksinimlerini denetleyip
   eksikleri (`apt`/`dnf`/`pacman`/`zypper` ve `uv` kurucusu ile) otomatik kurar; NVIDIA GPU/VRAM ve disk alanı
@@ -132,18 +121,13 @@ Biçim [Keep a Changelog](https://keepachangelog.com/tr-TR/1.1.0/) örneğini iz
   bütün gelir. Arapça/Osmanlıca satırlar mantıksal sırayla yazılır. Okuma `--dpi` ile varsayılandan farklı
   çözünürlükte yapıldığında katmanın kayması giderildi. Çıktı, kaynak PDF'in sürümünü korur. Zaten metin katmanı
   olan kaynak sayfaya ikinci katman eklenmez, uyarı verilir. **Yeni bağımlılık `pikepdf`:** mevcut yerel
-  kurulumlarda `./kurulum.sh` yeniden çalıştırılmalıdır; Colab kurulumu (`runner.setup_env`) `.venv` varken de
-  proje bağımlılıklarını yeniler. pikepdf eksikse yalnız `.pdf` yazılamaz, Word ve öteki biçimler yine yazılır.
+  kurulumlarda `./kurulum.sh` yeniden çalıştırılmalıdır. pikepdf eksikse yalnız `.pdf` yazılamaz, Word ve öteki biçimler yine yazılır.
 - **Aranabilir PDF'te kelime düzeyinde yerleşim (`pdf_textlayer.py`, `tesslines.py`):** Görünmez metnin her kelimesi
   tesseract'ın o kelime için bulduğu kutuya konur; satır yapısı kurulamayan bloklarda da arama vurgusu kelimenin
   üstüne düşer (önceden metin bloğa yayıldığı için bir satır kayabiliyordu). Tesseract'ın okumadığı kelimeler
   komşularının arasına, bütün bir satırı kaçırdıysa iki satırın arasına kurulan satıra yerleşir. Kopyada kelimeler
   tek boşlukla, satırlar okuyucunun satır sonuyla ayrılır; tireyle bölünen kelime ilk satırda bütün yazılır.
   Tesseract kelimesi olmayan bloklar ve tablolar eski yayma yöntemiyle yerleşir. Word çıktısı değişmez.
-- **Telefon/VPS akışı aranabilir PDF de üretir:** `runner.TELEFON_FORMATLARI` (`docx pdf txt`) telefon defterinin ve
-  VPS işinin istediği biçimlerdir. İzleyici Word ile birlikte aranabilir PDF'i de Telegram'a gönderir; 50 MB'tan
-  büyük PDF gönderilmez, mesajda "Telegram için çok büyük" notu ve Drive `output/` konumu bildirilir. `ocr_calistir`
-  varsayılanı (`docx txt`) ve `ocr_now.ipynb` aynı kalır.
 - Ham OCR önbelleği ve benchmark kaydı aynı OCR ayar kimliğini kullanır. Bilinen vLLM model revizyonu
   açılışta sabitlenir; doğrulanamayan VLM okumaları ham önbelleğe alınmaz. Eski önbellek dosyaları silinmez.
 - Benchmark ortak tamamlanan sayfalarda karşılaştırır. Tam, kesik, boş ve okunamayan denemeler ayrı
